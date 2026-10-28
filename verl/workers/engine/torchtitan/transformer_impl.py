@@ -44,6 +44,7 @@ import verl.utils.torch_functional as verl_F
 from verl.plugin.platform import get_platform
 from verl.trainer.config import CheckpointConfig
 from verl.utils import tensordict_utils as tu
+from verl.utils.checkpoint.checkpoint_manager import BaseCheckpointManager
 from verl.utils.dataset.dataset_utils import DatasetPadMode
 from verl.utils.debug import log_gpu_memory_usage
 from verl.utils.device import get_device_id, get_device_name
@@ -153,6 +154,8 @@ class TorchTitanEngine(BaseEngine):
         self.engine_config = engine_config
         self.optimizer_config = optimizer_config
         self.checkpoint_config = checkpoint_config
+        # Rotation bookkeeping for HuggingFace exports, built on the first save by the ranks that write them.
+        self._hf_checkpoint_rotation: Optional[BaseCheckpointManager] = None
         self.engine_config.check_device_support(device_name)
 
         # Derive torchtitan model name and flavor from HF config
@@ -660,7 +663,12 @@ class TorchTitanEngine(BaseEngine):
         max_ckpt_to_keep: Optional[int] = None,
         **kwargs,
     ) -> None:
-        """Save TorchTitan distributed and/or HuggingFace safetensors checkpoint according to ``save_contents``."""
+        """Save TorchTitan distributed and/or HuggingFace safetensors checkpoint according to ``save_contents``.
+
+        ``max_ckpt_to_keep`` also bounds the ``<local_path>/huggingface`` exports. TorchTitan's ``keep_latest_k`` only
+        prunes its own DCP ``step-N`` folders, so every rank that writes an export rotates its own copies with the
+        FSDP/Megatron checkpoint-manager policy (``BaseCheckpointManager``).
+        """
         if self._is_offload_param:
             for module in self.module:
                 load_fsdp_model_to_gpu(module)
@@ -670,6 +678,15 @@ class TorchTitanEngine(BaseEngine):
             if self.checkpoint_config is not None and self.checkpoint_config.save_contents is not None
             else ["model", "optimizer", "extra"]
         )
+
+        # On host-local storage every host writes its own export, so rotation must run on each writer, not rank 0 only.
+        hf_rotation = None
+        if "hf_model" in save_contents and self._is_hf_checkpoint_writer(local_path):
+            if self._hf_checkpoint_rotation is None:
+                # Only the rotation bookkeeping of BaseCheckpointManager is used; it never touches model/optimizer.
+                self._hf_checkpoint_rotation = BaseCheckpointManager(model=None, optimizer=None)
+            hf_rotation = self._hf_checkpoint_rotation
+            hf_rotation.ensure_checkpoint_capacity(max_ckpt_to_keep)
 
         if any(k in save_contents for k in ("model", "optimizer")):
             # Override TorchTitan's folder to use verl's path
@@ -685,16 +702,18 @@ class TorchTitanEngine(BaseEngine):
             self._save_hf_checkpoint(local_path)
 
         torch.distributed.barrier()
+        if hf_rotation is not None:
+            hf_rotation.register_checkpoint(os.path.join(local_path, "huggingface"), max_ckpt_to_keep)
         if self._is_offload_param:
             for module in self.module:
                 offload_fsdp_model_to_cpu(module)
 
-    def _save_hf_checkpoint(self, local_path: str) -> None:
-        """Export HuggingFace safetensors + config/tokenizer into ``<local_path>/huggingface``.
+    @staticmethod
+    def _is_hf_checkpoint_writer(local_path: str) -> bool:
+        """Whether this rank writes (and rotates) the HuggingFace export under ``local_path``.
 
-        Gathers 3D MoE expert stacks in bulk (e.g. 144 stacks on Qwen3-30B-A3B instead of 18,432 per-expert syncs),
-        restricts CPU materialization to one writer per host, and flushes each completed safetensors shard
-        immediately so peak host RAM stays bounded to ~1 shard rather than the full model.
+        Global rank 0 writes to shared storage; under host-local ``/tmp`` or ``/dev/shm`` the local rank 0 of every
+        host writes its own copy.
         """
         rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
         ray_local_ws = int(os.environ.get("RAY_LOCAL_WORLD_SIZE", "0"))
@@ -705,7 +724,16 @@ class TorchTitanEngine(BaseEngine):
             local_rank = rank % ray_local_ws
         else:
             local_rank = int(os.environ.get("LOCAL_RANK", "0"))
-        should_write = rank == 0 or (local_rank == 0 and local_path.startswith(("/dev/shm", "/tmp")))
+        return rank == 0 or (local_rank == 0 and local_path.startswith(("/dev/shm", "/tmp")))
+
+    def _save_hf_checkpoint(self, local_path: str) -> None:
+        """Export HuggingFace safetensors + config/tokenizer into ``<local_path>/huggingface``.
+
+        Gathers 3D MoE expert stacks in bulk (e.g. 144 stacks on Qwen3-30B-A3B instead of 18,432 per-expert syncs),
+        restricts CPU materialization to one writer per host, and flushes each completed safetensors shard
+        immediately so peak host RAM stays bounded to ~1 shard rather than the full model.
+        """
+        should_write = self._is_hf_checkpoint_writer(local_path)
 
         params: dict[str, Any] = {}
         for module in self.module:

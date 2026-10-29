@@ -73,7 +73,12 @@ from verl.trainer.ppo.utils import (
     need_teacher_policy,
 )
 from verl.trainer.ppo.v1.replay_buffer import DAPO_FILTERED_REWARD_COUNTS_KEY, ReplayBuffer, ReplayBufferAsync
-from verl.trainer.ppo.v1.rollout_audit import collect_rollout_audit_records, write_rollout_audit_jsonl
+from verl.trainer.ppo.v1.rollout_audit import (
+    collect_rollout_audit_records,
+    validation_dump_identities,
+    validation_dump_identity_columns,
+    write_rollout_audit_jsonl,
+)
 from verl.trainer.ppo.v1.utils import MetricsAggregator, compute_advantage_for_multi_trajectories
 from verl.utils import tensordict_utils as tu
 from verl.utils.checkpoint.checkpoint_manager import find_latest_ckpt_path
@@ -1073,6 +1078,8 @@ class PPOTrainer(ABC):
         session_to_sample_idx: dict[str, int] = {}
         # To avoid failure sessions
         expected_acc_counts: dict[tuple[str, str], int] = {}
+        # uid -> data_source and stable question_id; only written as extra keys of the validation dump.
+        dump_identities: Optional[dict] = {} if self.config.trainer.get("validation_data_dir", None) else None
 
         for batch_dict in self.val_dataloader:
             # 1. put batch to agent loop manager
@@ -1089,6 +1096,8 @@ class PPOTrainer(ABC):
             ):
                 rollout_n = int(rollout_n)
                 expected_acc_counts[(str(data_source), str(uid))] = rollout_n
+            if dump_identities is not None:
+                dump_identities.update(validation_dump_identities(batch_dict))
 
             batch = tu.get_tensordict(batch_dict)
             tu.assign_non_tensor_data(batch, "global_steps", self.global_steps)
@@ -1216,9 +1225,9 @@ class PPOTrainer(ABC):
                 outputs=dump_all_outputs,
                 gts=[sample_gts[i] for i in session_final_indices],
                 scores=[sample_scores[i] for i in session_final_indices],
-                reward_extra_infos_dict={
-                    k: [v[i] for i in session_final_indices] for k, v in reward_extra_infos_dict.items()
-                }
+                # The identity columns come first so that reward extra info keys keep precedence.
+                reward_extra_infos_dict=validation_dump_identity_columns(dump_all_keys, dump_identities)
+                | {k: [v[i] for i in session_final_indices] for k, v in reward_extra_infos_dict.items()}
                 | {"uid": dump_all_keys},
                 dump_path=val_data_dir,
             )

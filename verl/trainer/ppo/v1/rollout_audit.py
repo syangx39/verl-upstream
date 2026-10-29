@@ -28,9 +28,12 @@ callable), so it can be unit tested on CPU:
 - :func:`build_rollout_audit_records` builds one JSON-serializable record per key (plain Python lists in).
 - :func:`collect_rollout_audit_records` chains the four steps above for one training batch.
 - :func:`write_rollout_audit_jsonl` writes the records as JSONL.
-- :func:`summarize_validation_dump` counts distinct sessions per question in a ``trainer.validation_data_dir``
-  dump. Multi-output sessions write several JSONL lines, so samples per question must not be inferred from line
-  counts.
+- :func:`validation_dump_identities` and :func:`validation_dump_identity_columns` add ``data_source`` and a stable
+  ``question_id`` (:func:`validation_question_id`) to the rows of the ``trainer.validation_data_dir`` dump.
+- :func:`summarize_validation_dump` checks such a dump for completeness: it counts distinct sessions per question
+  (multi-output sessions write several JSONL lines, so samples per question must not be inferred from line counts),
+  reports expected questions with no rows at all, and keeps accuracy (``acc``) apart from the reward score
+  (``score``).
 
 Trajectory keys have the format ``{uid}_{session_id}_{output_index}``: ``uid`` identifies the question (one GRPO
 group), ``{uid}_{session_id}`` one sampled trajectory (session), and ``output_index`` one agent-loop output of the
@@ -43,7 +46,8 @@ import logging
 import math
 import operator
 import os
-from collections.abc import Callable, Mapping, Sequence
+from collections import Counter, defaultdict
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any, Optional
 
 try:
@@ -718,6 +722,103 @@ def write_rollout_audit_jsonl(records: Sequence[Mapping[str, Any]], path: str) -
             f.write(json.dumps(to_jsonable(record), ensure_ascii=False) + "\n")
 
 
+VALIDATION_DUMP_IDENTITY_KEYS = ("data_source", "question_id")
+"""Keys the V1 trainer adds to every row of the ``trainer.validation_data_dir`` dump."""
+
+SUMMARY_METRIC_FIELDS = {
+    "mean_acc": (
+        "mean of the 'acc' field: accuracy as written by the reward function (verl reward managers copy a reward "
+        "function's bare-float return value into 'acc')"
+    ),
+    "mean_score": (
+        "mean of the 'score' field: the reward score, which may include shaping such as ReTool's tool-call bonus; "
+        "never an accuracy"
+    ),
+}
+"""What ``mean_acc`` and ``mean_score`` in :func:`summarize_validation_dump` are computed from."""
+
+
+def validation_question_id(extra_info: Any, raw_prompt: Any) -> Optional[str]:
+    """Return an id for one validation question that, unlike the per-run ``uid``, is the same in every run.
+
+    The id is ``index:<extra_info["index"]>`` when the dataset sets that index (``RLHFDataset`` defaults a missing
+    index to 0, so the row's ``index`` field is not used), otherwise ``sha1:<16 hex digits>`` of the chat messages
+    serialized as canonical JSON. Per-question results can then be paired across runs, and expected question ids can
+    be computed from the dataset rows.
+
+    Args:
+        extra_info: The dataset row's ``extra_info`` (may be ``None``).
+        raw_prompt: The dataset row's chat messages (``raw_prompt``) or prompt string (may be ``None``).
+
+    Returns:
+        The question id, or ``None`` when the row has neither an index nor a prompt.
+    """
+    extra_info = _unwrap_non_tensor(extra_info)
+    if isinstance(extra_info, Mapping) and extra_info.get("index") is not None:
+        return f"index:{to_jsonable(extra_info['index'])}"
+    raw_prompt = _unwrap_non_tensor(raw_prompt)
+    if raw_prompt is None:
+        return None
+    if not isinstance(raw_prompt, str):
+        raw_prompt = json.dumps(to_jsonable(raw_prompt), sort_keys=True, ensure_ascii=False)
+    return "sha1:" + hashlib.sha1(raw_prompt.encode("utf-8"), usedforsecurity=False).hexdigest()[:16]
+
+
+def validation_dump_identities(batch: Mapping[str, Any]) -> dict[str, dict[str, Optional[str]]]:
+    """Map the ``uid`` of each row of a collated validation batch to its ``data_source`` and ``question_id``.
+
+    Args:
+        batch: Validation batch from the dataloader, after ``uid`` was assigned. ``data_source`` (``"unknown"`` when
+            absent, as in ``PPOTrainer._validate``), ``extra_info`` and ``raw_prompt`` are read when present.
+
+    Returns:
+        ``{uid: {"data_source": ..., "question_id": ...}}``, see :func:`validation_question_id`. Never raises: a row
+        whose id cannot be computed gets ``question_id=None``.
+    """
+    try:
+        uids = values_from_field(batch.get("uid"), 0) or []
+    except Exception:
+        return {}
+    num_rows = len(uids)
+
+    def column(name: str, default: Any) -> list:
+        try:
+            values = values_from_field(batch.get(name), num_rows)
+        except Exception:
+            values = None
+        return values if values is not None and len(values) == num_rows else [default] * num_rows
+
+    identities = {}
+    for uid, data_source, extra_info, raw_prompt in zip(
+        uids, column("data_source", "unknown"), column("extra_info", None), column("raw_prompt", None), strict=True
+    ):
+        try:
+            question_id = validation_question_id(extra_info, raw_prompt)
+        except Exception:
+            question_id = None
+        identities[str(uid)] = {"data_source": str(data_source), "question_id": question_id}
+    return identities
+
+
+def validation_dump_identity_columns(
+    keys: Sequence[str], identities: Optional[Mapping[str, Mapping[str, Any]]]
+) -> dict[str, list]:
+    """Return the ``data_source`` and ``question_id`` columns of the validation dump rows of ``keys``.
+
+    Args:
+        keys: Trajectory keys ``{uid}_{session_id}_{output_index}`` of the dump rows.
+        identities: Merged :func:`validation_dump_identities` of all validation batches, or ``None``.
+
+    Returns:
+        ``{"data_source": [...], "question_id": [...]}`` aligned with ``keys`` (``None`` for unknown uids), or ``{}``
+        when ``identities`` is ``None``.
+    """
+    if identities is None:
+        return {}
+    rows = [identities.get(split_trajectory_key(key)[0]) or {} for key in keys]
+    return {name: [row.get(name) for row in rows] for name in VALIDATION_DUMP_IDENTITY_KEYS}
+
+
 def _metric_value(value: Any) -> Optional[float]:
     """Convert a validation metric (bool, number or numeric string) into a finite float, or ``None``."""
     if value is None:
@@ -729,105 +830,189 @@ def _metric_value(value: Any) -> Optional[float]:
     return value if math.isfinite(value) else None
 
 
+def _mean(values: Sequence[float]) -> Optional[float]:
+    """Mean of ``values``, or ``None`` for an empty sequence."""
+    return sum(values) / len(values) if values else None
+
+
 def _min_max(values: Sequence[int]) -> dict[str, Optional[int]]:
     """Return ``{"min", "max"}`` of ``values`` (``None`` for an empty sequence)."""
     return {"min": min(values) if values else None, "max": max(values) if values else None}
 
 
+def _row_question(row: Mapping[str, Any], question_key: Optional[str], uid_question: str) -> tuple[Optional[str], str]:
+    """Return ``(question, key it came from)`` for one validation dump row."""
+    if question_key is None:
+        question_id = row.get("question_id")
+        if question_id is not None:
+            return str(question_id), "question_id"
+        return uid_question, "uid"
+    if question_key == "uid":
+        return uid_question, "uid"
+    value = row.get(question_key)
+    return (None if value is None else str(value)), question_key
+
+
+def _summarize_data_source(
+    questions: Mapping[str, Mapping[str, list[tuple[int, Any, Any]]]],
+    counts: Mapping[str, int],
+    question_keys_used: list[str],
+    expected_n: Optional[int],
+    expected: Optional[Iterable[Any]],
+) -> dict[str, Any]:
+    """Summarize the rows of one data source, see :func:`summarize_validation_dump`."""
+    per_question: dict[str, dict[str, Any]] = {}
+    for question in sorted(questions):
+        sessions = questions[question]
+        # All outputs of a session carry the session's final reward; read it from the last output.
+        finals = [max(entries, key=lambda entry: entry[0]) for entries in sessions.values()]
+        accs = [value for value in (_metric_value(acc) for _, acc, _ in finals) if value is not None]
+        scores = [value for value in (_metric_value(score) for _, _, score in finals) if value is not None]
+        per_question[question] = {
+            "num_sessions": len(sessions),
+            "num_rows": sum(len(entries) for entries in sessions.values()),
+            "mean_acc": _mean(accs),
+            "mean_score": _mean(scores),
+        }
+
+    if isinstance(expected, str):  # a single id, not a sequence of characters
+        expected = [expected]
+    expected_ids = None if expected is None else {str(question) for question in expected}
+    missing = None if expected_ids is None else sorted(expected_ids - per_question.keys())
+    unexpected = None if expected_ids is None else sorted(per_question.keys() - expected_ids)
+    off_count = None
+    if expected_n is not None:
+        off_count = [
+            {"question": question, "num_sessions": stats["num_sessions"]}
+            for question, stats in per_question.items()
+            if stats["num_sessions"] != expected_n
+        ]
+    if missing or off_count:
+        complete = False
+    elif expected_ids is not None and expected_n is not None:
+        complete = True
+    else:
+        complete = None
+
+    # Expected questions without any row count as questions with zero sessions.
+    sessions_per_question = [stats["num_sessions"] for stats in per_question.values()] + [0] * len(missing or ())
+    return {
+        "num_rows": counts.get("num_rows", 0),
+        "num_rows_without_uid": counts.get("num_rows_without_uid", 0),
+        "num_rows_without_question": counts.get("num_rows_without_question", 0),
+        "question_keys_used": question_keys_used,
+        "num_questions": len(per_question),
+        "num_expected_questions": None if expected_ids is None else len(expected_ids),
+        "missing_questions": missing,
+        "unexpected_questions": unexpected,
+        "num_sessions": sum(stats["num_sessions"] for stats in per_question.values()),
+        "sessions_per_question": _min_max(sessions_per_question),
+        "outputs_per_session": _min_max([len(e) for sessions in questions.values() for e in sessions.values()]),
+        "expected_n": expected_n,
+        "questions_with_unexpected_sessions": off_count,
+        "complete": complete,
+        "mean_acc": _mean([stats["mean_acc"] for stats in per_question.values() if stats["mean_acc"] is not None]),
+        "mean_score": _mean(
+            [stats["mean_score"] for stats in per_question.values() if stats["mean_score"] is not None]
+        ),
+        "per_question": per_question,
+    }
+
+
 def summarize_validation_dump(
-    rows: Sequence[Mapping[str, Any]],
+    rows: Iterable[Mapping[str, Any]],
     expected_n: Optional[int] = None,
     *,
+    expected_questions: Optional[Mapping[str, Iterable[Any]]] = None,
+    data_source_key: str = "data_source",
+    question_key: Optional[str] = None,
     default_data_source: str = "unknown",
-) -> dict[str, dict[str, Any]]:
-    """Count questions and distinct sessions per question in a validation dump.
+) -> dict[str, Any]:
+    """Check a validation dump for completeness and summarize it per data source and question.
 
-    Validation dumps (``trainer.validation_data_dir``) write one JSONL line per agent-loop *output*, and a
-    multi-turn session can have several outputs, so the number of samples per question must be counted from
-    distinct sessions, not lines. Rows are grouped by ``data_source`` (``default_data_source`` when a row has none;
-    the V1 trainer's validation dump does not write a ``data_source`` column), then by question
-    (``uid.rsplit("_", 2)[0]``) and session (the first two parts).
+    Validation dumps (``trainer.validation_data_dir``) write one JSONL line per agent-loop *output*, and a multi-turn
+    session can have several outputs, so samples per question are counted as distinct sessions (``{uid}_{session_id}``
+    from each row's ``uid`` key), never as lines. A question none of whose sessions reached the dump has no row at
+    all; it is only reported, in ``missing_questions``, when ``expected_questions`` lists it.
 
-    The per-session metric is ``acc`` when the data source has it, else ``score``, taken from the session's last
-    output (all outputs of a session carry the session's final reward). ``mean_metric`` averages the per-question
-    means, like ``mean@N``.
+    Rows are grouped by ``row[data_source_key]`` (``default_data_source`` when absent), then by question: with
+    ``question_key=None`` the row's stable ``question_id`` (written by the V1 trainer) when present, else the per-run
+    uid (``uid.rsplit("_", 2)[0]``); ``question_key="uid"`` always uses the uid, any other key uses ``row[key]``.
+
+    Accuracy and reward are kept apart: ``mean_acc`` only reads the ``acc`` field and is ``None`` when no row has it;
+    ``mean_score`` reads the ``score`` field, which is the (possibly shaped) reward and never an accuracy. Each
+    session contributes the value of its last output, and data-source means average the per-question means, like
+    ``mean@N``.
+
+    ``complete`` is ``False`` when an expected question is missing or a question's session count differs from
+    ``expected_n``; ``True`` only when both ``expected_questions`` (for that data source) and ``expected_n`` are given
+    and nothing is missing or off; otherwise ``None`` (cannot tell). The top-level ``complete`` is ``False`` if any data
+    source is ``False``, ``True`` if all are ``True``, else ``None``.
 
     Args:
-        rows: Parsed JSONL rows. Each row has ``uid`` (the trajectory key) and optionally ``data_source``, ``acc``
-            and ``score``.
-        expected_n: Expected number of sessions per question (e.g. ``val_kwargs.n``). Questions with a different
-            count are listed in ``questions_with_unexpected_sessions``; ``None`` skips the check.
-        default_data_source: Data source used for rows without one.
+        rows: Parsed JSONL rows of one validation dump.
+        expected_n: Expected number of sessions per question (e.g. ``val_kwargs.n``).
+        expected_questions: Expected question ids per data source, in the identity used for grouping (e.g. the
+            ``question_id`` values, see :func:`validation_question_id`). Data sources listed here but absent from the
+            dump are reported with all their questions missing.
+        data_source_key: Row key holding the data source.
+        question_key: Row key holding the question identity, see above.
+        default_data_source: Data source of rows without ``data_source_key``.
 
     Returns:
-        Per data source: ``num_rows``, ``num_rows_without_uid``, ``num_questions``, ``num_sessions``,
-        ``sessions_per_question`` and ``outputs_per_session`` (``{"min", "max"}``), ``expected_n``,
-        ``questions_with_unexpected_sessions`` (``[{"question", "num_sessions"}]``), ``metric``, ``mean_metric``
-        and ``per_question`` (``{question: {"num_sessions", "num_rows", "mean_metric"}}``).
+        ``{"complete", "expected_n", "metric_fields", "data_sources"}`` where ``metric_fields`` describes
+        ``mean_acc``/``mean_score`` and ``data_sources`` maps each data source to ``num_rows``,
+        ``num_rows_without_uid``, ``num_rows_without_question``, ``question_keys_used``, ``num_questions`` (present in
+        the dump), ``num_expected_questions``, ``missing_questions`` and ``unexpected_questions`` (``None`` without an
+        expected list), ``num_sessions``, ``sessions_per_question`` (``{"min", "max"}``, missing questions count as
+        0), ``outputs_per_session`` (``{"min", "max"}``), ``expected_n``, ``questions_with_unexpected_sessions``
+        (``[{"question", "num_sessions"}]``, ``None`` without ``expected_n``), ``complete``, ``mean_acc``,
+        ``mean_score`` and ``per_question`` (``{question: {"num_sessions", "num_rows", "mean_acc", "mean_score"}}``).
     """
     # data_source -> question -> session -> [(output_index, acc, score)]
     grouped: dict[str, dict[str, dict[str, list[tuple[int, Any, Any]]]]] = {}
-    num_rows: dict[str, int] = {}
-    rows_without_uid: dict[str, int] = {}
+    counts: dict[str, Counter] = defaultdict(Counter)
+    question_keys_used: dict[str, set[str]] = defaultdict(set)
     for row in rows:
-        data_source = row.get("data_source")
+        data_source = row.get(data_source_key)
         data_source = default_data_source if data_source is None else str(data_source)
-        num_rows[data_source] = num_rows.get(data_source, 0) + 1
+        counts[data_source]["num_rows"] += 1
         questions = grouped.setdefault(data_source, {})
         key = row.get("uid")
         if key is None:
-            rows_without_uid[data_source] = rows_without_uid.get(data_source, 0) + 1
+            counts[data_source]["num_rows_without_uid"] += 1
             continue
-        question, session, output_index = split_trajectory_key(str(key))
-        output_index = -1 if output_index is None else output_index
+        uid_question, session, output_index = split_trajectory_key(str(key))
+        question, key_used = _row_question(row, question_key, uid_question)
+        if question is None:
+            counts[data_source]["num_rows_without_question"] += 1
+            continue
+        question_keys_used[data_source].add(key_used)
         questions.setdefault(question, {}).setdefault(session, []).append(
-            (output_index, row.get("acc"), row.get("score"))
+            (-1 if output_index is None else output_index, row.get("acc"), row.get("score"))
         )
 
-    summary: dict[str, dict[str, Any]] = {}
-    for data_source in sorted(grouped):
-        questions = grouped[data_source]
-        outputs = [entry for sessions in questions.values() for entries in sessions.values() for entry in entries]
-        if any(acc is not None for _, acc, _ in outputs):
-            metric = "acc"
-        elif any(score is not None for _, _, score in outputs):
-            metric = "score"
-        else:
-            metric = None
+    data_sources = {}
+    for data_source in sorted(set(grouped) | set(expected_questions or {})):
+        expected = None if expected_questions is None else expected_questions.get(data_source)
+        data_sources[data_source] = _summarize_data_source(
+            grouped.get(data_source, {}),
+            counts[data_source],
+            sorted(question_keys_used[data_source]),
+            expected_n,
+            expected,
+        )
 
-        per_question: dict[str, dict[str, Any]] = {}
-        for question in sorted(questions):
-            sessions = questions[question]
-            session_values = []
-            for entries in sessions.values():
-                _, acc, score = max(entries, key=lambda entry: entry[0])
-                session_value = _metric_value(acc if metric == "acc" else score)
-                if session_value is not None:
-                    session_values.append(session_value)
-            per_question[question] = {
-                "num_sessions": len(sessions),
-                "num_rows": sum(len(entries) for entries in sessions.values()),
-                "mean_metric": sum(session_values) / len(session_values) if session_values else None,
-            }
-
-        sessions_per_question = [stats["num_sessions"] for stats in per_question.values()]
-        outputs_per_session = [len(entries) for sessions in questions.values() for entries in sessions.values()]
-        question_means = [stats["mean_metric"] for stats in per_question.values() if stats["mean_metric"] is not None]
-        summary[data_source] = {
-            "num_rows": num_rows[data_source],
-            "num_rows_without_uid": rows_without_uid.get(data_source, 0),
-            "num_questions": len(questions),
-            "num_sessions": sum(sessions_per_question),
-            "sessions_per_question": _min_max(sessions_per_question),
-            "outputs_per_session": _min_max(outputs_per_session),
-            "expected_n": expected_n,
-            "questions_with_unexpected_sessions": [
-                {"question": question, "num_sessions": stats["num_sessions"]}
-                for question, stats in per_question.items()
-                if expected_n is not None and stats["num_sessions"] != expected_n
-            ],
-            "metric": metric,
-            "mean_metric": sum(question_means) / len(question_means) if question_means else None,
-            "per_question": per_question,
-        }
-    return summary
+    flags = [summary["complete"] for summary in data_sources.values()]
+    if any(flag is False for flag in flags):
+        complete = False
+    elif flags and all(flag is True for flag in flags):
+        complete = True
+    else:
+        complete = None
+    return {
+        "complete": complete,
+        "expected_n": expected_n,
+        "metric_fields": dict(SUMMARY_METRIC_FIELDS),
+        "data_sources": data_sources,
+    }

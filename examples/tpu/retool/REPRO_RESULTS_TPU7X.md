@@ -37,9 +37,9 @@ All P0 preparation deliverables (`P0.1`–`P0.4`, `P0.6`, `P0.8`–`P0.10`) are 
 |---|---|---|---|---|
 | Base model (`Qwen/Qwen3-30B-A3B`) | `assets/hf/Qwen3-30B-A3B/` | 16 safetensors shards (`model-00001-of-00016` .. `00016`) + `model.safetensors.index.json` + config/tokenizer | 61,084,187,391 | HF commit `ad44e777bcd18fa416d9da3bd8f70d33ebb85d39` |
 | ReTool SFT dataset | `dataset/ReTool-SFT/data/train-00000-of-00001.parquet` | 2,000 rows (`max_turns` up to 17) | 8,901,717 | `92a29cea03f72dc79066e1697f4d7423d91bd6a02bd1aac50f5c9dfd89b27faa` |
-| DAPO-Math-17k | `dataset/DAPO-Math-17k/data/dapo-math-17k.parquet` | 1,791,700 rows (17,917 unique prompts x 100) | 715,244,619 | `22e266f54502ce271ee08713feb8b30caf97a4ea948aca0e0506f58c4cdd0545` |
-| AIME 2024 | `dataset/AIME_2024/data/aime_2024_problems.parquet` | 30 rows | 29,259 | `1332803ea03085cce9222b6c0b295b4115507ab5984aee9d3e9cb3db3c2ee948` |
-| AIME 2025 | `dataset/aime_2025/data/train-00000-of-00001.parquet` | 30 rows | 18,454 | `4f4432a5252cf673ddd696a3dba24f75bfd662c0ef1d54b6e0f442c24119f8ed` |
+| DAPO-Math-17k | `dataset/BytedTsinghua-SIA/DAPO-Math-17k/data/train-00000-of-00001.parquet` | 1,791,700 rows (17,917 unique prompts x 100) | 715,244,619 | `22e266f54502ce271ee08713feb8b30caf97a4ea948aca0e0506f58c4cdd0545` |
+| AIME 2024 | `dataset/Maxwell-Jia/AIME_2024/data/train-00000-of-00001.parquet` | 30 rows | 29,259 | `1332803ea03085cce9222b6c0b295b4115507ab5984aee9d3e9cb3db3c2ee948` |
+| AIME 2025 | `dataset/yentinglin/aime_2025/data/train-00000-of-00001.parquet` | 30 rows | 18,454 | `4f4432a5252cf673ddd696a3dba24f75bfd662c0ef1d54b6e0f442c24119f8ed` |
 | GSM8K train (`P1a`) | `data/gsm8k/train.parquet` | 7,473 rows | 2,095,889 | `89cd3cb8d28e5274e7f0bf71ff541ea5654ac9e30589ac4b5d19c3f783a3858c` |
 | GSM8K test (`P1a`) | `data/gsm8k/test.parquet` | 1,319 rows | 377,550 | `e801bce6b15925630ea9976dc14419e49735a90fd54d267911e6701ebdc0d489` |
 
@@ -49,7 +49,7 @@ All P0 preparation deliverables (`P0.1`–`P0.4`, `P0.6`, `P0.8`–`P0.10`) are 
 
 | Stage | Run name | Code SHA | Image digest | Slices (`2x2x4`) | Steps (start->end) | Submit / Admit / Ready / End (UTC) | Median step time | Status | Output prefix |
 |---|---|---|---|---|---|---|---|---|---|
-| `P1a` | pending | `cfabaada` | `sha256:dcece4bc...` | 2 (1 trainer + 1 rollout) | 1->3 | - | - | Queued / Starting | `<RUN_DIR>/p1a-*` |
+| `P1a` | `p1a-moe-smoke-01` | `cfabaada` | `sha256:dcece4bc...` | 2 (1 trainer + 1 rollout) | 1->3 | 10:36 / 10:36 (prewarm) / - / - | - | Running (prewarm 4/8 -> 8/8) | `<RUN_DIR>/p1a-moe-smoke-01` |
 | `P1b` | pending | `cfabaada` | `sha256:dcece4bc...` | 1 (1 trainer) | 1->3 | - | - | Pending | `<RUN_DIR>/p1b-*` |
 | `P1c` | pending | `cfabaada` | `sha256:dcece4bc...` | 2 (1 trainer + 1 rollout) | 1->2 | - | - | Pending (`P1b` export) | `<RUN_DIR>/p1c-*` |
 | `P2` | pending | `cfabaada` | `sha256:dcece4bc...` | 1 (1 trainer) | 1->372 | - | - | Pending | `<RUN_DIR>/p2-*` |

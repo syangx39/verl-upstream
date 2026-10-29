@@ -38,6 +38,9 @@ __all__ = ["Worker"]
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
+# Ray node label with a TPU host's topological rank inside its slice; see sort_placement_group_by_node_ip.
+TPU_NODE_RANK_LABEL = "verl-tpu-node-rank"
+
 
 def get_random_string(length: int) -> str:
     import random
@@ -68,28 +71,94 @@ def func_generator(self, method_name, dispatch_fn, collect_fn, execute_fn, block
     return type(method_name, (Functor,), {})()
 
 
+def _parse_tpu_node_rank(value: Any) -> Optional[int]:
+    """Return a ``verl-tpu-node-rank`` label value as an int, or None unless it is a non-negative decimal integer."""
+    text = str(value).strip()
+    return int(text) if text.isascii() and text.isdigit() else None
+
+
 def sort_placement_group_by_node_ip(pgs: list[PlacementGroup]) -> list[PlacementGroup]:
     """
-    Sort the placement groups by node ip, all bundles in a single placement group should be on the same node.
+    Sort the placement groups by node ip (or by TPU host rank, see below), all bundles in a single placement group
+    should be on the same node.
 
     FSDPCheckpointManager saves sharded model states and optimizer states in local storage, which requires RANK
     to be consistent across nodes when resume from checkpoint.
 
     With this function, if there's only one resource pool and there's no node change, RANK should be consistent
     across nodes in multiple ray jobs, even if the whole ray cluster is restarted.
+
+    Topological host order (TPU): if the node of every placement group carries the Ray node label
+    ``verl-tpu-node-rank`` (``TPU_NODE_RANK_LABEL``) with a non-negative integer value, the placement groups are
+    sorted by (rank, node ip) instead, so worker ranks, ``TORCH_TPU_SLICEBUILDER_ADDRESSES`` and
+    ``TPU_WORKER_HOSTNAMES`` follow the host order torch_tpu uses for the slice mesh. On GKE the pod IPs of a
+    multi-host TPU slice are unrelated to the physical host positions; with IP order the mesh still forms, but
+    collectives fail (an 8-host TPU 7x slice halted in the first FSDP collective).
+
+    Label contract: the TPU launcher sets the label on each TPU worker host before Ray starts there, e.g.
+    ``ray start ... --labels=verl-tpu-node-rank=3``. The value is the host's rank inside its own slice, computed
+    from the physical coordinates of its TPU chips in the order torch_tpu ranks hosts (Z-major), starting at 0.
+    Ranks are only comparable within one slice; verl only reads the label. If only some nodes carry it, or a
+    value is not an integer, the IP order is used and a warning is logged; without the label the order is
+    unchanged.
+
+    Args:
+        pgs: Placement groups that are already placed (each maps to a node through its lowest bundle index).
+
+    Returns:
+        A new list with the placement groups in host order; the order is logged once per call.
     """
-    node_ip = {node["NodeID"]: node["NodeManagerAddress"] for node in ray.nodes()}
-    pg_ip = {}
+    nodes = ray.nodes()
+    node_ip = {node["NodeID"]: node["NodeManagerAddress"] for node in nodes}
+    node_labels = {node["NodeID"]: node.get("Labels") or {} for node in nodes}
+    pg_node = {}
     for pg in pgs:
         specs = ray._private.state.state.placement_group_table(pg.id)
         bundles_map = specs.get("bundles_to_node_id", {})
         if bundles_map:
             min_b_idx = min(bundles_map.keys())
-            node_id = bundles_map[min_b_idx]
-            pg_ip[pg.id] = node_ip.get(node_id, "")
+            pg_node[pg.id] = bundles_map[min_b_idx]
         else:
-            pg_ip[pg.id] = ""
-    return sorted(pgs, key=lambda pg: pg_ip[pg.id])
+            pg_node[pg.id] = None
+    pg_ip = {pg_id: node_ip.get(node_id, "") for pg_id, node_id in pg_node.items()}
+    raw_rank = {pg_id: node_labels.get(node_id, {}).get(TPU_NODE_RANK_LABEL) for pg_id, node_id in pg_node.items()}
+    pg_rank = {pg_id: None if raw is None else _parse_tpu_node_rank(raw) for pg_id, raw in raw_rank.items()}
+
+    level, order_by = logging.INFO, "node ip"
+    if pgs and all(pg_rank[pg.id] is not None for pg in pgs):
+        sorted_pgs = sorted(pgs, key=lambda pg: (pg_rank[pg.id], pg_ip[pg.id]))
+        order_by = f"Ray node label {TPU_NODE_RANK_LABEL}, then node ip"
+        nodes_per_rank: dict[int, set[str]] = {}
+        for pg in pgs:
+            nodes_per_rank.setdefault(pg_rank[pg.id], set()).add(pg_node[pg.id])
+        shared = sorted(rank for rank, node_ids in nodes_per_rank.items() if len(node_ids) > 1)
+        if shared:
+            level = logging.WARNING
+            order_by += f" (rank(s) {shared} are carried by more than one node)"
+    else:
+        sorted_pgs = sorted(pgs, key=lambda pg: pg_ip[pg.id])
+        labeled = [pg for pg in pgs if raw_rank[pg.id] is not None]
+        if labeled:
+            missing = len(pgs) - len(labeled)
+            invalid = sorted({str(raw_rank[pg.id]) for pg in labeled if pg_rank[pg.id] is None})
+            problems = [f"missing on {missing} of {len(pgs)} placement group nodes"] if missing else []
+            problems += [f"not a non-negative integer: {invalid}"] if invalid else []
+            level = logging.WARNING
+            order_by += (
+                f" (Ray node label {TPU_NODE_RANK_LABEL} ignored, {'; '.join(problems)}; "
+                "the order may not match the TPU topology)"
+            )
+    logger.log(
+        level,
+        "Placement group order by %s: %s",
+        order_by,
+        ", ".join(
+            f"[{idx}] {pg_ip[pg.id] or '?'} node={(pg_node[pg.id] or 'n/a')[:8]} "
+            f"rank={'n/a' if pg_rank[pg.id] is None else pg_rank[pg.id]}"
+            for idx, pg in enumerate(sorted_pgs)
+        ),
+    )
+    return sorted_pgs
 
 
 @ray.remote

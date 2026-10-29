@@ -320,21 +320,28 @@ if kubectl --context "${KUBE_CONTEXT}" get clusterqueue "${CLUSTER_QUEUE}" -o js
 import json
 import sys
 
+# Admission is decided on quota *reservations* (taken at QuotaReserved, before the capacity admission check),
+# not on the admitted usage, so the free room within the nominal quota is nominal - reserved.
 cq = json.load(open(sys.argv[1]))
-nominal = used = 0
+need = int(sys.argv[2])
+reserved = {}
+for entry in cq.get("status", {}).get("flavorsReservation", []):
+    for r in entry.get("resources", []):
+        if r["name"] == "google.com/tpu":
+            reserved[entry["name"]] = (int(r.get("total", 0) or 0), int(r.get("borrowed", 0) or 0))
 for rg in cq.get("spec", {}).get("resourceGroups", []):
     for flavor in rg.get("flavors", []):
         for r in flavor.get("resources", []):
-            if r["name"] == "google.com/tpu":
-                nominal += int(r.get("nominalQuota", 0) or 0)
-for usage in cq.get("status", {}).get("flavorsUsage", []):
-    for r in usage.get("resources", []):
-        if r["name"] == "google.com/tpu":
-            used += int(r.get("total", 0) or 0)
-name = cq["metadata"]["name"]
-pending = cq.get("status", {}).get("pendingWorkloads")
-print(f"[v7x-nap]   ClusterQueue {name}: TPU nominal {nominal}, in use {used}, pending workloads {pending}; "
-      f"this run needs {sys.argv[2]} chips (more than the free nominal quota means borrowing or waiting)")
+            if r["name"] != "google.com/tpu":
+                continue
+            nominal = int(r.get("nominalQuota", 0) or 0)
+            if not nominal:
+                continue
+            total, borrowed = reserved.get(flavor["name"], (0, 0))
+            free = nominal - total
+            verdict = "fits within the nominal quota" if need <= free else f"needs {need - max(free, 0)} chips of cohort borrowing or preemption, or a wait"
+            print(f"[v7x-nap]   ClusterQueue {cq['metadata']['name']} / {flavor['name']}: TPU nominal {nominal}, "
+                  f"reserved {total} (borrowed {borrowed}), free {free}; this run needs {need}: {verdict}")
 PY
 fi
 rm -f "${CQ_JSON}"

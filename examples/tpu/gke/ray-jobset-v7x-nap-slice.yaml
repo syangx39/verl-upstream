@@ -1,0 +1,119 @@
+# One TPU slice of the run: a replicatedJob with ONE Indexed Job of `${HOSTS_PER_SLICE}` pods, one per TPU 7x host.
+# Inserted (once per slice) at `${TPU_REPLICATED_JOBS}` of `ray-jobset-v7x-nap.yaml` by `v7x_nap/render.py`; this
+# header is dropped on insertion.
+#
+# Rules of the cluster this follows (all observed on `bodaborg-tpu7x-nap`):
+# * replicas: 1 per replicatedJob. With replicas > 1 GKE injects multi-slice MEGASCALE_* variables and libtpu waits
+#   for a multi-slice coordinator; every slice is its own replicatedJob instead (the bootstrap still unsets them).
+# * A multi-host slice is only provisioned when the pod names the slice's placement policy
+#   (`tpu7x-<TensorCores>-<topology>-placement-policy`), and the exclusive-topology annotation keeps the slice's
+#   pods on one node pool.
+# * safe-to-evict=false: the pods request no cpu/memory, so the autoscaler would otherwise see their nodes as idle.
+#
+# Each host computes its topological rank inside the slice before Ray starts and registers it as the Ray node label
+# `verl-tpu-node-rank` (verl orders a slice's hosts by it), plus the Ray resources
+# `{"TPU": ${RAY_TPU_PER_HOST}, "${SLICE_RAY_RESOURCE}": 1}` (`v7x_nap/worker.sh`).
+    - name: ${SLICE_JOB}
+      replicas: 1
+      template:
+        spec:
+          parallelism: ${HOSTS_PER_SLICE}
+          completions: ${HOSTS_PER_SLICE}
+          backoffLimit: 0
+          completionMode: Indexed
+          template:
+            metadata:
+              labels:
+                verl-nap/managed: "true"
+                verl-nap/run: ${RUN_NAME}
+                verl-nap/role: ${SLICE_ROLE}
+                verl-nap/slice: "${SLICE_INDEX}"
+              annotations:
+                cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+${SLICE_EXTRA_POD_ANNOTATIONS}
+                gke-gcsfuse/volumes: "true"
+                gke-gcsfuse/cpu-limit: "0"
+                gke-gcsfuse/memory-limit: "0"
+                gke-gcsfuse/ephemeral-storage-limit: "0"
+            spec:
+              priorityClassName: ${PRIORITY_CLASS}
+              serviceAccountName: ${SERVICE_ACCOUNT}
+              restartPolicy: Never
+              nodeSelector:
+                cloud.google.com/gke-tpu-accelerator: tpu7x
+                cloud.google.com/gke-tpu-topology: "${TPU_TOPOLOGY}"
+${SLICE_EXTRA_NODE_SELECTOR}
+              tolerations:
+                - key: google.com/tpu
+                  operator: Exists
+                  effect: NoSchedule
+              containers:
+                - name: ray-worker
+                  image: ${IMAGE}
+                  imagePullPolicy: IfNotPresent
+                  command: ["/bin/bash", "-c"]
+                  args:
+                    - >-
+                      mkdir -p /workspace/verl &&
+                      tar -xzf "${SRC_TARBALL}" -C /workspace/verl &&
+                      exec bash /workspace/verl/examples/tpu/gke/v7x_nap/worker.sh
+                  env:
+                    - name: POD_NAME
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: metadata.name
+                    - name: POD_UID
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: metadata.uid
+                    - name: NODE_NAME
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: spec.nodeName
+                    - name: TPU_ACCELERATOR_TYPE
+                      value: "${POD_TPU_ACCELERATOR_TYPE}"
+                    - name: RAY_memory_monitor_refresh_ms
+                      value: "0"
+                    - name: RAY_memory_usage_threshold
+                      value: "0.99"
+                    - name: VERL_NAP_ROLE
+                      value: ${SLICE_ROLE}
+                    - name: VERL_NAP_RUN_NAME
+                      value: "${RUN_NAME}"
+                    - name: VERL_NAP_RUN_DIR
+                      value: "${RUN_DIR}"
+                    - name: VERL_NAP_HEAD_HOST
+                      value: "${RUN_NAME}-head-0-0.${RUN_NAME}"
+                    - name: VERL_NAP_SLICE_RESOURCE
+                      value: "${SLICE_RAY_RESOURCE}"
+                    - name: VERL_NAP_SLICE_TOPOLOGY
+                      value: "${TPU_TOPOLOGY}"
+                    - name: VERL_NAP_HOSTS_PER_SLICE
+                      value: "${HOSTS_PER_SLICE}"
+                    - name: VERL_NAP_RAY_TPU_PER_HOST
+                      value: "${RAY_TPU_PER_HOST}"
+                    - name: VERL_NAP_NODE_RANK_TIMEOUT_S
+                      value: "${NODE_RANK_TIMEOUT_S}"
+                    - name: VERL_NAP_WORKER_NUM_CPUS
+                      value: "${WORKER_NUM_CPUS}"
+                  resources:
+                    requests:
+                      google.com/tpu: "${CHIPS_PER_HOST}"
+                    limits:
+                      google.com/tpu: "${CHIPS_PER_HOST}"
+                  volumeMounts:
+                    - name: gcs-volume
+                      mountPath: ${DATA_MOUNT}
+                    - name: dshm
+                      mountPath: /dev/shm
+              volumes:
+                - name: gcs-volume
+                  csi:
+                    driver: gcsfuse.csi.storage.gke.io
+                    volumeAttributes:
+                      bucketName: ${GCS_BUCKET}
+                      mountOptions: "${GCSFUSE_MOUNT_OPTIONS}"
+                - name: dshm
+                  emptyDir:
+                    medium: Memory
+                    sizeLimit: ${TPU_DSHM_SIZE}

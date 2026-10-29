@@ -1,0 +1,63 @@
+# Pre-warm placeholder for ONE TPU slice of a run (`run_ray_jobset_v7x_nap.sh` with PREWARM=1 renders one per slice).
+#
+# Why: node auto-provisioning on this cluster grows at most ONE node group per capacity request, so a job that needs
+# two new multi-host slices (e.g. a 2x2x4 trainer slice plus a 2x2x4 rollout slice) is never provisioned and waits as
+# if there were no capacity. Each placeholder asks for one slice only, so each request can be met. Once all
+# placeholder pods are Running, the launcher deletes them and creates the real JobSet right away: the freed nodes stay
+# for a short while before the autoscaler removes them, and the real job then needs no new nodes. The placeholders
+# use the run's image, so it is already pulled on those nodes.
+#
+# A placeholder only holds the chips: it sleeps and exits by itself after PREWARM_HOLD_S seconds if it is forgotten.
+apiVersion: jobset.x-k8s.io/v1alpha2
+kind: JobSet
+metadata:
+  name: ${WARM_NAME}
+  namespace: ${RAY_NAMESPACE}
+  labels:
+    kueue.x-k8s.io/queue-name: ${KUEUE_QUEUE}
+    verl-nap/managed: "true"
+    verl-nap/run: ${RUN_NAME}
+    verl-nap/prewarm: "true"
+spec:
+  ttlSecondsAfterFinished: 300
+  failurePolicy:
+    maxRestarts: 0
+  replicatedJobs:
+    - name: hold
+      replicas: 1
+      template:
+        spec:
+          parallelism: ${HOSTS_PER_SLICE}
+          completions: ${HOSTS_PER_SLICE}
+          backoffLimit: 0
+          completionMode: Indexed
+          template:
+            metadata:
+              labels:
+                verl-nap/managed: "true"
+                verl-nap/run: ${RUN_NAME}
+                verl-nap/prewarm: "true"
+              annotations:
+                cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+${SLICE_EXTRA_POD_ANNOTATIONS}
+            spec:
+              priorityClassName: ${PRIORITY_CLASS}
+              restartPolicy: Never
+              nodeSelector:
+                cloud.google.com/gke-tpu-accelerator: tpu7x
+                cloud.google.com/gke-tpu-topology: "${TPU_TOPOLOGY}"
+${SLICE_EXTRA_NODE_SELECTOR}
+              tolerations:
+                - key: google.com/tpu
+                  operator: Exists
+                  effect: NoSchedule
+              containers:
+                - name: hold
+                  image: ${IMAGE}
+                  imagePullPolicy: IfNotPresent
+                  command: ["/bin/bash", "-c", "echo holding ${TPU_TOPOLOGY} for ${RUN_NAME}; sleep ${PREWARM_HOLD_S}"]
+                  resources:
+                    requests:
+                      google.com/tpu: "${CHIPS_PER_HOST}"
+                    limits:
+                      google.com/tpu: "${CHIPS_PER_HOST}"

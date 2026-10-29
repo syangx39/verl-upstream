@@ -15,6 +15,7 @@
 
 import asyncio
 import logging
+import math
 import os
 import re
 import time
@@ -611,6 +612,17 @@ def setup_raiden_controller() -> tuple[Any, Any, str]:
 
     from verl.checkpoint_engine.tpu_weight_registry import get_tpu_weight_registry
 
+    try:
+        # Backport the (8, 128) tile-alignment requirement for identical variable specs: never mark a 2D+
+        # tensor skip_tiling=True solely because src and dst VariableMetadata specs match when its local
+        # shard rows/cols are not tile-aligned (e.g. [4748, 2048] at 32 shards).
+        from tpu_sync.weight_sync.manager import controller_types, reshard_planner
+
+        controller_types.is_variable_spec_identical = lambda src_var, dst_var: False
+        reshard_planner._is_variable_spec_identical = lambda src_var, dst_var: False
+    except Exception as patch_err:
+        logger.warning(f"Could not apply reshard_planner tile-alignment patch: {patch_err}")
+
     controller = raiden_controller.RaidenController(port=0)
     server = raiden_controller.RaidenControllerServer(controller)
     port = server.start()
@@ -879,10 +891,21 @@ class RaidenCheckpointEngine(CheckpointEngine):
             )
             self._shard_info = {}
 
-        # Trainer sends pure canonical un-fused model weights directly
+        # Trainer sends pure canonical un-fused model weights directly.
+        # Sort by descending global element count (tie-broken by name) so the largest non-tile-aligned
+        # tensors initialize WeightSynchronizerBase's tiled scratchpad at its maximum needed capacity on
+        # the first call (sp.capacity == 0) and never trigger a later scratchpad reallocation/DmaUnmap.
         unfused_weights = {k: _unwrap_tensor(v) for k, v in named_weights}
 
-        sorted_weights = sorted(unfused_weights.items(), key=lambda x: x[0])
+        def _global_numel(name: str, t: Any) -> int:
+            if not hasattr(t, "shape"):
+                return 0
+            shape = list(t.shape)
+            if name in self._shard_info and shape:
+                shape[0] *= self._shard_info[name][0]
+            return int(math.prod(shape)) if shape else 0
+
+        sorted_weights = sorted(unfused_weights.items(), key=lambda x: (-_global_numel(x[0], x[1]), x[0]))
         valid_weights = validate_and_sanitize_tensors(sorted_weights, device=torch.device("tpu"))
 
         torch_tpu_sync.synchronize(wait=True)
@@ -946,6 +969,8 @@ class RaidenCheckpointEngine(CheckpointEngine):
         re-registration: ~2 s "Trainer init" + ~2 s release on Qwen3-8B, v6e-8) from the sync critical path.
         """
         if not self.release_buffers_after_sync or self._trainer_raiden_ws is None:
+            return {}
+        if not hasattr(self._trainer_raiden_ws, "unbind_weights"):
             return {}
         self._trainer_raiden_ws.unbind_weights()
         self._bound_tensors = None

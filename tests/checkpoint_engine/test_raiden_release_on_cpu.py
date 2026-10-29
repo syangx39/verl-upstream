@@ -67,3 +67,11 @@ def test_release_is_noop_before_first_sync():
     engine._trainer_raiden_ws = None
 
     assert engine.release_sync_buffers() == {}
+
+
+def test_release_is_noop_when_synchronizer_lacks_unbind_weights():
+    engine, _ = _engine(release=True)
+    engine._trainer_raiden_ws = object()
+
+    assert engine.release_sync_buffers() == {}
+    assert engine._bound_tensors is not None

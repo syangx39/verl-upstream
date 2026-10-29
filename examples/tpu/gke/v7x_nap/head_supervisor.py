@@ -167,6 +167,22 @@ def check_slices(nodes: list[dict], expected: dict[str, int]) -> tuple[bool, boo
     return hosts_ok, ranks_ok, lines
 
 
+def attempt_budget(run_dir: str, max_attempts: int) -> tuple[bool, int, str]:
+    """Count the head attempts registered under ``<run_dir>/attempts/`` (this one included) against the budget.
+
+    Every rerun of the JobSet (a JobSet restart or a Kueue eviction and re-admission) starts a new head pod, which
+    registers its own attempt directory before anything else. Returns (allowed, attempts, message); fails closed
+    when the attempts cannot be listed.
+    """
+    try:
+        attempts = sorted(e for e in os.listdir(os.path.join(run_dir, "attempts")) if not e.startswith("."))
+    except OSError as e:
+        return False, -1, f"cannot list {run_dir}/attempts ({e}); refusing to run"
+    if len(attempts) > max_attempts:
+        return False, len(attempts), f"attempt {len(attempts)} of at most {max_attempts} (attempts: {attempts})"
+    return True, len(attempts), f"attempt {len(attempts)} of at most {max_attempts}"
+
+
 def package_versions() -> dict[str, Optional[str]]:
     """Installed versions of the packages that define the software stack."""
     out = {}
@@ -188,6 +204,7 @@ class Supervisor:
         self.require_rank = env.get("VERL_NAP_REQUIRE_NODE_RANK", "1") == "1"
         self.node_wait_s = int(env.get("VERL_NAP_NODE_WAIT_TIMEOUT_S", "1200"))
         self.driver_timeout_s = int(env.get("VERL_NAP_DRIVER_TIMEOUT_S", "0"))
+        self.max_attempts = int(env.get("VERL_NAP_MAX_ATTEMPTS", "1"))
         attempt = (env.get("POD_UID") or str(int(START)))[:8]
         self.submission_id = f"{self.run_name}-{attempt}"
         self.verdict: dict[str, Any] = {
@@ -354,6 +371,14 @@ class Supervisor:
         if not os.path.isfile(os.path.join(RUN_DIR, "job_spec.json")):
             log(f"ERROR: {RUN_DIR}/job_spec.json not found (the launcher stages it before creating the JobSet)")
             return 2
+        # Register this attempt first, then enforce the budget: the job runs at most VERL_NAP_MAX_ATTEMPTS times, no
+        # matter how often the JobSet is restarted or re-admitted (with or without the launcher watching).
+        publish_json("started.json", {"pod": os.environ.get("POD_NAME"), "started_at": START})
+        allowed, attempts, msg = attempt_budget(RUN_DIR, self.max_attempts)
+        self.verdict["attempt"] = attempts
+        log(msg)
+        if not allowed:
+            return self.finish("ATTEMPTS_EXHAUSTED", msg + "; the job is not run again", 3)
         publish_json("cluster/packages.json", package_versions())
         self.start_ray()
         code = self.wait_for_slices()

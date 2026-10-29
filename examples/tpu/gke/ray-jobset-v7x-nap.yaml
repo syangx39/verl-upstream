@@ -130,6 +130,8 @@ spec:
                       value: "${NODE_WAIT_TIMEOUT_S}"
                     - name: VERL_NAP_DRIVER_TIMEOUT_S
                       value: "${DRIVER_TIMEOUT_S}"
+                    - name: VERL_NAP_MAX_ATTEMPTS
+                      value: "${MAX_ATTEMPTS}"
                   ports:
                     - containerPort: 6379
                     - containerPort: 8265

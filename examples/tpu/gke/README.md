@@ -46,12 +46,16 @@ See [`examples/tpu/grpo/README.md`](../grpo/README.md) for full details and step
 - **Pinned code.** The launcher stages a `git archive` of `CODE_REF` (default `HEAD`; uncommitted changes are not included) in the run directory `gs://$GCS_BUCKET/$RUN_ROOT/$RUN_NAME/`. The manifest is rendered from that archive, every pod runs its bootstrap from it, and the head submits the job with it as `working_dir`.
 - **Self-contained run.** The head ([`v7x_nap/head_supervisor.py`](v7x_nap/head_supervisor.py)) waits for every TPU host, submits `bash $JOB_SCRIPT "$@"`, mirrors the driver log, and writes `verdict.json`. The `JobSet` ends with the head, so its TPUs are released as soon as the job ends.
 - **Stopping and cleanup.** The launcher only deletes objects it created: each `JobSet` is created on its own, its UID is recorded in `LOG_DIR/owned_objects.log`, and it is deleted with a UID precondition ([`v7x_nap/owned_objects.sh`](v7x_nap/owned_objects.sh)). An object that already existed, or that someone replaced under the same name, is never touched.
+  - `kubectl` warnings on stderr are logged, never parsed.
+  - If a create's outcome is unclear (unexpected output, or an error other than `AlreadyExists`), the object is adopted only if it carries this invocation's `verl-nap/launch-id`. Otherwise it is re-checked at cleanup, and the recovery commands are printed.
   - Exit, Ctrl-C, SIGTERM and SIGHUP delete the run's `JobSet` and any placeholders, which stops the run.
   - To keep a run going without the launcher, set `KEEP_JOBSET=1`. The `JobSet` then ends with its head and is removed `JOBSET_TTL_SECONDS` after it finishes; checking on it is up to you.
-- **Bounded retries.** Every retry reruns the job from the start.
-  - `JOBSET_MAX_RESTARTS` (default 0) bounds `JobSet` restarts after TPU pod failures. A failed job (head exit ≠ 0) is never restarted.
-  - `ALLOW_REQUEUE` (default 0) bounds the Kueue evictions the launcher waits through: preemption, reclaim, node-failure requeue, or pods-ready timeout.
-  - `JOBSET_MAX_RESTARTS=1 ALLOW_REQUEUE=0` allows exactly one restart.
+- **Bounded reruns.** Each `JobSet` restart (after a TPU pod failure, at most `JOBSET_MAX_RESTARTS`) and each Kueue eviction with re-admission reruns the job from the start. A failed job (head exit ≠ 0) is never restarted.
+  - The head enforces the total. The job runs at most `MAX_ATTEMPTS = 1 + JOBSET_MAX_RESTARTS + ALLOW_REQUEUE` times: every head registers under `<run dir>/attempts/`, and one that finds the budget used up exits without running the job, which fails the `JobSet`.
+  - The budget holds with `KEEP_JOBSET=1` and without the launcher.
+  - Kueue can still re-admit the `JobSet` after that; its pods then start and stop again without running the job.
+  - The launcher additionally deletes the `JobSet` once Kueue's eviction count for the workload (`status.schedulingStats.evictions`) exceeds `ALLOW_REQUEUE`. It logs JobSet restarts, evictions, and each head attempt.
+  - Example: `JOBSET_MAX_RESTARTS=1 ALLOW_REQUEUE=0` lets the job run at most twice.
   - `RUN_LIMIT_MIN` is the cluster's limit for one run, counted from the pods becoming ready. Queueing and pre-warm time come on top.
 - **Host order.** Each TPU host registers its rank inside its slice as the Ray node label `verl-tpu-node-rank`, which verl uses to order a slice's hosts; without it verl orders them by IP string.
   - By default the rank is the Kubernetes job completion index. GKE uses the same order for `TPU_WORKER_ID` and `TPU_WORKER_HOSTNAMES`, and torch_tpu 0.1.x's multi-host launcher uses it for `NODE_RANK`.

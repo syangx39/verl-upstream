@@ -74,6 +74,7 @@ def _values(**overrides) -> dict:
         "NODE_RANK_SOURCE": "job-index",
         "NODE_RANK_TIMEOUT_S": "600",
         "DRIVER_TIMEOUT_S": "6600",
+        "MAX_ATTEMPTS": "2",
         "REQUIRE_NODE_RANK": "1",
         "PREWARM_HOLD_S": "1800",
     }
@@ -122,6 +123,7 @@ def test_manifest_two_slices_follows_cluster_rules():
     head_env = _env(head_pod["spec"]["containers"][0])
     assert head_env["VERL_NAP_EXPECTED_SLICES"] == "tpu-group-0=4,tpu-group-1=4"
     assert head_env["VERL_NAP_RUN_DIR"] == values["RUN_DIR"]
+    assert head_env["VERL_NAP_MAX_ATTEMPTS"] == "2"
     assert head_pod["spec"]["nodeSelector"] == {"cloud.google.com/gke-nodepool": "cpu-np"}
 
     for name, resource in (("trainer-0", "tpu-group-0"), ("rollout-0", "tpu-group-1")):
@@ -310,12 +312,23 @@ FAKE_KUBECTL = textwrap.dedent(
         if os.path.exists(path(name)):
             fail(f'Error from server (AlreadyExists): jobsets.jobset.x-k8s.io "{name}" already exists')
         uid = str(uuid.uuid4())
-        json.dump({"uid": uid, "launch_id": launch.group(1) if launch else ""}, open(path(name), "w"))
+        launch_id = os.environ.get("FAKE_STORED_LAUNCH_ID") or (launch.group(1) if launch else "")
+        json.dump({"uid": uid, "launch_id": launch_id}, open(path(name), "w"))
         if os.environ.get("FAKE_LOSE_CREATE_RESPONSE") == name:
             fail("Unable to connect to the server: net/http: request canceled")
-        print(f"JobSet {name} {uid}", end="")
+        if os.environ.get("FAKE_CREATE_WARNING"):
+            sys.stderr.write("Warning: " + os.environ["FAKE_CREATE_WARNING"] + "\\n")
+        if os.environ.get("FAKE_CREATE_GARBAGE") == name:
+            print("jobset.jobset.x-k8s.io/" + name + " created", end="")
+        else:
+            print(f"JobSet {name} {uid}", end="")
     elif a[0] == "get":
         name = a[2]
+        counter = os.path.join(state, "_get_failures")
+        failures = int(open(counter).read()) if os.path.exists(counter) else 0
+        if failures < int(os.environ.get("FAKE_GET_FAIL_FIRST", "0")):
+            open(counter, "w").write(str(failures + 1))
+            fail("Unable to connect to the server: dial tcp: connection refused")
         if not os.path.exists(path(name)):
             fail(f'Error from server (NotFound): jobsets.jobset.x-k8s.io "{name}" not found')
         obj = json.load(open(path(name)))
@@ -356,6 +369,8 @@ class FakeCluster:
             "RAY_NAMESPACE": "ns",
             "LAUNCH_ID": "launch-ours",
             "OWNED_LEDGER": str(tmp_path / "ledger.log"),
+            "OWNED_LOOKUP_ATTEMPTS": "2",
+            "OWNED_LOOKUP_SLEEP_S": "0",
         }
 
     def manifest(self, name: str, launch_id: str = "launch-ours") -> str:
@@ -434,7 +449,7 @@ def test_owned_objects_adopt_only_with_our_launch_id(tmp_path):
     # The create reached the server but its response was lost: the object carries our launch id, so it is ours.
     res = k.run(f"owned_create {k.manifest('run-a')}\nowned_delete_all", FAKE_LOSE_CREATE_RESPONSE="run-a")
     assert res.returncode == 0, res.stderr
-    assert "adopting it" in res.stderr and k.names() == set()
+    assert "adopted JobSet run-a" in res.stderr and k.names() == set()
     # Same failure, but the object of that name was made by another launch: not adopted, not deleted.
     k2 = FakeCluster(tmp_path / "second")
     res = k2.run(
@@ -443,3 +458,65 @@ def test_owned_objects_adopt_only_with_our_launch_id(tmp_path):
     )
     assert res.returncode == 0, res.stderr
     assert "NOT_OURS" in res.stdout and k2.names() == {"run-b"}
+
+
+def test_owned_create_ignores_stderr_warnings(tmp_path):
+    k = FakeCluster(tmp_path)
+    res = k.run(
+        f'owned_create {k.manifest("run-a")}\necho "UID=$OWNED_LAST_UID"\nowned_delete_all',
+        FAKE_CREATE_WARNING="admission webhook says hello",
+    )
+    assert res.returncode == 0, res.stderr
+    assert "said on stderr: Warning: admission webhook says hello" in res.stderr
+    assert "created JobSet run-a" in res.stderr and "UID=" in res.stdout
+    assert k.names() == set()  # created, tracked and deleted
+
+
+def test_owned_create_confirms_unparsable_success_by_launch_id(tmp_path):
+    k = FakeCluster(tmp_path)
+    res = k.run(f"owned_create {k.manifest('run-a')}\nowned_delete_all", FAKE_CREATE_GARBAGE="run-a")
+    assert res.returncode == 0, res.stderr
+    assert "confirming it by launch id" in res.stderr and "adopted JobSet run-a" in res.stderr
+    assert k.names() == set()
+
+
+def test_owned_create_unconfirmed_is_rechecked_at_cleanup(tmp_path):
+    k = FakeCluster(tmp_path)
+    # kubectl create succeeds with unparsable output and the lookups fail (API error) more often than retried:
+    # the name is kept as unconfirmed, and the cleanup's own lookup (the API is back) adopts and deletes it.
+    script = f"""
+owned_create {k.manifest("run-a")} || echo CREATE_UNCONFIRMED
+echo "UNCONFIRMED=${{OWNED_UNCONFIRMED[*]}}"
+owned_delete_all
+echo "LEFT=${{#OWNED_OBJECTS[@]}}/${{#OWNED_UNCONFIRMED[@]}}"
+"""
+    res = k.run(script, FAKE_CREATE_GARBAGE="run-a", FAKE_GET_FAIL_FIRST="2")
+    assert res.returncode == 0, res.stderr
+    assert "CREATE_UNCONFIRMED" in res.stdout and "UNCONFIRMED=run-a" in res.stdout
+    assert "LEFT=0/0" in res.stdout and k.names() == set()
+    assert "unconfirmed jobset run-a" in (tmp_path / "ledger.log").read_text()
+
+
+def test_owned_create_never_adopts_an_object_without_our_launch_id(tmp_path):
+    k = FakeCluster(tmp_path)
+    script = f"""
+owned_create {k.manifest("run-a")} || echo NOT_CONFIRMED
+owned_delete_all
+owned_list
+"""
+    res = k.run(script, FAKE_CREATE_GARBAGE="run-a", FAKE_STORED_LAUNCH_ID="launch-theirs")
+    assert res.returncode == 0, res.stderr
+    assert "NOT_CONFIRMED" in res.stdout and "absent or not ours" in res.stderr
+    assert k.names() == {"run-a"}
+    assert "delete" not in (k.state / "_calls.log").read_text()
+
+
+def test_head_attempt_budget(tmp_path):
+    (tmp_path / "attempts" / "aaaa1111").mkdir(parents=True)
+    assert head.attempt_budget(str(tmp_path), 1)[:2] == (True, 1)
+    (tmp_path / "attempts" / "bbbb2222").mkdir()
+    allowed, attempts, message = head.attempt_budget(str(tmp_path), 1)
+    assert (allowed, attempts) == (False, 2) and "at most 1" in message
+    assert head.attempt_budget(str(tmp_path), 2)[:2] == (True, 2)
+    allowed, attempts, message = head.attempt_budget(str(tmp_path / "missing"), 5)
+    assert (allowed, attempts) == (False, -1) and "refusing" in message

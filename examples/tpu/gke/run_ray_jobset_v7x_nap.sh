@@ -38,9 +38,13 @@
 # removed JOBSET_TTL_SECONDS later; checking and cleaning up is then yours. A launcher killed without running its
 # exit handler (SIGKILL, lost machine) leaves the run going the same way.
 #
-# Retries are bounded: JOBSET_MAX_RESTARTS JobSet restarts after TPU pod failures (a failed job is never restarted)
-# and ALLOW_REQUEUE Kueue evictions (preemption, reclaim, node-failure or pods-ready timeouts); every restart or
-# requeue reruns the job from the start. RUN_LIMIT_MIN is the cluster's limit for one run, counted from the pods
+# Reruns: a JobSet restart after a TPU pod failure (at most JOBSET_MAX_RESTARTS; a failed job is never restarted) or a
+# Kueue eviction and re-admission (preemption, reclaim, node failure, pods-ready timeout) reruns the job from the start.
+# The head enforces the total: the job runs at most MAX_ATTEMPTS = 1 + JOBSET_MAX_RESTARTS + ALLOW_REQUEUE times (each
+# head registers under <run dir>/attempts/ and refuses to run beyond the budget, which fails the JobSet), also with
+# KEEP_JOBSET=1 or without the launcher. Kueue can still re-admit the JobSet after that; its pods then start and stop
+# again without running the job. The launcher additionally gives up (and deletes the JobSet) once the workload's
+# eviction count exceeds ALLOW_REQUEUE. RUN_LIMIT_MIN is the cluster's limit for one run, counted from the pods
 # becoming ready; queueing and pre-warm time come on top.
 #
 # Usage:
@@ -172,6 +176,7 @@ SRC_NAME="src-${CODE_SHA:0:12}.tar.gz"
 SRC_TARBALL="${RUN_DIR}/${SRC_NAME}"
 NODE_WAIT_TIMEOUT_S=$((NODE_WAIT_TIMEOUT_MIN * 60))
 DRIVER_TIMEOUT_S=$((DRIVER_TIMEOUT_MIN * 60))
+MAX_ATTEMPTS=$((1 + JOBSET_MAX_RESTARTS + ALLOW_REQUEUE))
 
 mkdir -p "${LOG_DIR}"
 MANIFEST="${LOG_DIR}/jobset.yaml"
@@ -187,6 +192,7 @@ export POD_TPU_ACCELERATOR_TYPE GCS_BUCKET GCSFUSE_MOUNT_OPTIONS DATA_MOUNT RUN_
 export HEAD_NODEPOOL HEAD_NUM_CPUS HEAD_OBJECT_STORE_BYTES HEAD_DSHM_SIZE TPU_DSHM_SIZE TPU_TOPOLOGY
 export TRAINER_SLICES ROLLOUT_SLICES RAY_TPU_PER_HOST WORKER_NUM_CPUS JOBSET_MAX_RESTARTS JOBSET_TTL_SECONDS
 export NODE_WAIT_TIMEOUT_S NODE_RANK_SOURCE NODE_RANK_TIMEOUT_S DRIVER_TIMEOUT_S REQUIRE_NODE_RANK PREWARM_HOLD_S KUBE_CONTEXT
+export MAX_ATTEMPTS
 
 k() { kubectl --context "${KUBE_CONTEXT}" -n "${RAY_NAMESPACE}" "$@"; }
 
@@ -212,14 +218,14 @@ cleanup() {
   local rc=$?
   trap - INT TERM HUP
   stop_follower
-  if (( ${#OWNED_OBJECTS[@]} > 0 )); then
+  if (( ${#OWNED_OBJECTS[@]} + ${#OWNED_UNCONFIRMED[@]} > 0 )); then
     if [[ "${KEEP_JOBSET}" == "1" ]]; then
-      log "KEEP_JOBSET=1: leaving the run's JobSets in place:"
+      log "KEEP_JOBSET=1: leaving the run's JobSets in place (the head still caps the job at ${MAX_ATTEMPTS} attempt(s)):"
       owned_list
     else
       owned_delete_all
-      if (( ${#OWNED_OBJECTS[@]} > 0 )); then
-        log "WARNING: some JobSets of this run could not be deleted:"
+      if (( ${#OWNED_OBJECTS[@]} + ${#OWNED_UNCONFIRMED[@]} > 0 )); then
+        log "WARNING: some JobSets of this run could not be deleted or confirmed (see ${OWNED_LEDGER}):"
         owned_list
       fi
     fi
@@ -307,6 +313,7 @@ log "  slices    ${SLICE_PLAN}"
 log "  chips     ${TOTAL_CHIPS} (${TOTAL_HOSTS} hosts) + CPU head on ${HEAD_NODEPOOL}"
 log "  run dir   ${RUN_GCS} (pods: ${RUN_DIR})"
 log "  job       bash ${JOB_SCRIPT} $* (driver deadline ${DRIVER_TIMEOUT_MIN} min after head start)"
+log "  reruns    at most ${MAX_ATTEMPTS} attempt(s): JOBSET_MAX_RESTARTS=${JOBSET_MAX_RESTARTS} ALLOW_REQUEUE=${ALLOW_REQUEUE} (head-enforced)"
 log "  manifest  ${MANIFEST}"
 log "==================================================================================="
 python3 - "${JOB_SPEC}" <<'PY'
@@ -447,7 +454,7 @@ if [[ "${PREWARM}" == "1" ]]; then
   done
   log "pre-warm: all ${TOTAL_HOSTS} hosts held; swapping the placeholders for the run"
   owned_delete_all
-  (( ${#OWNED_OBJECTS[@]} == 0 )) || die "could not delete the pre-warm placeholders"
+  (( ${#OWNED_OBJECTS[@]} + ${#OWNED_UNCONFIRMED[@]} == 0 )) || die "could not delete the pre-warm placeholders"
   sleep 2  # let Kueue release the placeholders' quota before the run asks for it
 fi
 
@@ -459,8 +466,9 @@ ADMITTED_TS=""
 LAST_WL=""
 LAST_PODS=""
 RESULT=""
-REQUEUES=0
+LAST_EVICTIONS=0
 LAST_RESTARTS="0"
+HEAD_UIDS=""
 TOTAL_PODS=$((TOTAL_HOSTS + 1))
 while true; do
   NOW=$(date +%s)
@@ -481,21 +489,32 @@ while true; do
   if [[ -z "${ADMITTED_TS}" && "${WL}" == *"Admitted=True"* ]]; then
     ADMITTED_TS=${NOW}
     log "admitted after $((NOW - START_TS)) s"
-  elif [[ -n "${ADMITTED_TS}" && "${WL}" != *"Admitted=True"* && "${WL}" == *"Evicted=True"* ]]; then
-    # Preempted, reclaimed by the quota's owner, Kueue's node-failure requeue or a pods-ready timeout: the pods are
-    # gone and the workload is back in the queue; on re-admission the head starts a new attempt (attempts/<pod uid>/).
-    REQUEUES=$((REQUEUES + 1))
-    (( REQUEUES <= ALLOW_REQUEUE )) || die "workload evicted (${WL}); eviction ${REQUEUES} > ALLOW_REQUEUE=${ALLOW_REQUEUE}"
-    log "workload evicted and requeued (${REQUEUES}/${ALLOW_REQUEUE}); waiting for re-admission"
+  elif [[ -n "${ADMITTED_TS}" && "${WL}" != *"Admitted=True"* ]]; then
     ADMITTED_TS=""
     START_TS=${NOW}
     stop_follower
+  fi
+  # Evictions (preemption, reclaim, node failure, pods-ready timeout) as counted by Kueue itself, so an eviction and
+  # re-admission between two polls is not missed; each one reruns the job on re-admission.
+  EVICTIONS="$(k get workloads.kueue.x-k8s.io -l "kueue.x-k8s.io/job-uid=${JOBSET_UID}" \
+    -o jsonpath='{range .items[0].status.schedulingStats.evictions[*]}{.count}{" "}{.reason}{";"}{end}' 2>/dev/null || true)"
+  EVICTION_COUNT="$(python3 -c 'import sys; print(sum(int(e.split()[0]) for e in sys.argv[1].split(";") if e.strip()))' "${EVICTIONS}")"
+  if (( EVICTION_COUNT != LAST_EVICTIONS )); then
+    log "workload evictions: ${EVICTION_COUNT} (${EVICTIONS%;}; ALLOW_REQUEUE=${ALLOW_REQUEUE})"
+    LAST_EVICTIONS=${EVICTION_COUNT}
+    (( EVICTION_COUNT <= ALLOW_REQUEUE )) || die "workload evicted ${EVICTION_COUNT} time(s) > ALLOW_REQUEUE=${ALLOW_REQUEUE}"
   fi
   RESTARTS="$(k get jobset "${RUN_NAME}" -o jsonpath='{.status.restarts}' 2>/dev/null || true)"
   if [[ -n "${RESTARTS}" && "${RESTARTS}" != "${LAST_RESTARTS}" ]]; then
     log "JobSet restarts: ${RESTARTS} (JOBSET_MAX_RESTARTS=${JOBSET_MAX_RESTARTS})"
     LAST_RESTARTS="${RESTARTS}"
   fi
+  for uid in $(k get pods -l "verl-nap/run=${RUN_NAME},verl-nap/role=head" -o jsonpath='{.items[*].metadata.uid}' 2>/dev/null || true); do
+    if [[ " ${HEAD_UIDS} " != *" ${uid} "* ]]; then
+      HEAD_UIDS="${HEAD_UIDS} ${uid}"
+      log "head attempt $(wc -w <<<"${HEAD_UIDS}") of at most ${MAX_ATTEMPTS}: pod uid ${uid} (attempts/${uid:0:8}/)"
+    fi
+  done
 
   mapfile -t S < <(pod_summary "verl-nap/run=${RUN_NAME},verl-nap/prewarm!=true")
   read -r _ P_RUNNING P_FATAL <<<"${S[0]:-0 0 -}"

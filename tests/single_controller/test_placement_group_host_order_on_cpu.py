@@ -30,6 +30,7 @@ from ray.util.placement_group import PlacementGroup
 from verl.single_controller.ray import base as ray_base
 from verl.single_controller.ray.base import (
     TPU_NODE_RANK_LABEL,
+    TPU_SLICE_NAME_LABEL,
     TPU_WORKER_ID_LABEL,
     RayResourcePool,
     RayWorkerGroup,
@@ -60,17 +61,28 @@ class FakeCluster:
     def __init__(self):
         self.nodes: list[dict] = []
         self.table: dict = {}
+        self.slice_of: dict[str, str] = {}  # node id -> slice name used by the test
 
-    def add_node(self, ip: str, rank=None, worker_id=None) -> str:
-        """Add a node; ``str(rank)`` / ``str(worker_id)`` become its rank / ``ray.io/tpu-worker-id`` labels."""
+    def add_node(self, ip: str, rank=None, worker_id=None, slice_group=None, slice_name=None, resources=None) -> str:
+        """Add a node; ``str(rank)`` / ``str(worker_id)`` become its rank / ``ray.io/tpu-worker-id`` labels.
+
+        ``slice_group=k`` adds the slice resource ``tpu-group-<k>``, ``slice_name`` the ``ray.io/tpu-slice-name``
+        label, and ``resources`` further resources.
+        """
         node_id = f"{len(self.nodes) + 1:056x}"
         labels = {"ray.io/node-id": node_id}
+        node_resources = {"CPU": 8.0, **(resources or {})}
         if rank is not None:
             labels[TPU_NODE_RANK_LABEL] = str(rank)
         if worker_id is not None:
             labels[TPU_WORKER_ID_LABEL] = str(worker_id)
+        if slice_group is not None:
+            node_resources[f"tpu-group-{slice_group}"] = 1.0
+        if slice_name is not None:
+            labels[TPU_SLICE_NAME_LABEL] = slice_name
+        self.slice_of[node_id] = f"tpu-group-{slice_group}" if slice_group is not None else slice_name
         self.nodes.append(
-            {"NodeID": node_id, "NodeManagerAddress": ip, "Alive": True, "Labels": labels, "Resources": {"CPU": 8.0}}
+            {"NodeID": node_id, "NodeManagerAddress": ip, "Alive": True, "Labels": labels, "Resources": node_resources}
         )
         return node_id
 
@@ -82,21 +94,31 @@ class FakeCluster:
         )
         return pg
 
-    def add_host(self, ip: str, rank=None, bundles: int = 1, worker_id=None) -> PlacedGroup:
-        """Add a node and a placement group with all of its bundles on that node (one per TPU host)."""
-        node_id = self.add_node(ip, rank, worker_id)
+    def add_host(self, ip: str, rank=None, bundles: int = 1, **node_kwargs) -> PlacedGroup:
+        """Add a node (see ``add_node``) and a placement group with all of its bundles on it (one per TPU host)."""
+        node_id = self.add_node(ip, rank, **node_kwargs)
         return self.add_pg(dict.fromkeys(range(bundles), node_id), bundle_count=bundles)
 
     def placement_group_table(self, placement_group_id=None) -> dict:
         return self.table.get(placement_group_id, {})
 
-    def ip_of(self, pg: PlacementGroup) -> str:
+    def node_id_of(self, pg: PlacementGroup) -> str:
         bundles = self.table[pg.id]["bundles_to_node_id"]
-        node_id = bundles[min(bundles)]
+        return bundles[min(bundles)]
+
+    def ip_of(self, pg: PlacementGroup) -> str:
+        node_id = self.node_id_of(pg)
         return next(node["NodeManagerAddress"] for node in self.nodes if node["NodeID"] == node_id)
 
     def ips(self, pgs: list[PlacementGroup]) -> list[str]:
         return [self.ip_of(pg) for pg in pgs]
+
+    def slices_and_ranks(self, pgs: list[PlacementGroup]) -> list[tuple]:
+        """(slice, rank label) of the node of each placement group."""
+        labels = {node["NodeID"]: node["Labels"] for node in self.nodes}
+        return [
+            (self.slice_of[self.node_id_of(pg)], int(labels[self.node_id_of(pg)][TPU_NODE_RANK_LABEL])) for pg in pgs
+        ]
 
 
 @pytest.fixture
@@ -125,6 +147,21 @@ def legacy_sort_by_node_ip(pgs: list[PlacementGroup]) -> list[PlacementGroup]:
         else:
             pg_ip[pg.id] = ""
     return sorted(pgs, key=lambda pg: pg_ip[pg.id])
+
+
+def previous_order(pgs: list[PlacementGroup]) -> list[PlacementGroup]:
+    """Order of ``sort_placement_group_by_node_ip`` before slices were considered (8c37b61b): (rank, ip), else ip."""
+    node_by_id = {node["NodeID"]: node for node in ray.nodes()}
+    ip, rank = {}, {}
+    for pg in pgs:
+        bundles = ray._private.state.state.placement_group_table(pg.id).get("bundles_to_node_id", {})
+        node = node_by_id.get(bundles[min(bundles)]) if bundles else None
+        ip[pg.id] = node["NodeManagerAddress"] if node else ""
+        text = str((node or {}).get("Labels", {}).get(TPU_NODE_RANK_LABEL, "")).strip()
+        rank[pg.id] = int(text) if text.isascii() and text.isdigit() else None
+    if pgs and all(rank[pg.id] is not None for pg in pgs):
+        return sorted(pgs, key=lambda pg: (rank[pg.id], ip[pg.id]))
+    return sorted(pgs, key=lambda pg: ip[pg.id])
 
 
 def sort_and_capture_log(pgs: list[PlacementGroup], caplog) -> tuple[list[PlacementGroup], logging.LogRecord]:
@@ -384,3 +421,125 @@ def test_tpu_worker_id_never_changes_the_order(cluster, seed):
         node["Labels"].pop(TPU_WORKER_ID_LABEL, None)
 
     assert sort_placement_group_by_node_ip(pgs) == with_worker_ids
+
+
+@pytest.mark.parametrize(
+    "first, second",
+    [({"slice_group": 2}, {"slice_group": 10}), ({"slice_name": "slice-a"}, {"slice_name": "slice-b"})],
+    ids=["tpu_group_resource", "tpu_slice_name_label"],
+)
+def test_two_slices_are_kept_contiguous_in_slice_order(cluster, caplog, first, second):
+    # Ranks 0..3 in each slice; node IPs alternate between the slices and creation order is scrambled.
+    hosts = [(f"10.9.0.{10 + 2 * rank}", rank, second) for rank in range(4)]
+    hosts += [(f"10.9.0.{11 + 2 * rank}", rank, first) for rank in range(4)]
+    pgs = [cluster.add_host(ip, rank, **kwargs) for ip, rank, kwargs in random.Random(1).sample(hosts, len(hosts))]
+    first_name = f"tpu-group-{first['slice_group']}" if "slice_group" in first else first["slice_name"]
+    second_name = f"tpu-group-{second['slice_group']}" if "slice_group" in second else second["slice_name"]
+    # Without slices, (rank, ip) interleaves them.
+    assert [name for name, _ in cluster.slices_and_ranks(previous_order(pgs))] == [second_name, first_name] * 4
+
+    ordered, record = sort_and_capture_log(pgs, caplog)
+
+    expected = [(first_name, rank) for rank in range(4)] + [(second_name, rank) for rank in range(4)]
+    assert cluster.slices_and_ranks(ordered) == expected  # tpu-group indices compare as numbers: 2 before 10
+    assert record.levelno == logging.WARNING
+    message = record.getMessage()
+    assert message.startswith(f"Placement group order by TPU slice, then Ray node label {TPU_NODE_RANK_LABEL}")
+    assert f"the pool spans 2 TPU slices {[first_name, second_name]}: each slice is kept contiguous" in message
+    assert "multi-slice pools are not validated on TPU" in message
+    assert "carried by more than one node" not in message  # ranks repeat across slices only
+    assert f"slice={first_name} rank=0" in message and f"slice={second_name} rank=3" in message
+
+
+def test_tpu_group_slices_come_before_named_slices(cluster):
+    pgs = [
+        cluster.add_host("10.0.0.1", 0, slice_name="a-slice"),
+        cluster.add_host("10.0.0.2", 1, slice_name="a-slice"),
+        cluster.add_host("10.0.0.3", 1, slice_group=5),
+        cluster.add_host("10.0.0.4", 0, slice_group=5),
+    ]
+
+    ordered = sort_placement_group_by_node_ip(pgs)
+
+    assert cluster.slices_and_ranks(ordered) == [("tpu-group-5", 0), ("tpu-group-5", 1), ("a-slice", 0), ("a-slice", 1)]
+
+
+@pytest.mark.parametrize("without_slice", ["no_slice_resource_or_label", "two_tpu_group_resources"])
+def test_missing_slice_keeps_rank_order_and_warns(cluster, caplog, without_slice):
+    pgs = [
+        cluster.add_host("10.0.0.1", 0, slice_group=0),
+        cluster.add_host("10.0.0.2", 0, slice_group=1),
+        cluster.add_host("10.0.0.3", 1, slice_group=0),
+    ]
+    if without_slice == "no_slice_resource_or_label":
+        pgs.append(cluster.add_host("10.0.0.4", 1))
+    else:
+        pgs.append(cluster.add_host("10.0.0.4", 1, resources={"tpu-group-0": 1.0, "tpu-group-1": 1.0}))
+
+    ordered, record = sort_and_capture_log(pgs, caplog)
+
+    # Today's (rank, ip) order, which interleaves the slices.
+    assert ordered == previous_order(pgs)
+    assert cluster.ips(ordered) == ["10.0.0.1", "10.0.0.2", "10.0.0.3", "10.0.0.4"]
+    assert record.levelno == logging.WARNING
+    message = record.getMessage()
+    assert message.startswith(f"Placement group order by Ray node label {TPU_NODE_RANK_LABEL}, then node ip (")
+    assert "rank(s) [0, 1] are carried by more than one node" in message
+    assert (
+        f"no TPU slice (tpu-group-<k> resource or {TPU_SLICE_NAME_LABEL} label) on 1 of 4 placement group nodes, "
+        "so hosts of different slices may be interleaved" in message
+    )
+    assert message.endswith("10.0.0.4 node=00000000 slice=n/a rank=1 tpu-worker-id=n/a")
+
+
+@pytest.mark.parametrize("seed", range(40))
+def test_single_slice_orders_unchanged_randomized(cluster, caplog, seed):
+    rng = random.Random(seed)
+    slice_kwargs = rng.choice([{}, {"slice_group": rng.randint(0, 20)}, {"slice_name": f"slice-{rng.randint(0, 9)}"}])
+    labels = rng.choice(["all", "partial", "invalid", "none"])
+    pgs = []
+    for _ in range(rng.randint(1, 9)):
+        rank = rng.randint(0, 5)  # may repeat inside the slice
+        if labels == "none" or (labels == "partial" and rng.random() < 0.3):
+            rank = None
+        elif labels == "invalid" and rng.random() < 0.3:
+            rank = rng.choice(["abc", "-1", "", "1.5"])
+        ip = f"10.{rng.randint(0, 1)}.{rng.randint(0, 3)}.{rng.randint(0, 255)}"
+        pgs.append(cluster.add_host(ip, rank, worker_id=rng.choice([None, rng.randint(0, 5)]), **slice_kwargs))
+    if rng.random() < 0.3:
+        pgs.append(rng.choice(pgs))  # the same placement group twice
+
+    ordered, record = sort_and_capture_log(pgs, caplog)
+
+    assert ordered == previous_order(pgs)
+    assert "TPU slices" not in record.getMessage()
+    assert "interleaved" not in record.getMessage() or "carried by more than one node" in record.getMessage()
+
+
+def test_slice_resource_ignores_placement_group_resources(cluster, caplog):
+    pg_resources = {"tpu-group-3_group_0123abcd": 0.0001, "tpu-group-3_group_0_0123abcd": 0.0001}
+    pgs = [
+        cluster.add_host("10.0.0.2", 0, slice_group=3, resources=pg_resources),
+        cluster.add_host("10.0.0.1", 1, slice_group=3, resources=pg_resources),
+    ]
+
+    ordered, record = sort_and_capture_log(pgs, caplog)
+
+    assert cluster.ips(ordered) == ["10.0.0.2", "10.0.0.1"]
+    assert record.levelno == logging.INFO
+    assert "slice=tpu-group-3 rank=0" in record.getMessage()
+
+
+def test_ip_order_of_a_pool_spanning_slices_warns(cluster, caplog):
+    pgs = [cluster.add_host(f"10.0.0.{i}", slice_group=i % 2) for i in range(1, 5)]
+
+    ordered, record = sort_and_capture_log(pgs, caplog)
+
+    assert ordered == legacy_sort_by_node_ip(pgs)
+    assert record.levelno == logging.WARNING
+    message = record.getMessage()
+    assert message.startswith(
+        "Placement group order by node ip (the pool spans 2 TPU slices ['tpu-group-0', 'tpu-group-1'], which node ip "
+        "order may interleave; multi-slice pools are not validated on TPU)"
+    )
+    assert "slice=tpu-group-1 rank=n/a" in message

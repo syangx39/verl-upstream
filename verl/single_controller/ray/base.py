@@ -26,6 +26,7 @@ from ray.util.placement_group import PlacementGroup, placement_group
 from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy, PlacementGroupSchedulingStrategy
 
 from verl.plugin.platform import get_platform
+from verl.plugin.platform.platform_tpu_slices import TPU_SLICE_RESOURCE_PREFIX
 from verl.plugin.platform.platform_tpu_workarounds import get_platform_worker_env_vars
 from verl.protocol import DataProto, _padding_size_key
 from verl.single_controller.base import ClassWithInitArgs, ResourcePool, Worker, WorkerGroup
@@ -42,6 +43,8 @@ logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 TPU_NODE_RANK_LABEL = "verl-tpu-node-rank"
 # Ray's default TPU node label, set by Ray from the host's TPU_WORKER_ID (GCE metadata outside GKE). Only logged.
 TPU_WORKER_ID_LABEL = "ray.io/tpu-worker-id"
+# Ray's default TPU node label with the host's slice name; the slice of a host without a tpu-group-<k> resource.
+TPU_SLICE_NAME_LABEL = "ray.io/tpu-slice-name"
 
 
 def get_random_string(length: int) -> str:
@@ -73,10 +76,35 @@ def func_generator(self, method_name, dispatch_fn, collect_fn, execute_fn, block
     return type(method_name, (Functor,), {})()
 
 
-def _parse_tpu_node_rank(value: Any) -> Optional[int]:
-    """Return a ``verl-tpu-node-rank`` label value as an int, or None unless it is a non-negative decimal integer."""
+def _parse_non_negative_int(value: Any) -> Optional[int]:
+    """Return ``value`` (e.g. a Ray label value) as an int, or None unless it is a non-negative decimal integer."""
     text = str(value).strip()
     return int(text) if text.isascii() and text.isdigit() else None
+
+
+def _tpu_slice_key(node: dict) -> Optional[tuple]:
+    """Sort key of the TPU slice of a ``ray.nodes()`` entry, or None if the node has no unambiguous slice.
+
+    ``(0, k)`` for the node's slice resource ``tpu-group-<k>`` (the launcher gives every TPU host exactly one, a node
+    with several gets None), else ``(1, name)`` for its Ray label ``ray.io/tpu-slice-name``. Placement group
+    resources such as ``tpu-group-<k>_group_<id>`` are not slice resources.
+    """
+    prefix = TPU_SLICE_RESOURCE_PREFIX
+    groups = {
+        _parse_non_negative_int(name[len(prefix) :]) for name in node.get("Resources") or {} if name.startswith(prefix)
+    }
+    groups.discard(None)
+    if groups:
+        return (0, groups.pop()) if len(groups) == 1 else None
+    slice_name = (node.get("Labels") or {}).get(TPU_SLICE_NAME_LABEL)
+    return (1, str(slice_name)) if slice_name else None
+
+
+def _tpu_slice_name(key: Optional[tuple]) -> str:
+    """Display name of a ``_tpu_slice_key`` result."""
+    if key is None:
+        return "n/a"
+    return f"{TPU_SLICE_RESOURCE_PREFIX}{key[1]}" if key[0] == 0 else str(key[1])
 
 
 def sort_placement_group_by_node_ip(pgs: list[PlacementGroup]) -> list[PlacementGroup]:
@@ -105,10 +133,19 @@ def sort_placement_group_by_node_ip(pgs: list[PlacementGroup]) -> list[Placement
     carry it, or a value is not an integer, the IP order is used and a warning is logged; without the label the
     order is unchanged.
 
-    The order is logged once per call with each host's ip, node id prefix, rank and Ray's own node label
-    ``ray.io/tpu-worker-id`` (``TPU_WORKER_ID_LABEL``, which Ray derives from ``TPU_WORKER_ID``), as a warning if
-    the rank and the worker id differ on any node; they match when hosts are ranked by job completion index. The
-    worker id is only logged, it never changes the order.
+    Slices: ranks are per slice, so a pool with hosts of several slices is grouped by slice. A host's slice is its
+    ``tpu-group-<k>`` resource (the launcher gives every TPU host exactly one), else its Ray label
+    ``ray.io/tpu-slice-name`` (``TPU_SLICE_NAME_LABEL``). If every placement group's host has a slice, the placement
+    groups are sorted by (slice, rank, node ip), slices ordered by ``k`` and then by name, so each slice stays
+    contiguous; for a single slice this is the (rank, node ip) order. If some host has no slice, the order stays
+    (rank, node ip), and when ranks repeat or several slices are seen a warning says that slices may be interleaved.
+    Only single-slice pools are validated on TPU: a pool spanning several slices is always logged as a warning.
+    Without usable rank labels the order is the node ip order whatever the slices.
+
+    The order is logged once per call with each host's ip, node id prefix, slice (when any host has one), rank and
+    Ray's own node label ``ray.io/tpu-worker-id`` (``TPU_WORKER_ID_LABEL``, which Ray derives from
+    ``TPU_WORKER_ID``), as a warning if the rank and the worker id differ on any node; they match when hosts are
+    ranked by job completion index. The worker id is only logged, it never changes the order.
 
     Args:
         pgs: Placement groups that are already placed (each maps to a node through its lowest bundle index).
@@ -119,6 +156,7 @@ def sort_placement_group_by_node_ip(pgs: list[PlacementGroup]) -> list[Placement
     nodes = ray.nodes()
     node_ip = {node["NodeID"]: node["NodeManagerAddress"] for node in nodes}
     node_labels = {node["NodeID"]: node.get("Labels") or {} for node in nodes}
+    node_slice = {node["NodeID"]: _tpu_slice_key(node) for node in nodes}
     pg_node = {}
     for pg in pgs:
         specs = ray._private.state.state.placement_group_table(pg.id)
@@ -131,19 +169,41 @@ def sort_placement_group_by_node_ip(pgs: list[PlacementGroup]) -> list[Placement
     pg_ip = {pg_id: node_ip.get(node_id, "") for pg_id, node_id in pg_node.items()}
     pg_labels = {pg_id: node_labels.get(node_id, {}) for pg_id, node_id in pg_node.items()}
     raw_rank = {pg_id: labels.get(TPU_NODE_RANK_LABEL) for pg_id, labels in pg_labels.items()}
-    pg_rank = {pg_id: None if raw is None else _parse_tpu_node_rank(raw) for pg_id, raw in raw_rank.items()}
+    pg_rank = {pg_id: None if raw is None else _parse_non_negative_int(raw) for pg_id, raw in raw_rank.items()}
     pg_worker_id = {pg_id: labels.get(TPU_WORKER_ID_LABEL) for pg_id, labels in pg_labels.items()}
+    pg_slice = {pg_id: node_slice.get(node_id) for pg_id, node_id in pg_node.items()}
+    slices = sorted({pg_slice[pg.id] for pg in pgs} - {None})
+    slice_names = [_tpu_slice_name(key) for key in slices]
 
     notes = []  # anything listed here makes the order line a warning
     if pgs and all(pg_rank[pg.id] is not None for pg in pgs):
-        sorted_pgs = sorted(pgs, key=lambda pg: (pg_rank[pg.id], pg_ip[pg.id]))
-        order_by = f"Ray node label {TPU_NODE_RANK_LABEL}, then node ip"
-        nodes_per_rank: dict[int, set[str]] = {}
+        # Ranks are per slice: with a slice on every host keep each slice contiguous (one slice: (rank, ip) order).
+        grouped = all(pg_slice[pg.id] is not None for pg in pgs)
+        if grouped:
+            sorted_pgs = sorted(pgs, key=lambda pg: (pg_slice[pg.id], pg_rank[pg.id], pg_ip[pg.id]))
+        else:
+            sorted_pgs = sorted(pgs, key=lambda pg: (pg_rank[pg.id], pg_ip[pg.id]))
+        multi_slice = grouped and len(slices) > 1
+        order_by = ("TPU slice, then " if multi_slice else "") + f"Ray node label {TPU_NODE_RANK_LABEL}, then node ip"
+        nodes_per_rank: dict[tuple, set[str]] = {}
         for pg in pgs:
-            nodes_per_rank.setdefault(pg_rank[pg.id], set()).add(pg_node[pg.id])
-        shared = sorted(rank for rank, node_ids in nodes_per_rank.items() if len(node_ids) > 1)
+            nodes_per_rank.setdefault((pg_slice[pg.id] if grouped else None, pg_rank[pg.id]), set()).add(pg_node[pg.id])
+        shared = sorted({rank for (_, rank), node_ids in nodes_per_rank.items() if len(node_ids) > 1})
+        if multi_slice:
+            notes.append(
+                f"the pool spans {len(slices)} TPU slices {slice_names}: each slice is kept contiguous, in slice "
+                "order; multi-slice pools are not validated on TPU"
+            )
         if shared:
-            notes.append(f"rank(s) {shared} are carried by more than one node")
+            notes.append(
+                f"rank(s) {shared} are carried by more than one node" + (" of one slice" if multi_slice else "")
+            )
+        if not grouped and (shared or len(slices) > 1):
+            notes.append(
+                f"no TPU slice ({TPU_SLICE_RESOURCE_PREFIX}<k> resource or {TPU_SLICE_NAME_LABEL} label) on "
+                f"{sum(pg_slice[pg.id] is None for pg in pgs)} of {len(pgs)} placement group nodes, so hosts of "
+                "different slices may be interleaved"
+            )
     else:
         sorted_pgs = sorted(pgs, key=lambda pg: pg_ip[pg.id])
         order_by = "node ip"
@@ -157,10 +217,15 @@ def sort_placement_group_by_node_ip(pgs: list[PlacementGroup]) -> list[Placement
                 f"Ray node label {TPU_NODE_RANK_LABEL} ignored, {'; '.join(problems)}; "
                 "the order may not match the TPU topology"
             )
+        if len(slices) > 1:
+            notes.append(
+                f"the pool spans {len(slices)} TPU slices {slice_names}, which node ip order may interleave; "
+                "multi-slice pools are not validated on TPU"
+            )
     differ = sum(
         pg_rank[pg.id] is not None
         and pg_worker_id[pg.id] is not None
-        and _parse_tpu_node_rank(pg_worker_id[pg.id]) != pg_rank[pg.id]
+        and _parse_non_negative_int(pg_worker_id[pg.id]) != pg_rank[pg.id]
         for pg in pgs
     )
     if differ:
@@ -175,8 +240,9 @@ def sort_placement_group_by_node_ip(pgs: list[PlacementGroup]) -> list[Placement
         "".join(f" ({note})" for note in notes),
         ", ".join(
             f"[{idx}] {pg_ip[pg.id] or '?'} node={(pg_node[pg.id] or 'n/a')[:8]} "
-            f"rank={'n/a' if pg_rank[pg.id] is None else pg_rank[pg.id]} "
-            f"tpu-worker-id={'n/a' if pg_worker_id[pg.id] is None else pg_worker_id[pg.id]}"
+            + (f"slice={_tpu_slice_name(pg_slice[pg.id])} " if slices else "")
+            + f"rank={'n/a' if pg_rank[pg.id] is None else pg_rank[pg.id]} "
+            + f"tpu-worker-id={'n/a' if pg_worker_id[pg.id] is None else pg_worker_id[pg.id]}"
             for idx, pg in enumerate(sorted_pgs)
         ),
     )

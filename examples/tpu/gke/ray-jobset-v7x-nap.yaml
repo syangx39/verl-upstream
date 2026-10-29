@@ -38,6 +38,13 @@ spec:
     publishNotReadyAddresses: true
   failurePolicy:
     maxRestarts: ${JOBSET_MAX_RESTARTS}
+    rules:
+      # The head exits non-zero only when the job itself failed (or could not start): rerunning it would repeat a
+      # failed run. Restarts (up to maxRestarts) are left to TPU pod failures, e.g. a reclaimed or failed node.
+      - name: head_failure_is_final
+        action: FailJobSet
+        targetReplicatedJobs:
+          - head
   successPolicy:
     operator: All
     targetReplicatedJobs:

@@ -106,7 +106,10 @@ def test_manifest_two_slices_follows_cluster_rules():
     (jobset,) = [d for d in yaml.safe_load_all(text) if d]
     assert jobset["kind"] == "JobSet"
     assert jobset["spec"]["successPolicy"] == {"operator": "All", "targetReplicatedJobs": ["head"]}
-    assert jobset["spec"]["failurePolicy"] == {"maxRestarts": 0}
+    assert jobset["spec"]["failurePolicy"] == {
+        "maxRestarts": 0,
+        "rules": [{"name": "head_failure_is_final", "action": "FailJobSet", "targetReplicatedJobs": ["head"]}],
+    }
     rjobs = {rj["name"]: rj for rj in jobset["spec"]["replicatedJobs"]}
     assert list(rjobs) == ["head", "trainer-0", "rollout-0"]
 

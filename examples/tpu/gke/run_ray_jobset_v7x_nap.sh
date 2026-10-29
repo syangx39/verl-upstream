@@ -95,6 +95,7 @@ HEAD_DSHM_SIZE="${HEAD_DSHM_SIZE:-48Gi}"
 # Holds the staged checkpoint (MODEL_PATH=/dev/shm/...) and Ray's object store (<= 200 GB by default).
 TPU_DSHM_SIZE="${TPU_DSHM_SIZE:-400Gi}"
 WORKER_NUM_CPUS="${WORKER_NUM_CPUS:-}"
+# Whole-JobSet restarts after TPU pod failures (e.g. a reclaimed or failed node); a failed job (head exit != 0) is final.
 JOBSET_MAX_RESTARTS="${JOBSET_MAX_RESTARTS:-0}"
 JOBSET_TTL_SECONDS="${JOBSET_TTL_SECONDS:-1800}"
 REQUIRE_NODE_RANK="${REQUIRE_NODE_RANK:-1}"

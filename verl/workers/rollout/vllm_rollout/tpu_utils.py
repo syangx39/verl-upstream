@@ -420,7 +420,9 @@ class vLLMRaidenWorkerExtension(_BaseWorkerExtension):
         valid_params = []
         replicas = {}
 
-        for idx, (name, g_shape) in enumerate(sorted(global_shapes_map.items(), key=lambda x: x[0])):
+        for idx, (name, g_shape) in enumerate(
+            sorted(global_shapes_map.items(), key=lambda x: (-int(np.prod(x[1])), x[0]))
+        ):
             g_shape = list(g_shape)
             spec_axes = [""] * len(g_shape)
             local_shape = list(g_shape)

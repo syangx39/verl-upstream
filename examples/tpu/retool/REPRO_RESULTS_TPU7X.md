@@ -49,10 +49,10 @@ All P0 preparation deliverables (`P0.1`–`P0.4`, `P0.6`, `P0.8`–`P0.10`) are 
 
 | Stage | Run name | Code SHA | Image digest | Slices (`2x2x4`) | Steps (start->end) | Submit / Admit / Ready / End (UTC) | Median step time | Status | Output prefix |
 |---|---|---|---|---|---|---|---|---|---|
-| `P1a` | `p1a-moe-smoke-01` | `cfabaada` | `sha256:dcece4bc...` | 2 (1 trainer + 1 rollout) | 1->3 | 10:36 / 10:36 (prewarm) / - / - | - | Running (prewarm 4/8 -> 8/8) | `<RUN_DIR>/p1a-moe-smoke-01` |
-| `P1b` | pending | `cfabaada` | `sha256:dcece4bc...` | 1 (1 trainer) | 1->3 | - | - | Pending | `<RUN_DIR>/p1b-*` |
-| `P1c` | pending | `cfabaada` | `sha256:dcece4bc...` | 2 (1 trainer + 1 rollout) | 1->2 | - | - | Pending (`P1b` export) | `<RUN_DIR>/p1c-*` |
-| `P2` | pending | `cfabaada` | `sha256:dcece4bc...` | 1 (1 trainer) | 1->372 | - | - | Pending | `<RUN_DIR>/p2-*` |
+| `P1b` | `p1b-retool-sft-01` | `cfabaada` | `sha256:dcece4bc...` | 1 (1 trainer) | 1->3 | 11:06:20 / 11:15:33 / 11:16:31 / 11:32:31 | 28.4 s (steps 1–3: 55.6 s, 28.4 s, 27.1 s) | **SUCCEEDED** (exit 0) | `<RUN_DIR>/p1b-retool-sft-01` |
+| `P1a` | `p1a-moe-smoke-04` | `cfabaada` | `sha256:dcece4bc...` | 2 (1 trainer + 1 rollout) | 1->3 | queued | - | Queued | `<RUN_DIR>/p1a-moe-smoke-04` |
+| `P1c` | `p1c-retool-rl-01` | `cfabaada` | `sha256:dcece4bc...` | 2 (1 trainer + 1 rollout) | 1->2 | queued (`P1b` export ready) | - | Queued | `<RUN_DIR>/p1c-retool-rl-01` |
+| `P2` | `p2-retool-sft-01` | `cfabaada` | `sha256:dcece4bc...` | 1 (1 trainer) | 1->372 | queued | - | Queued | `<RUN_DIR>/p2-retool-sft-01` |
 | `P3` | pending | `cfabaada` | `sha256:dcece4bc...` | 2 (1 trainer + 1 rollout) | 1->25 | - | - | Pending (`P2` export) | `<RUN_DIR>/p3-*` |
 
 ---
@@ -61,11 +61,11 @@ All P0 preparation deliverables (`P0.1`–`P0.4`, `P0.6`, `P0.8`–`P0.10`) are 
 
 | Check | Kind | Phase | Target / Reference | Measured on TPU 7x | Verdict |
 |---|---|---|---|---|---|
-| `R1` | gate | every run | `LIBTPU_INIT_ARGS` contains `--xla_tpu_bf16_emission_mode=PROMOTE_F32` on all active roles | Pending first hardware run | PENDING |
-| `R2` | gate | `P1a`, `P1c` | 32 trainer devices (4D mesh) + 32 rollout devices (TP=32, EP=32) on distinct `2x2x4` slices; trainer rank order matches `verl-tpu-node-rank`; Raiden sync completes | Pending `P1a` | PENDING |
-| `R3` | observation | `P1b` | SFT step-1 `train/loss` vs `0.7941` (+-0.02) | Pending `P1b` | PENDING |
+| `R1` | gate | every run | `LIBTPU_INIT_ARGS` contains `--xla_tpu_bf16_emission_mode=PROMOTE_F32` on all active roles | `P1b`: verified in `<RUN_DIR>/p1b-retool-sft-01/env/*-procs.jsonl` across all 4 trainer hosts (`LIBTPU_INIT_ARGS="--xla_tpu_use_enhanced_launch_barrier=false --xla_tpu_bf16_emission_mode=PROMOTE_F32"`, `TPU_ACCELERATOR_TYPE="tpu7x"`). Rollout role pending `P1a`/`P1c` | **PASS (trainer)** / pending rollout |
+| `R2` | gate | `P1a`, `P1c` | 32 trainer devices (4D mesh) + 32 rollout devices (TP=32, EP=32) on distinct `2x2x4` slices; trainer rank order matches `verl-tpu-node-rank`; Raiden sync completes | `P1b` (1-slice trainer): 4 hosts had scrambled IP order (`10.224.130.8`, `10.224.106.8`, `10.224.114.8`, `10.224.113.8` for workers `0, 1, 2, 3`) and were ordered `0, 1, 2, 3` by `verl-tpu-node-rank`. Dual-slice trainer+rollout + Raiden sync pending `P1a`/`P1c` | Partial (`P1b` trainer host order PASS; dual-slice pending `P1a`/`P1c`) |
+| `R3` | observation | `P1b` | SFT 3-step smoke `train/loss` (`0.7950 -> 0.5787 -> 0.5177`, step 3 `+-0.05`) and step-3 `val/loss` (`0.4050`, `+-0.05`) | `train/loss`: `0.7932` (step 1) -> `0.5881` (step 2) -> `0.5224` (step 3, `+0.0047` vs ref); step-3 `val/loss`: `0.4095` (`+0.0045` vs ref) | **PASS** |
 | `R4` | observation | `P2` | SFT steps 363–372 mean `train/loss` (~0.25) and step-372 in-sample `val/loss` (`0.214`, +-10%) | Pending `P2` | PENDING |
-| `R5a` | gate | `P1b`, `P2` | `global_step_N/huggingface` export complete (16 bf16 shards, index, config, tokenizer) and reloadable | Pending `P1b` | PENDING |
+| `R5a` | gate | `P1b`, `P2` | `global_step_N/huggingface` export complete (16 bf16 shards, index, config, tokenizer) and reloadable | `P1b`: `<RUN_DIR>/p1b-retool-sft-01/checkpoint/global_step_3/huggingface/` exported 16 bf16 `.safetensors` shards + `model.safetensors.index.json` + config/tokenizer (`61,084,185,820` bytes total). `P2` step-372 export pending | **PASS (`P1b`)** / pending `P2` |
 | `R5b` | gate | `P1c`, `P3` | Staged SFT export matches source hashes across all hosts; TorchTitan + multi-host vLLM load cleanly; first Raiden sync completes | Pending `P1c` | PENDING |
 | `R6` | observation | `P3` | Step-0 AIME 2024 (`22.44%`) and AIME 2025 (`14.17%`) mean@30 (+-4.5 pp), maj@30, best@30 | Pending `P3` | PENDING |
 | `R7` | observation | `P3` | Early RL numerics (`actor/ppo_kl`, `actor/rollout_corr/k3_kl`, steps 3–10) | Pending `P3` | PENDING |
@@ -75,3 +75,33 @@ All P0 preparation deliverables (`P0.1`–`P0.4`, `P0.6`, `P0.8`–`P0.10`) are 
 | `R11` | gate | `P1c`, `P3` | Token-level rollout audit dump (`response_mask == 0` on tool results, `1` on assistant turns, multi-turn propagation, `compute_score` behavior) | Pending `P1c` | PENDING |
 | `R12` | gate | `P1c`, `P3` | Post-Raiden-sync policy version & staleness within `max_off_policy_threshold=4` | Pending `P1c` | PENDING |
 | `R13` | gate | `P4a` | Resume equivalence (`TransferQueue==0.1.8` in current images lacks `save_checkpoint`/`load_checkpoint`; requires quiescent boundary verification or `TransferQueue >= 0.1.9`) | Blocked unless quiescent boundary verified in `P4a` | BLOCKED (pending `P4a`) |
+
+---
+
+## 4. Stage details
+
+### 4.1 Stage `P1b`: 3-step ReTool SFT smoke (`p1b-retool-sft-01`) — **PASS**
+
+- **Configuration**: `examples/tpu/retool/run_qwen3_30b_a3b_sft_torchtitan.sh` on `1 x 2x2x4` TPU 7x slice (4 hosts, 16 chips = 32 TensorCore devices; `SimpleFSDP=8, CP=4, EP=1, TP=1`, `TPU_EAGER_MODE=DEFER_NEVER`, `MAX_LENGTH=16384`, `TRAIN_BATCH_SIZE=32`, `TOTAL_TRAINING_STEPS=3`, `SAVE_FREQ=3`, `TEST_FREQ=3`, `LIBTPU_INIT_ARGS="--xla_tpu_use_enhanced_launch_barrier=false --xla_tpu_bf16_emission_mode=PROMOTE_F32"`).
+- **Host ordering (`P0.5`)**:
+  - Physical / JobSet completion order vs IP address on `tpu-group-0`:
+    - `verl-tpu-node-rank=0` (`tpu-worker-id=0`): `10.224.130.8` (`p1b-retool-sft-01-trainer-0-0-0`)
+    - `verl-tpu-node-rank=1` (`tpu-worker-id=1`): `10.224.106.8` (`p1b-retool-sft-01-trainer-0-0-1`)
+    - `verl-tpu-node-rank=2` (`tpu-worker-id=2`): `10.224.114.8` (`p1b-retool-sft-01-trainer-0-0-2`)
+    - `verl-tpu-node-rank=3` (`tpu-worker-id=3`): `10.224.113.8` (`p1b-retool-sft-01-trainer-0-0-3`)
+  - Without `verl-tpu-node-rank`, lexicographic IP sorting would have placed worker 1 first (`10.224.106.8`), worker 3 second (`10.224.113.8`), worker 2 third (`10.224.114.8`), and worker 0 last (`10.224.130.8`). With #5 (`ed0170cf`), all 4 hosts were placed in topological order `0, 1, 2, 3` and completed FSDP + Ulysses CP collectives cleanly.
+- **Effective gradient clipping (`P0.9` / `D7`)**:
+  - Runtime log confirmed: `WARNING:2026-10-29 04:19:03,748:TorchTitan grad clipping uses training.max_norm=1.0; optim.clip_grad=1.0 is not passed to TorchTitan`.
+- **Per-step metrics (`R3`)**:
+
+| Step | TPU 7x `train/loss` | TPU v6e ref `train/loss` | Diff (7x - v6e) | `train/grad_norm` | `train/lr` | `train/global_tokens` | Step time |
+|---|---|---|---|---|---|---|---|
+| 1 | `0.793168` | `0.7950` | `-0.0018` | `13.9740` | `7.75e-06` | `59,418` | `55.57 s` (first compile) |
+| 2 | `0.588094` | `0.5787` | `+0.0094` | `6.0704` | `3.25e-06` | `64,348` | `28.43 s` |
+| 3 | `0.522368` | `0.5177` | `+0.0047` | `2.8164` | `1.00e-06` | `55,789` | `27.10 s` |
+| 3 (val) | `val/loss = 0.409530` | `val/loss = 0.4050` | `+0.0045` | - | - | 32 val samples | `46.0 s` |
+
+- **Exported HF checkpoint (`R5a`)**:
+  - Path: `<RUN_DIR>/p1b-retool-sft-01/checkpoint/global_step_3/huggingface/`
+  - Contents: 16 bf16 shards (`model-00001-of-00016.safetensors` through `model-00016-of-00016.safetensors`), `model.safetensors.index.json` (`1,699,757` bytes), `config.json`, `generation_config.json`, `tokenizer.json`, `tokenizer_config.json`, `vocab.json`, `merges.txt` (27 objects, `61,084,185,820` bytes total; export write time `9m 59s`).
+  - `verdict.json`: `status="SUCCEEDED"`, `node_rank_ok=true`, `duration_s=961`, `timed_out=false`.

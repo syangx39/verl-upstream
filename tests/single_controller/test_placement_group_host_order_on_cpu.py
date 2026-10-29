@@ -30,14 +30,21 @@ from ray.util.placement_group import PlacementGroup
 from verl.single_controller.ray import base as ray_base
 from verl.single_controller.ray.base import (
     TPU_NODE_RANK_LABEL,
+    TPU_WORKER_ID_LABEL,
     RayResourcePool,
     RayWorkerGroup,
     sort_placement_group_by_node_ip,
+    split_resource_pool,
 )
 
 # Topological ranks of the hosts of an 8-host TPU 7x slice listed in IP order: the worker order that the IP sort
 # produced in the port where the mesh formed but the first FSDP collective halted.
 IP_ORDER_RANKS = [1, 6, 5, 0, 2, 4, 7, 3]
+
+# (ip, rank) of four hosts in placement group creation order; creation, IP and rank order all differ.
+FRESH_POOL_HOSTS = [("10.8.3.23", 2), ("10.8.0.20", 1), ("10.8.2.22", 3), ("10.8.1.21", 0)]
+FRESH_POOL_IP_ORDER = ["10.8.0.20", "10.8.1.21", "10.8.2.22", "10.8.3.23"]
+FRESH_POOL_RANK_ORDER = ["10.8.1.21", "10.8.0.20", "10.8.3.23", "10.8.2.22"]
 
 
 class PlacedGroup(PlacementGroup):
@@ -54,12 +61,14 @@ class FakeCluster:
         self.nodes: list[dict] = []
         self.table: dict = {}
 
-    def add_node(self, ip: str, rank=None) -> str:
-        """Add a node; unless ``rank`` is None, ``str(rank)`` becomes its ``verl-tpu-node-rank`` label."""
+    def add_node(self, ip: str, rank=None, worker_id=None) -> str:
+        """Add a node; ``str(rank)`` / ``str(worker_id)`` become its rank / ``ray.io/tpu-worker-id`` labels."""
         node_id = f"{len(self.nodes) + 1:056x}"
         labels = {"ray.io/node-id": node_id}
         if rank is not None:
             labels[TPU_NODE_RANK_LABEL] = str(rank)
+        if worker_id is not None:
+            labels[TPU_WORKER_ID_LABEL] = str(worker_id)
         self.nodes.append(
             {"NodeID": node_id, "NodeManagerAddress": ip, "Alive": True, "Labels": labels, "Resources": {"CPU": 8.0}}
         )
@@ -73,9 +82,9 @@ class FakeCluster:
         )
         return pg
 
-    def add_host(self, ip: str, rank=None, bundles: int = 1) -> PlacedGroup:
+    def add_host(self, ip: str, rank=None, bundles: int = 1, worker_id=None) -> PlacedGroup:
         """Add a node and a placement group with all of its bundles on that node (one per TPU host)."""
-        node_id = self.add_node(ip, rank)
+        node_id = self.add_node(ip, rank, worker_id)
         return self.add_pg(dict.fromkeys(range(bundles), node_id), bundle_count=bundles)
 
     def placement_group_table(self, placement_group_id=None) -> dict:
@@ -126,6 +135,23 @@ def sort_and_capture_log(pgs: list[PlacementGroup], caplog) -> tuple[list[Placem
     records = [r for r in caplog.records if r.getMessage().startswith("Placement group order by ")]
     assert len(records) == 1, [r.getMessage() for r in caplog.records]
     return ordered, records[0]
+
+
+def make_fresh_pool(cluster: FakeCluster, monkeypatch, labeled: bool, bundles: int = 2) -> RayResourcePool:
+    """A RayResourcePool whose placement groups are created on FRESH_POOL_HOSTS, in that order, when first asked."""
+    pgs = [cluster.add_host(ip, rank if labeled else None, bundles=bundles) for ip, rank in FRESH_POOL_HOSTS]
+    created = iter(pgs)
+    monkeypatch.setattr(ray_base, "placement_group", lambda **kwargs: next(created))
+    monkeypatch.setattr(ray, "get", lambda refs: refs)
+    return RayResourcePool([bundles] * len(pgs), use_gpu=False, name_prefix="fresh_pool")
+
+
+def record_workers(monkeypatch) -> list[dict]:
+    """Make RayWorkerGroup record the arguments of each worker it would create instead of starting actors."""
+    workers = []
+    monkeypatch.setattr(RayWorkerGroup, "_get_master_addr_port", lambda self, pg, **kwargs: None)
+    monkeypatch.setattr(RayWorkerGroup, "_create_worker", lambda self, **kwargs: workers.append(kwargs))
+    return workers
 
 
 def test_labels_on_all_nodes_give_rank_order(cluster, caplog):
@@ -269,3 +295,92 @@ def test_trainer_pool_and_worker_ranks_follow_label_order(cluster, monkeypatch):
     assert [(w["rank"], rank_of[cluster.ip_of(w["pg"])], w["local_rank"]) for w in workers] == [
         (rank, rank // 2, rank % 2) for rank in range(8)
     ]
+
+
+@pytest.mark.parametrize("labeled", [True, False], ids=["rank_labels", "no_labels"])
+def test_first_and_later_get_placement_groups_calls_agree(cluster, monkeypatch, labeled):
+    pool = make_fresh_pool(cluster, monkeypatch, labeled)
+
+    first = pool.get_placement_groups()
+    later = pool.get_placement_groups()
+
+    assert cluster.ips(first) == (FRESH_POOL_RANK_ORDER if labeled else FRESH_POOL_IP_ORDER)
+    assert later == first
+
+
+@pytest.mark.parametrize("labeled", [True, False], ids=["rank_labels", "no_labels"])
+def test_split_of_fresh_pool_follows_host_order(cluster, monkeypatch, labeled):
+    pool = make_fresh_pool(cluster, monkeypatch, labeled)
+    workers = record_workers(monkeypatch)
+
+    sub_pools = split_resource_pool(pool, split_size=2)  # one sub-pool per host
+    for idx, sub_pool in enumerate(sub_pools):
+        RayWorkerGroup(resource_pool=sub_pool, ray_cls_with_init=None, name_prefix=f"replica_{idx}")
+
+    expected = FRESH_POOL_RANK_ORDER if labeled else FRESH_POOL_IP_ORDER
+    assert [cluster.ip_of(sub_pool.pgs[sub_pool.start_bundle_index // 2]) for sub_pool in sub_pools] == expected
+    assert all(sub_pool.pgs == pool.get_placement_groups() for sub_pool in sub_pools)
+    # Each replica's two workers sit on its host.
+    assert [cluster.ip_of(w["pg"]) for w in workers] == [ip for ip in expected for _ in range(2)]
+
+
+def test_log_shows_tpu_worker_id_next_to_rank(cluster, caplog):
+    pgs = [
+        cluster.add_host("10.0.0.2", 1, worker_id=1),
+        cluster.add_host("10.0.0.1", 0, worker_id=0),
+        cluster.add_host("10.0.0.3", 2),  # no ray.io/tpu-worker-id label
+    ]
+
+    ordered, record = sort_and_capture_log(pgs, caplog)
+
+    assert cluster.ips(ordered) == ["10.0.0.1", "10.0.0.2", "10.0.0.3"]
+    assert record.levelno == logging.INFO
+    message = record.getMessage()
+    assert "10.0.0.1 node=" in message and "rank=0 tpu-worker-id=0, [1] 10.0.0.2" in message
+    assert message.endswith("rank=2 tpu-worker-id=n/a")
+
+
+def test_rank_differing_from_tpu_worker_id_warns_without_reordering(cluster, caplog):
+    hosts = [("10.0.0.4", 0, 0), ("10.0.0.3", 1, 2), ("10.0.0.2", 2, 1), ("10.0.0.1", 3, 3)]  # (ip, rank, worker id)
+    pgs = [cluster.add_host(ip, rank, worker_id=worker_id) for ip, rank, worker_id in hosts]
+
+    ordered, record = sort_and_capture_log(pgs, caplog)
+
+    assert cluster.ips(ordered) == ["10.0.0.4", "10.0.0.3", "10.0.0.2", "10.0.0.1"]  # by rank
+    assert record.levelno == logging.WARNING
+    message = record.getMessage()
+    assert (
+        f"(Ray node labels {TPU_NODE_RANK_LABEL} and {TPU_WORKER_ID_LABEL} differ on 2 of 4 placement group nodes)"
+        in message
+    )
+    assert "rank=1 tpu-worker-id=2" in message and "rank=2 tpu-worker-id=1" in message
+
+
+def test_tpu_worker_id_without_rank_labels_is_only_logged(cluster, caplog):
+    pgs = [cluster.add_host("10.0.0.2", worker_id=0), cluster.add_host("10.0.0.1", worker_id=1)]
+
+    ordered, record = sort_and_capture_log(pgs, caplog)
+
+    assert ordered == legacy_sort_by_node_ip(pgs)
+    assert record.levelno == logging.INFO
+    assert "rank=n/a tpu-worker-id=1, [1] 10.0.0.2" in record.getMessage()
+
+
+@pytest.mark.parametrize("seed", range(10))
+def test_tpu_worker_id_never_changes_the_order(cluster, seed):
+    rng = random.Random(seed)
+    labeled = rng.random() < 0.5
+    pgs = [
+        cluster.add_host(
+            f"10.0.{rng.randint(0, 3)}.{rng.randint(0, 255)}",
+            rank=rng.randint(0, 7) if labeled else None,
+            worker_id=rng.choice([None, rng.randint(0, 7)]),
+        )
+        for _ in range(rng.randint(1, 8))
+    ]
+
+    with_worker_ids = sort_placement_group_by_node_ip(pgs)
+    for node in cluster.nodes:
+        node["Labels"].pop(TPU_WORKER_ID_LABEL, None)
+
+    assert sort_placement_group_by_node_ip(pgs) == with_worker_ids

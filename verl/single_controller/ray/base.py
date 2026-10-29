@@ -38,8 +38,10 @@ __all__ = ["Worker"]
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
-# Ray node label with a TPU host's topological rank inside its slice; see sort_placement_group_by_node_ip.
+# Ray node label with a TPU host's rank inside its slice, set by the TPU launcher; see sort_placement_group_by_node_ip.
 TPU_NODE_RANK_LABEL = "verl-tpu-node-rank"
+# Ray's default TPU node label, set by Ray from the host's TPU_WORKER_ID (GCE metadata outside GKE). Only logged.
+TPU_WORKER_ID_LABEL = "ray.io/tpu-worker-id"
 
 
 def get_random_string(length: int) -> str:
@@ -103,11 +105,16 @@ def sort_placement_group_by_node_ip(pgs: list[PlacementGroup]) -> list[Placement
     carry it, or a value is not an integer, the IP order is used and a warning is logged; without the label the
     order is unchanged.
 
+    The order is logged once per call with each host's ip, node id prefix, rank and Ray's own node label
+    ``ray.io/tpu-worker-id`` (``TPU_WORKER_ID_LABEL``, which Ray derives from ``TPU_WORKER_ID``), as a warning if
+    the rank and the worker id differ on any node; they match when hosts are ranked by job completion index. The
+    worker id is only logged, it never changes the order.
+
     Args:
         pgs: Placement groups that are already placed (each maps to a node through its lowest bundle index).
 
     Returns:
-        A new list with the placement groups in host order; the order is logged once per call.
+        A new list with the placement groups in host order.
     """
     nodes = ray.nodes()
     node_ip = {node["NodeID"]: node["NodeManagerAddress"] for node in nodes}
@@ -122,10 +129,12 @@ def sort_placement_group_by_node_ip(pgs: list[PlacementGroup]) -> list[Placement
         else:
             pg_node[pg.id] = None
     pg_ip = {pg_id: node_ip.get(node_id, "") for pg_id, node_id in pg_node.items()}
-    raw_rank = {pg_id: node_labels.get(node_id, {}).get(TPU_NODE_RANK_LABEL) for pg_id, node_id in pg_node.items()}
+    pg_labels = {pg_id: node_labels.get(node_id, {}) for pg_id, node_id in pg_node.items()}
+    raw_rank = {pg_id: labels.get(TPU_NODE_RANK_LABEL) for pg_id, labels in pg_labels.items()}
     pg_rank = {pg_id: None if raw is None else _parse_tpu_node_rank(raw) for pg_id, raw in raw_rank.items()}
+    pg_worker_id = {pg_id: labels.get(TPU_WORKER_ID_LABEL) for pg_id, labels in pg_labels.items()}
 
-    level, order_by = logging.INFO, "node ip"
+    notes = []  # anything listed here makes the order line a warning
     if pgs and all(pg_rank[pg.id] is not None for pg in pgs):
         sorted_pgs = sorted(pgs, key=lambda pg: (pg_rank[pg.id], pg_ip[pg.id]))
         order_by = f"Ray node label {TPU_NODE_RANK_LABEL}, then node ip"
@@ -134,28 +143,40 @@ def sort_placement_group_by_node_ip(pgs: list[PlacementGroup]) -> list[Placement
             nodes_per_rank.setdefault(pg_rank[pg.id], set()).add(pg_node[pg.id])
         shared = sorted(rank for rank, node_ids in nodes_per_rank.items() if len(node_ids) > 1)
         if shared:
-            level = logging.WARNING
-            order_by += f" (rank(s) {shared} are carried by more than one node)"
+            notes.append(f"rank(s) {shared} are carried by more than one node")
     else:
         sorted_pgs = sorted(pgs, key=lambda pg: pg_ip[pg.id])
+        order_by = "node ip"
         labeled = [pg for pg in pgs if raw_rank[pg.id] is not None]
         if labeled:
             missing = len(pgs) - len(labeled)
             invalid = sorted({str(raw_rank[pg.id]) for pg in labeled if pg_rank[pg.id] is None})
             problems = [f"missing on {missing} of {len(pgs)} placement group nodes"] if missing else []
             problems += [f"not a non-negative integer: {invalid}"] if invalid else []
-            level = logging.WARNING
-            order_by += (
-                f" (Ray node label {TPU_NODE_RANK_LABEL} ignored, {'; '.join(problems)}; "
-                "the order may not match the TPU topology)"
+            notes.append(
+                f"Ray node label {TPU_NODE_RANK_LABEL} ignored, {'; '.join(problems)}; "
+                "the order may not match the TPU topology"
             )
+    differ = sum(
+        pg_rank[pg.id] is not None
+        and pg_worker_id[pg.id] is not None
+        and _parse_tpu_node_rank(pg_worker_id[pg.id]) != pg_rank[pg.id]
+        for pg in pgs
+    )
+    if differ:
+        notes.append(
+            f"Ray node labels {TPU_NODE_RANK_LABEL} and {TPU_WORKER_ID_LABEL} differ on {differ} of {len(pgs)} "
+            "placement group nodes"
+        )
     logger.log(
-        level,
-        "Placement group order by %s: %s",
+        logging.WARNING if notes else logging.INFO,
+        "Placement group order by %s%s: %s",
         order_by,
+        "".join(f" ({note})" for note in notes),
         ", ".join(
             f"[{idx}] {pg_ip[pg.id] or '?'} node={(pg_node[pg.id] or 'n/a')[:8]} "
-            f"rank={'n/a' if pg_rank[pg.id] is None else pg_rank[pg.id]}"
+            f"rank={'n/a' if pg_rank[pg.id] is None else pg_rank[pg.id]} "
+            f"tpu-worker-id={'n/a' if pg_worker_id[pg.id] is None else pg_worker_id[pg.id]}"
             for idx, pg in enumerate(sorted_pgs)
         ),
     )
@@ -250,8 +271,10 @@ class RayResourcePool(ResourcePool):
 
         ray.get([pg.ready() for pg in pgs])
 
+        # Return the sorted list on the first call too: split_resource_pool and merge_resource_pool use this return
+        # value, so every call (and every sub-pool) sees the same host order as the worker ranks.
         self.pgs = sort_placement_group_by_node_ip(pgs)
-        return pgs
+        return self.pgs
 
 
 class SubRayResourcePool(RayResourcePool):

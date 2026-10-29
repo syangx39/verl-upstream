@@ -422,12 +422,23 @@ def test_collect_never_selects_padding_only_batches():
     assert calls == []
 
 
+def _sessions(source, question, accs, scores=None, uid=None):
+    """One dump row per session of ``question``; ``None`` in ``accs``/``scores`` leaves that field out."""
+    scores = scores if scores is not None else [None] * len(accs)
+    rows = []
+    for session, (acc, score) in enumerate(zip(accs, scores, strict=True)):
+        row = {"uid": f"{uid or question}_{session}_0", "question_id": question, "data_source": source}
+        row.update({key: value for key, value in (("acc", acc), ("score", score)) if value is not None})
+        rows.append(row)
+    return rows
+
+
 def test_summarize_validation_dump_counts_distinct_sessions():
     rows = [
         {"uid": f"qa_{s}_0", "data_source": "aime24", "acc": s == 0, "score": 1.0 if s == 0 else -0.6} for s in range(3)
     ]
     rows += [
-        # A multi-output session writes two lines; the last output carries the session's reward.
+        # A multi-output session writes two lines; its final (last) output carries the session's reward.
         {"uid": "qb_0_0", "data_source": "aime24", "acc": 0.0, "score": -0.6},
         {"uid": "qb_0_1", "data_source": "aime24", "acc": 1.0, "score": 1.0},
         # qb is missing its third session.
@@ -437,7 +448,8 @@ def test_summarize_validation_dump_counts_distinct_sessions():
     summary = summarize_validation_dump(rows, expected_n=3)
 
     assert summary["complete"] is False
-    assert summary["expected_n"] == 3
+    assert summary["incomplete_reasons"] == ["expected_questions_not_given", "session_count_mismatch"]
+    assert (summary["num_rows"], summary["num_rows_without_data_source"]) == (6, 0)
     aime = summary["data_sources"]["aime24"]
     assert aime["num_rows"] == 6  # JSONL lines ...
     assert aime["num_sessions"] == 5  # ... are not samples
@@ -447,120 +459,216 @@ def test_summarize_validation_dump_counts_distinct_sessions():
     assert aime["outputs_per_session"] == {"min": 1, "max": 2}
     assert aime["questions_with_unexpected_sessions"] == [{"question": "qb", "num_sessions": 2}]
     assert aime["missing_questions"] is None and aime["unexpected_questions"] is None
+    assert (aime["num_sessions_without_acc"], aime["num_unattributed_rows"]) == (0, 0)
     assert aime["complete"] is False
+    assert aime["incomplete_reasons"] == ["session_count_mismatch", "expected_questions_not_given"]
+    assert aime["mean_acc"] is None
+    assert aime["partial_mean_acc"] == pytest.approx((1 / 3 + 1.0) / 2)
+    assert aime["mean_score"] is None
+    assert aime["partial_mean_score"] == pytest.approx((-0.2 / 3 + 1.0) / 2)
+    # qa is complete on its own (expected_n sessions, all with acc); qb is not.
     assert aime["per_question"]["qa"] == {
         "num_sessions": 3,
         "num_rows": 3,
+        "num_sessions_with_acc": 3,
+        "num_sessions_with_score": 3,
         "mean_acc": pytest.approx(1 / 3),
+        "partial_mean_acc": None,
         "mean_score": pytest.approx(-0.2 / 3),
+        "partial_mean_score": None,
     }
-    assert aime["per_question"]["qb"] == {"num_sessions": 2, "num_rows": 3, "mean_acc": 1.0, "mean_score": 1.0}
-    assert aime["mean_acc"] == pytest.approx((1 / 3 + 1.0) / 2)
-    assert aime["mean_score"] == pytest.approx((-0.2 / 3 + 1.0) / 2)
+    assert aime["per_question"]["qb"]["mean_acc"] is None
+    assert aime["per_question"]["qb"]["partial_mean_acc"] == 1.0
     json.dumps(summary, allow_nan=False)
 
 
-def test_summarize_reports_expected_questions_without_rows():
+def test_summarize_complete_dump_reports_mean_acc():
     rows = [
-        {"uid": f"u{q}_{s}_0", "question_id": f"index:{q}", "data_source": "aime24", "acc": 1.0}
-        for q in (0, 1)
-        for s in range(2)
+        row
+        for source in ("aime_2024", "aime_2025")
+        for question in ("q1", "q2")
+        for row in _sessions(source, question, [1.0, 0.0, 0.0], [1.0, -0.6, -0.6], uid=f"{source}-{question}")
     ]
+    expected = {"aime_2024": ["q1", "q2"], "aime_2025": ["q1", "q2"]}
 
-    # Every session of index:2 is missing, and aime25 has no row at all.
-    expected = {"aime24": ["index:0", "index:1", "index:2"], "aime25": ["index:0"]}
-    summary = summarize_validation_dump(rows, expected_n=2, expected_questions=expected)
+    summary = summarize_validation_dump(rows, expected_n=3, expected_questions=expected)
 
-    aime24 = summary["data_sources"]["aime24"]
-    assert aime24["missing_questions"] == ["index:2"]
-    assert aime24["num_expected_questions"] == 3
-    assert aime24["questions_with_unexpected_sessions"] == []  # the questions in the dump look fine ...
-    assert aime24["sessions_per_question"] == {"min": 0, "max": 2}  # ... the missing one counts as 0 sessions
-    assert aime24["complete"] is False
-    aime25 = summary["data_sources"]["aime25"]
-    assert (aime25["num_rows"], aime25["missing_questions"], aime25["complete"]) == (0, ["index:0"], False)
-    assert summary["complete"] is False
+    assert (summary["complete"], summary["incomplete_reasons"]) == (True, [])
+    assert (summary["score_complete"], summary["score_incomplete_reasons"]) == (True, [])
+    for stats in summary["data_sources"].values():
+        assert (stats["complete"], stats["incomplete_reasons"]) == (True, [])
+        assert stats["mean_acc"] == pytest.approx(1 / 3)
+        assert stats["partial_mean_acc"] is None
+        assert stats["mean_score"] == pytest.approx(-0.2 / 3)
+        assert stats["partial_mean_score"] is None
+        assert stats["missing_questions"] == [] and stats["unexpected_questions"] == []
+        assert stats["per_question"]["q1"]["mean_acc"] == pytest.approx(1 / 3)
 
-    full = summarize_validation_dump(rows, expected_n=2, expected_questions={"aime24": ["index:0", "index:1"]})
-    assert full["complete"] is True
-    assert full["data_sources"]["aime24"]["missing_questions"] == []
-    # A question that is not expected is listed but does not make the dump incomplete.
-    extra = summarize_validation_dump(rows, expected_n=2, expected_questions={"aime24": ["index:0"]})
-    assert extra["data_sources"]["aime24"]["unexpected_questions"] == ["index:1"]
-    assert extra["complete"] is True
+
+def test_summarize_regression_unexpected_question_is_not_complete():
+    # q1 is the only expected question, but the dump also has q2.
+    rows = _sessions("aime", "q1", [1.0, 1.0], [1.0, 1.0]) + _sessions("aime", "q2", [0.0, 0.0], [-1.0, -1.0])
+
+    summary = summarize_validation_dump(rows, expected_n=2, expected_questions={"aime": ["q1"]})
+
+    aime = summary["data_sources"]["aime"]
+    assert aime["unexpected_questions"] == ["q2"]
+    assert (aime["complete"], aime["incomplete_reasons"]) == (False, ["unexpected_questions"])
+    assert aime["mean_acc"] is None
+    assert aime["partial_mean_acc"] == 1.0  # q2 never enters the mean
+    assert aime["per_question"]["q2"]["mean_acc"] is None
+    assert (aime["score_complete"], aime["mean_score"], aime["partial_mean_score"]) == (False, None, 1.0)
+    assert (summary["complete"], summary["incomplete_reasons"]) == (False, ["unexpected_questions"])
+
+    # A data source the expected list does not mention has no expected question.
+    other = summarize_validation_dump(rows, expected_n=2, expected_questions={"aime_2025": ["q1"]})
+    assert other["data_sources"]["aime"]["unexpected_questions"] == ["q1", "q2"]
+    assert other["data_sources"]["aime"]["partial_mean_acc"] is None
+    assert other["data_sources"]["aime_2025"]["missing_questions"] == ["q1"]
+    assert (other["complete"], other["incomplete_reasons"]) == (False, ["missing_questions", "unexpected_questions"])
+
+
+def test_summarize_regression_sessions_without_acc_are_not_complete():
+    # 30 sessions, but only one final session has an acc value; every session has a reward score.
+    rows = _sessions("aime", "q", [1.0] + [None] * 29, [1.0] + [-0.6] * 29)
+
+    summary = summarize_validation_dump(rows, expected_n=30, expected_questions={"aime": ["q"]})
+
+    aime = summary["data_sources"]["aime"]
+    assert (aime["complete"], aime["incomplete_reasons"]) == (False, ["sessions_without_acc"])
+    assert aime["num_sessions_without_acc"] == 29
+    assert aime["per_question"]["q"]["num_sessions_with_acc"] == 1
+    assert aime["mean_acc"] is None and aime["per_question"]["q"]["mean_acc"] is None
+    assert aime["partial_mean_acc"] == 1.0
+    # The reward score has its own gate, and every session has a score.
+    assert (aime["score_complete"], aime["score_incomplete_reasons"]) == (True, [])
+    assert aime["mean_score"] == pytest.approx((1.0 - 0.6 * 29) / 30)
+    assert summary["complete"] is False and summary["score_complete"] is True
+
+    # Missing acc is a known failure even without an expected list.
+    assert summarize_validation_dump(rows)["data_sources"]["aime"]["complete"] is False
+    # Only the final (last) output of a session counts: an earlier output's acc does not.
+    final_without_acc = [
+        {"uid": "u_0_0", "question_id": "q", "data_source": "aime", "acc": 1.0},
+        {"uid": "u_0_1", "question_id": "q", "data_source": "aime"},
+    ]
+    stats = summarize_validation_dump(final_without_acc, expected_n=1)["data_sources"]["aime"]
+    assert stats["num_sessions_without_acc"] == 1
+
+
+def test_summarize_unattributed_rows_make_it_incomplete():
+    good = _sessions("aime", "q", [1.0, 1.0])
+    expected = {"aime": ["q"]}
+    assert summarize_validation_dump(good, expected_n=2, expected_questions=expected)["complete"] is True
+
+    # A row without a uid, or whose uid is not a {uid}_{session_id}_{output_index} key, has no session.
+    for bad_row in (
+        {"question_id": "q", "data_source": "aime", "acc": 1.0},
+        {"uid": "not-a-key", "data_source": "aime"},
+    ):
+        summary = summarize_validation_dump(good + [bad_row], expected_n=2, expected_questions=expected)
+        aime = summary["data_sources"]["aime"]
+        assert (aime["num_unattributed_rows"], aime["num_rows_without_uid"]) == (1, 1)
+        assert (aime["complete"], aime["incomplete_reasons"]) == (False, ["unattributed_rows"])
+        assert (aime["mean_acc"], aime["partial_mean_acc"]) == (None, 1.0)
+    # A known failure even without an expected list.
+    assert summarize_validation_dump(good + [{"data_source": "aime"}])["data_sources"]["aime"]["complete"] is False
+
+    # With an explicit question_key, a row without that key has no question.
+    custom = [{**row, "problem": "p"} for row in good] + [{"uid": "u_9_0", "data_source": "aime", "acc": 1.0}]
+    by_key = summarize_validation_dump(custom, expected_n=2, expected_questions={"aime": ["p"]}, question_key="problem")
+    assert by_key["data_sources"]["aime"]["num_rows_without_question"] == 1
+    assert by_key["data_sources"]["aime"]["incomplete_reasons"] == ["unattributed_rows"]
+
+    # A row without a data source could belong to any data source: all of them are incomplete.
+    orphan = good + [{"uid": "v_0_0", "question_id": "q", "acc": 1.0}]
+    summary = summarize_validation_dump(orphan, expected_n=2, expected_questions=expected)
+    assert summary["num_rows_without_data_source"] == 1
+    assert (summary["complete"], summary["incomplete_reasons"]) == (False, ["unattributed_rows"])
+    assert summary["data_sources"]["aime"]["num_unattributed_rows"] == 0
+    assert summary["data_sources"]["aime"]["incomplete_reasons"] == ["unattributed_rows"]
+    assert summary["data_sources"]["aime"]["mean_acc"] is None
+    # default_data_source attributes such rows explicitly (here making q's session count wrong).
+    attributed = summarize_validation_dump(
+        orphan, expected_n=2, expected_questions=expected, default_data_source="aime"
+    )
+    assert attributed["num_rows_without_data_source"] == 0
+    assert attributed["data_sources"]["aime"]["incomplete_reasons"] == ["session_count_mismatch"]
 
 
 def test_summarize_keeps_data_sources_apart():
-    rows = [
-        {"uid": f"{uid}_{s}_0", "question_id": "index:0", "data_source": data_source, "acc": data_source == "aime_2024"}
-        for uid, data_source in (("u24", "aime_2024"), ("u25", "aime_2025"))
-        for s in range(2)
-    ]
+    rows = _sessions("aime_2024", "index:0", [1.0, 1.0], uid="u24") + _sessions(
+        "aime_2025", "index:0", [0.0, 0.0], uid="u25"
+    )
+    expected = {"aime_2024": ["index:0"], "aime_2025": ["index:0"]}
 
-    summary = summarize_validation_dump(rows, expected_n=2)
+    summary = summarize_validation_dump(rows, expected_n=2, expected_questions=expected)
 
-    assert sorted(summary["data_sources"]) == ["aime_2024", "aime_2025"]
-    for data_source, mean_acc in (("aime_2024", 1.0), ("aime_2025", 0.0)):
-        stats = summary["data_sources"][data_source]
-        assert (stats["num_questions"], stats["num_sessions"], stats["mean_acc"]) == (1, 2, mean_acc)
-
+    assert summary["complete"] is True
+    assert {source: stats["mean_acc"] for source, stats in summary["data_sources"].items()} == {
+        "aime_2024": 1.0,
+        "aime_2025": 0.0,
+    }
     renamed = [{("dataset" if k == "data_source" else k): v for k, v in row.items()} for row in rows]
-    by_key = summarize_validation_dump(renamed, expected_n=2, data_source_key="dataset")
-    assert sorted(by_key["data_sources"]) == ["aime_2024", "aime_2025"]
-    # Without a data source, the two datasets' index:0 questions collapse into one question.
-    merged = summarize_validation_dump(renamed)["data_sources"]
-    assert list(merged) == ["unknown"]
-    assert merged["unknown"]["per_question"]["index:0"]["num_sessions"] == 4
+    by_key = summarize_validation_dump(renamed, expected_n=2, expected_questions=expected, data_source_key="dataset")
+    assert by_key["complete"] is True
+    # Without a data source the rows are unattributed; with one default bucket the two index:0 questions collapse.
+    assert summarize_validation_dump(renamed)["num_rows_without_data_source"] == 4
+    merged = summarize_validation_dump(renamed, expected_n=2, default_data_source="aime")["data_sources"]["aime"]
+    assert merged["per_question"]["index:0"]["num_sessions"] == 4
+    assert merged["incomplete_reasons"] == ["session_count_mismatch", "expected_questions_not_given"]
 
 
 def test_summarize_never_reports_the_reward_score_as_accuracy():
-    rows = [{"uid": f"q_{s}_0", "data_source": "retool", "score": score} for s, score in enumerate([1.0, -0.6, -0.55])]
+    rows = _sessions("retool", "q", [None] * 3, [1.0, -0.6, -0.55])
 
-    summary = summarize_validation_dump(rows, expected_n=3)
+    summary = summarize_validation_dump(rows, expected_n=3, expected_questions={"retool": ["q"]})
 
     retool = summary["data_sources"]["retool"]
-    assert retool["mean_acc"] is None
+    assert (retool["complete"], retool["incomplete_reasons"]) == (False, ["sessions_without_acc"])
+    assert (retool["mean_acc"], retool["partial_mean_acc"]) == (None, None)
     assert retool["per_question"]["q"]["mean_acc"] is None
+    assert retool["score_complete"] is True
     assert retool["mean_score"] == pytest.approx((1.0 - 0.6 - 0.55) / 3)
-    assert retool["per_question"]["q"]["mean_score"] == pytest.approx((1.0 - 0.6 - 0.55) / 3)
     assert "never an accuracy" in summary["metric_fields"]["mean_score"]
-    assert "'acc' field" in summary["metric_fields"]["mean_acc"]
+    assert "set only when complete is True" in summary["metric_fields"]["mean_acc"]
+    assert "not comparable" in summary["metric_fields"]["partial_mean_acc"]
 
 
 def test_summarize_completeness_is_unknown_without_expected_questions():
-    rows = [{"uid": f"q_{s}_0", "acc": 1.0} for s in range(2)]
+    rows = _sessions("aime", "q", [1.0, 1.0])
 
     summary = summarize_validation_dump(rows, expected_n=2)
-    assert summary["complete"] is None
-    assert summary["data_sources"]["unknown"]["complete"] is None
-    assert summary["data_sources"]["unknown"]["missing_questions"] is None
+    assert (summary["complete"], summary["incomplete_reasons"]) == (None, ["expected_questions_not_given"])
+    aime = summary["data_sources"]["aime"]
+    assert (aime["complete"], aime["missing_questions"]) == (None, None)
+    assert (aime["mean_acc"], aime["partial_mean_acc"]) == (None, 1.0)
 
     # Session counts cannot be checked without expected_n, so an expected list alone is not enough either.
-    without_n = summarize_validation_dump(rows, expected_questions={"unknown": ["q"]})
-    assert without_n["complete"] is None
-    assert without_n["data_sources"]["unknown"]["questions_with_unexpected_sessions"] is None
+    without_n = summarize_validation_dump(rows, expected_questions={"aime": ["q"]})
+    assert (without_n["complete"], without_n["incomplete_reasons"]) == (None, ["expected_n_not_given"])
+    assert without_n["data_sources"]["aime"]["questions_with_unexpected_sessions"] is None
     # A wrong session count is a known problem, with or without an expected list.
     assert summarize_validation_dump(rows, expected_n=3)["complete"] is False
+    # Nothing to check at all.
+    assert summarize_validation_dump([])["incomplete_reasons"] == ["no_data_sources"]
 
 
 def test_summarize_question_identity():
     # The same question in two runs: different per-run uids, one stable question_id.
-    rows = [
-        {"uid": f"{run}_{s}_0", "question_id": "sha1:abc", "acc": 1.0} for run in ("run1", "run2") for s in range(2)
-    ]
+    rows = _sessions("aime", "sha1:abc", [1.0, 1.0], uid="run1") + _sessions("aime", "sha1:abc", [1.0, 1.0], uid="run2")
 
-    by_id = summarize_validation_dump(rows)["data_sources"]["unknown"]
+    by_id = summarize_validation_dump(rows)["data_sources"]["aime"]
     assert by_id["question_keys_used"] == ["question_id"]
     assert (by_id["num_questions"], by_id["num_sessions"]) == (1, 4)
 
-    by_uid = summarize_validation_dump(rows, question_key="uid")["data_sources"]["unknown"]
+    by_uid = summarize_validation_dump(rows, question_key="uid")["data_sources"]["aime"]
     assert by_uid["question_keys_used"] == ["uid"]
     assert sorted(by_uid["per_question"]) == ["run1", "run2"]
 
-    custom = [{**row, "problem": f"p-{row['uid'][:4]}"} for row in rows] + [{"uid": "x_0_0"}]
-    by_custom = summarize_validation_dump(custom, question_key="problem")["data_sources"]["unknown"]
+    custom = [{**row, "problem": f"p-{row['uid'][:4]}"} for row in rows]
+    by_custom = summarize_validation_dump(custom, question_key="problem")["data_sources"]["aime"]
     assert sorted(by_custom["per_question"]) == ["p-run1", "p-run2"]
-    assert by_custom["num_rows_without_question"] == 1
 
 
 def test_validation_question_id_is_stable_across_runs():
@@ -715,7 +823,7 @@ def test_validate_dump_writes_data_source_and_question_id(tmp_path, monkeypatch)
     summary = summarize_validation_dump(
         rows, expected_n=n, expected_questions={source: [qid] for source, qid in expected_ids.items()}
     )
-    assert summary["complete"] is True
+    assert (summary["complete"], summary["score_complete"]) == (True, True)
     assert {source: stats["mean_acc"] for source, stats in summary["data_sources"].items()} == {
         "aime_2024": 0.5,
         "aime_2025": 0.5,

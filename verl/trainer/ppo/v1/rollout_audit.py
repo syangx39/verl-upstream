@@ -32,8 +32,8 @@ callable), so it can be unit tested on CPU:
   ``question_id`` (:func:`validation_question_id`) to the rows of the ``trainer.validation_data_dir`` dump.
 - :func:`summarize_validation_dump` checks such a dump for completeness: it counts distinct sessions per question
   (multi-output sessions write several JSONL lines, so samples per question must not be inferred from line counts),
-  reports expected questions with no rows at all, and keeps accuracy (``acc``) apart from the reward score
-  (``score``).
+  reports missing and unexpected questions, unattributable rows and sessions without ``acc``, keeps accuracy
+  (``acc``) apart from the reward score (``score``), and only reports ``mean_acc``/``mean_score`` for complete data.
 
 Trajectory keys have the format ``{uid}_{session_id}_{output_index}``: ``uid`` identifies the question (one GRPO
 group), ``{uid}_{session_id}`` one sampled trajectory (session), and ``output_index`` one agent-loop output of the
@@ -727,15 +727,24 @@ VALIDATION_DUMP_IDENTITY_KEYS = ("data_source", "question_id")
 
 SUMMARY_METRIC_FIELDS = {
     "mean_acc": (
-        "mean of the 'acc' field: accuracy as written by the reward function (verl reward managers copy a reward "
-        "function's bare-float return value into 'acc')"
+        "mean over the expected questions of each question's mean 'acc' (accuracy as written by the reward "
+        "function; verl reward managers copy a reward function's bare-float return value into 'acc'); set only "
+        "when complete is True"
+    ),
+    "partial_mean_acc": (
+        "the same mean over whatever expected questions and sessions have an 'acc' value, reported when complete is "
+        "not True; not comparable across runs or with mean@N"
     ),
     "mean_score": (
-        "mean of the 'score' field: the reward score, which may include shaping such as ReTool's tool-call bonus; "
-        "never an accuracy"
+        "mean over the expected questions of each question's mean 'score': the reward score, which may include "
+        "shaping such as ReTool's tool-call bonus, never an accuracy; set only when score_complete is True"
     ),
+    "partial_mean_score": "the same mean, reported when score_complete is not True; not comparable across runs",
 }
-"""What ``mean_acc`` and ``mean_score`` in :func:`summarize_validation_dump` are computed from."""
+"""What the means in :func:`summarize_validation_dump` are computed from, and when they are set."""
+
+_ACC_GATE = ("complete", "incomplete_reasons", "sessions_without_acc")
+_SCORE_GATE = ("score_complete", "score_incomplete_reasons", "sessions_without_score")
 
 
 def validation_question_id(extra_info: Any, raw_prompt: Any) -> Optional[str]:
@@ -840,17 +849,57 @@ def _min_max(values: Sequence[int]) -> dict[str, Optional[int]]:
     return {"min": min(values) if values else None, "max": max(values) if values else None}
 
 
-def _row_question(row: Mapping[str, Any], question_key: Optional[str], uid_question: str) -> tuple[Optional[str], str]:
+def _parse_session_key(key: Any) -> Optional[tuple[str, str, int]]:
+    """Return ``(uid, session, output_index)`` of a ``{uid}_{session_id}_{output_index}`` key, else ``None``."""
+    if key is None:
+        return None
+    parts = str(key).rsplit("_", 2)
+    if len(parts) != 3 or not parts[1].isdigit() or not parts[2].isdigit():
+        return None
+    return parts[0], f"{parts[0]}_{parts[1]}", int(parts[2])
+
+
+def _row_question(row: Mapping[str, Any], question_key: Optional[str], uid: str) -> tuple[Optional[str], str]:
     """Return ``(question, key it came from)`` for one validation dump row."""
     if question_key is None:
         question_id = row.get("question_id")
         if question_id is not None:
             return str(question_id), "question_id"
-        return uid_question, "uid"
+        return uid, "uid"
     if question_key == "uid":
-        return uid_question, "uid"
+        return uid, "uid"
     value = row.get(question_key)
     return (None if value is None else str(value)), question_key
+
+
+def _gate(failures: list[str], unknowns: list[str]) -> tuple[Optional[bool], list[str]]:
+    """Return ``(flag, reasons)``: ``False`` on any failure, ``None`` if only unknowns, ``True`` if neither."""
+    if failures:
+        return False, failures + unknowns
+    return (None, unknowns) if unknowns else (True, [])
+
+
+def _question_stats(
+    sessions: Mapping[str, list[tuple[int, Any, Any]]], expected_n: Optional[int], is_expected: bool
+) -> dict[str, Any]:
+    """Summarize one question; its means are only set when it is verifiably complete."""
+    # Each session is represented by its final output (highest output index), which carries the session's reward.
+    finals = [max(entries, key=lambda entry: entry[0]) for entries in sessions.values()]
+    accs = [value for value in (_metric_value(acc) for _, acc, _ in finals) if value is not None]
+    scores = [value for value in (_metric_value(score) for _, _, score in finals) if value is not None]
+    full = is_expected and expected_n is not None and len(sessions) == expected_n
+    acc_full = full and len(accs) == len(sessions)
+    score_full = full and len(scores) == len(sessions)
+    return {
+        "num_sessions": len(sessions),
+        "num_rows": sum(len(entries) for entries in sessions.values()),
+        "num_sessions_with_acc": len(accs),
+        "num_sessions_with_score": len(scores),
+        "mean_acc": _mean(accs) if acc_full else None,
+        "partial_mean_acc": None if acc_full else _mean(accs),
+        "mean_score": _mean(scores) if score_full else None,
+        "partial_mean_score": None if score_full else _mean(scores),
+    }
 
 
 def _summarize_data_source(
@@ -859,25 +908,17 @@ def _summarize_data_source(
     question_keys_used: list[str],
     expected_n: Optional[int],
     expected: Optional[Iterable[Any]],
+    num_rows_without_data_source: int,
 ) -> dict[str, Any]:
     """Summarize the rows of one data source, see :func:`summarize_validation_dump`."""
-    per_question: dict[str, dict[str, Any]] = {}
-    for question in sorted(questions):
-        sessions = questions[question]
-        # All outputs of a session carry the session's final reward; read it from the last output.
-        finals = [max(entries, key=lambda entry: entry[0]) for entries in sessions.values()]
-        accs = [value for value in (_metric_value(acc) for _, acc, _ in finals) if value is not None]
-        scores = [value for value in (_metric_value(score) for _, _, score in finals) if value is not None]
-        per_question[question] = {
-            "num_sessions": len(sessions),
-            "num_rows": sum(len(entries) for entries in sessions.values()),
-            "mean_acc": _mean(accs),
-            "mean_score": _mean(scores),
-        }
-
     if isinstance(expected, str):  # a single id, not a sequence of characters
         expected = [expected]
     expected_ids = None if expected is None else {str(question) for question in expected}
+
+    per_question = {
+        question: _question_stats(questions[question], expected_n, expected_ids is None or question in expected_ids)
+        for question in sorted(questions)
+    }
     missing = None if expected_ids is None else sorted(expected_ids - per_question.keys())
     unexpected = None if expected_ids is None else sorted(per_question.keys() - expected_ids)
     off_count = None
@@ -887,17 +928,34 @@ def _summarize_data_source(
             for question, stats in per_question.items()
             if stats["num_sessions"] != expected_n
         ]
-    if missing or off_count:
-        complete = False
-    elif expected_ids is not None and expected_n is not None:
-        complete = True
-    else:
-        complete = None
+    num_unattributed = counts.get("num_rows_without_uid", 0) + counts.get("num_rows_without_question", 0)
+    num_sessions = sum(stats["num_sessions"] for stats in per_question.values())
+    without = {
+        "sessions_without_acc": num_sessions - sum(s["num_sessions_with_acc"] for s in per_question.values()),
+        "sessions_without_score": num_sessions - sum(s["num_sessions_with_score"] for s in per_question.values()),
+    }
 
-    # Expected questions without any row count as questions with zero sessions.
-    sessions_per_question = [stats["num_sessions"] for stats in per_question.values()] + [0] * len(missing or ())
-    return {
+    failures = []
+    for reason, found in (
+        # Rows without a data source could belong to this one too.
+        ("unattributed_rows", num_unattributed or num_rows_without_data_source),
+        ("missing_questions", missing),
+        ("unexpected_questions", unexpected),
+        ("session_count_mismatch", off_count),
+    ):
+        if found:
+            failures.append(reason)
+    unknowns = []
+    if expected_ids is None:
+        unknowns.append("expected_questions_not_given")
+    if expected_n is None:
+        unknowns.append("expected_n_not_given")
+
+    # Means are taken over the expected questions when a list is given: unexpected questions never count.
+    in_scope = [stats for question, stats in per_question.items() if expected_ids is None or question in expected_ids]
+    summary = {
         "num_rows": counts.get("num_rows", 0),
+        "num_unattributed_rows": num_unattributed,
         "num_rows_without_uid": counts.get("num_rows_without_uid", 0),
         "num_rows_without_question": counts.get("num_rows_without_question", 0),
         "question_keys_used": question_keys_used,
@@ -905,18 +963,30 @@ def _summarize_data_source(
         "num_expected_questions": None if expected_ids is None else len(expected_ids),
         "missing_questions": missing,
         "unexpected_questions": unexpected,
-        "num_sessions": sum(stats["num_sessions"] for stats in per_question.values()),
-        "sessions_per_question": _min_max(sessions_per_question),
+        "num_sessions": num_sessions,
+        "num_sessions_without_acc": without["sessions_without_acc"],
+        "num_sessions_without_score": without["sessions_without_score"],
+        # Expected questions without any row count as questions with zero sessions.
+        "sessions_per_question": _min_max(
+            [stats["num_sessions"] for stats in per_question.values()] + [0] * len(missing or ())
+        ),
         "outputs_per_session": _min_max([len(e) for sessions in questions.values() for e in sessions.values()]),
         "expected_n": expected_n,
         "questions_with_unexpected_sessions": off_count,
-        "complete": complete,
-        "mean_acc": _mean([stats["mean_acc"] for stats in per_question.values() if stats["mean_acc"] is not None]),
-        "mean_score": _mean(
-            [stats["mean_score"] for stats in per_question.values() if stats["mean_score"] is not None]
-        ),
-        "per_question": per_question,
     }
+    for metric, (flag_key, reasons_key, coverage) in (("acc", _ACC_GATE), ("score", _SCORE_GATE)):
+        flag, reasons = _gate(failures + ([coverage] if without[coverage] else []), unknowns)
+        question_means = [
+            stats[f"mean_{metric}"] if stats[f"mean_{metric}"] is not None else stats[f"partial_mean_{metric}"]
+            for stats in in_scope
+        ]
+        value = _mean([mean for mean in question_means if mean is not None])
+        summary[flag_key] = flag
+        summary[reasons_key] = reasons
+        summary[f"mean_{metric}"] = value if flag is True else None
+        summary[f"partial_mean_{metric}"] = None if flag is True else value
+    summary["per_question"] = per_question
+    return summary
 
 
 def summarize_validation_dump(
@@ -926,93 +996,133 @@ def summarize_validation_dump(
     expected_questions: Optional[Mapping[str, Iterable[Any]]] = None,
     data_source_key: str = "data_source",
     question_key: Optional[str] = None,
-    default_data_source: str = "unknown",
+    default_data_source: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Check a validation dump for completeness and summarize it per data source and question.
+    """Check a validation dump for completeness and summarize accuracy and reward per data source and question.
 
     Validation dumps (``trainer.validation_data_dir``) write one JSONL line per agent-loop *output*, and a multi-turn
-    session can have several outputs, so samples per question are counted as distinct sessions (``{uid}_{session_id}``
-    from each row's ``uid`` key), never as lines. A question none of whose sessions reached the dump has no row at
-    all; it is only reported, in ``missing_questions``, when ``expected_questions`` lists it.
+    session can have several outputs, so samples per question are counted as distinct sessions, never as lines. A
+    session is represented by its *final output* (its row with the highest output index), which carries the
+    session's reward; a session "without acc" is one whose final output has no finite ``acc`` value.
 
-    Rows are grouped by ``row[data_source_key]`` (``default_data_source`` when absent), then by question: with
+    **Attribution.** A row belongs to the data source ``row[data_source_key]`` (else ``default_data_source``), to a
+    session through its ``uid``, which must be a ``{uid}_{session_id}_{output_index}`` key, and to a question: with
     ``question_key=None`` the row's stable ``question_id`` (written by the V1 trainer) when present, else the per-run
-    uid (``uid.rsplit("_", 2)[0]``); ``question_key="uid"`` always uses the uid, any other key uses ``row[key]``.
+    uid; ``question_key="uid"`` always uses the uid; any other key uses ``row[key]``. Rows without a data source are
+    counted in the top-level ``num_rows_without_data_source`` and could belong to any data source, so they make every
+    data source incomplete; the other unattributable rows are counted in their data source's
+    ``num_unattributed_rows``.
 
-    Accuracy and reward are kept apart: ``mean_acc`` only reads the ``acc`` field and is ``None`` when no row has it;
-    ``mean_score`` reads the ``score`` field, which is the (possibly shaped) reward and never an accuracy. Each
-    session contributes the value of its last output, and data-source means average the per-question means, like
-    ``mean@N``.
+    **Completeness.** ``complete`` gates the accuracy and ``score_complete`` the reward score. Per data source each is
 
-    ``complete`` is ``False`` when an expected question is missing or a question's session count differs from
-    ``expected_n``; ``True`` only when both ``expected_questions`` (for that data source) and ``expected_n`` are given
-    and nothing is missing or off; otherwise ``None`` (cannot tell). The top-level ``complete`` is ``False`` if any data
-    source is ``False``, ``True`` if all are ``True``, else ``None``.
+    - ``False`` if any of these is found (its reasons list says which): ``"unattributed_rows"``,
+      ``"missing_questions"`` and ``"unexpected_questions"`` (checked when ``expected_questions`` is given; a data
+      source it does not list has no expected question), ``"session_count_mismatch"`` (checked when ``expected_n``
+      is given), and ``"sessions_without_acc"`` (for ``complete``) or ``"sessions_without_score"`` (for
+      ``score_complete``);
+    - ``None`` when nothing is wrong but it cannot be confirmed: ``"expected_questions_not_given"`` or
+      ``"expected_n_not_given"``;
+    - ``True`` only when its reasons list is empty.
+
+    The top-level flags are ``False`` if a data source is ``False`` or a row has no data source, ``True`` if every
+    data source is ``True``, else ``None``; their reasons lists are the union of the data sources' reasons.
+
+    **Means.** A question's mean is taken over its sessions' final values; a data source's mean averages the
+    per-question means over its expected questions (all its questions without an expected list; unexpected
+    questions never count). ``mean_acc`` and ``mean_score`` are set only when ``complete`` and ``score_complete``
+    are ``True`` (for a question: when it is expected and has ``expected_n`` sessions that all have the value).
+    Otherwise they are ``None`` and ``partial_mean_acc`` and ``partial_mean_score`` hold the mean over what is
+    present, which is not comparable across runs. ``mean_score`` is the reward (possibly shaped) and never an
+    accuracy.
 
     Args:
         rows: Parsed JSONL rows of one validation dump.
         expected_n: Expected number of sessions per question (e.g. ``val_kwargs.n``).
         expected_questions: Expected question ids per data source, in the identity used for grouping (e.g. the
-            ``question_id`` values, see :func:`validation_question_id`). Data sources listed here but absent from the
-            dump are reported with all their questions missing.
+            ``question_id`` values, see :func:`validation_question_id`). It must list every data source of the dump;
+            data sources it lists but the dump lacks are reported with all their questions missing.
         data_source_key: Row key holding the data source.
         question_key: Row key holding the question identity, see above.
-        default_data_source: Data source of rows without ``data_source_key``.
+        default_data_source: Data source of rows without ``data_source_key``. ``None`` leaves such rows
+            unattributed.
 
     Returns:
-        ``{"complete", "expected_n", "metric_fields", "data_sources"}`` where ``metric_fields`` describes
-        ``mean_acc``/``mean_score`` and ``data_sources`` maps each data source to ``num_rows``,
-        ``num_rows_without_uid``, ``num_rows_without_question``, ``question_keys_used``, ``num_questions`` (present in
-        the dump), ``num_expected_questions``, ``missing_questions`` and ``unexpected_questions`` (``None`` without an
-        expected list), ``num_sessions``, ``sessions_per_question`` (``{"min", "max"}``, missing questions count as
-        0), ``outputs_per_session`` (``{"min", "max"}``), ``expected_n``, ``questions_with_unexpected_sessions``
-        (``[{"question", "num_sessions"}]``, ``None`` without ``expected_n``), ``complete``, ``mean_acc``,
-        ``mean_score`` and ``per_question`` (``{question: {"num_sessions", "num_rows", "mean_acc", "mean_score"}}``).
+        ``{"complete", "incomplete_reasons", "score_complete", "score_incomplete_reasons", "num_rows",
+        "num_rows_without_data_source", "expected_n", "metric_fields", "data_sources"}``. ``metric_fields`` describes
+        the means. ``data_sources`` maps each data source to ``num_rows``, ``num_unattributed_rows`` (=
+        ``num_rows_without_uid`` + ``num_rows_without_question``), ``question_keys_used``, ``num_questions`` (in the
+        dump), ``num_expected_questions``, ``missing_questions`` and ``unexpected_questions`` (``None`` without an
+        expected list), ``num_sessions``, ``num_sessions_without_acc``, ``num_sessions_without_score``,
+        ``sessions_per_question`` (``{"min", "max"}``, missing questions count as 0), ``outputs_per_session``,
+        ``expected_n``, ``questions_with_unexpected_sessions`` (``[{"question", "num_sessions"}]``, ``None`` without
+        ``expected_n``), ``complete``, ``incomplete_reasons``, ``mean_acc``, ``partial_mean_acc``,
+        ``score_complete``, ``score_incomplete_reasons``, ``mean_score``, ``partial_mean_score`` and
+        ``per_question`` (``{question: {"num_sessions", "num_rows", "num_sessions_with_acc",
+        "num_sessions_with_score", "mean_acc", "partial_mean_acc", "mean_score", "partial_mean_score"}}``).
     """
     # data_source -> question -> session -> [(output_index, acc, score)]
     grouped: dict[str, dict[str, dict[str, list[tuple[int, Any, Any]]]]] = {}
     counts: dict[str, Counter] = defaultdict(Counter)
     question_keys_used: dict[str, set[str]] = defaultdict(set)
+    num_rows = num_rows_without_data_source = 0
     for row in rows:
+        num_rows += 1
         data_source = row.get(data_source_key)
-        data_source = default_data_source if data_source is None else str(data_source)
+        if data_source is None:
+            data_source = default_data_source
+        if data_source is None:
+            num_rows_without_data_source += 1
+            continue
+        data_source = str(data_source)
         counts[data_source]["num_rows"] += 1
         questions = grouped.setdefault(data_source, {})
-        key = row.get("uid")
-        if key is None:
+        parsed = _parse_session_key(row.get("uid"))
+        if parsed is None:
             counts[data_source]["num_rows_without_uid"] += 1
             continue
-        uid_question, session, output_index = split_trajectory_key(str(key))
-        question, key_used = _row_question(row, question_key, uid_question)
+        uid, session, output_index = parsed
+        question, key_used = _row_question(row, question_key, uid)
         if question is None:
             counts[data_source]["num_rows_without_question"] += 1
             continue
         question_keys_used[data_source].add(key_used)
         questions.setdefault(question, {}).setdefault(session, []).append(
-            (-1 if output_index is None else output_index, row.get("acc"), row.get("score"))
+            (output_index, row.get("acc"), row.get("score"))
         )
 
     data_sources = {}
     for data_source in sorted(set(grouped) | set(expected_questions or {})):
-        expected = None if expected_questions is None else expected_questions.get(data_source)
+        expected = None if expected_questions is None else expected_questions.get(data_source, ())
         data_sources[data_source] = _summarize_data_source(
             grouped.get(data_source, {}),
             counts[data_source],
             sorted(question_keys_used[data_source]),
             expected_n,
             expected,
+            num_rows_without_data_source,
         )
 
-    flags = [summary["complete"] for summary in data_sources.values()]
-    if any(flag is False for flag in flags):
-        complete = False
-    elif flags and all(flag is True for flag in flags):
-        complete = True
-    else:
-        complete = None
-    return {
-        "complete": complete,
-        "expected_n": expected_n,
-        "metric_fields": dict(SUMMARY_METRIC_FIELDS),
-        "data_sources": data_sources,
-    }
+    summary: dict[str, Any] = {}
+    for flag_key, reasons_key, _ in (_ACC_GATE, _SCORE_GATE):
+        flags = [stats[flag_key] for stats in data_sources.values()]
+        reasons = {reason for stats in data_sources.values() for reason in stats[reasons_key]}
+        if num_rows_without_data_source:
+            reasons.add("unattributed_rows")
+        if num_rows_without_data_source or any(flag is False for flag in flags):
+            flag = False
+        elif flags and all(flag is True for flag in flags):
+            flag = True
+        else:
+            flag = None
+            if not flags:
+                reasons.add("no_data_sources")
+        summary[flag_key] = flag
+        summary[reasons_key] = sorted(reasons)
+    summary.update(
+        num_rows=num_rows,
+        num_rows_without_data_source=num_rows_without_data_source,
+        expected_n=expected_n,
+        metric_fields=dict(SUMMARY_METRIC_FIELDS),
+        data_sources=data_sources,
+    )
+    return summary

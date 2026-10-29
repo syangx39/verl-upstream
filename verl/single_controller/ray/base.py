@@ -88,19 +88,20 @@ def sort_placement_group_by_node_ip(pgs: list[PlacementGroup]) -> list[Placement
     With this function, if there's only one resource pool and there's no node change, RANK should be consistent
     across nodes in multiple ray jobs, even if the whole ray cluster is restarted.
 
-    Topological host order (TPU): if the node of every placement group carries the Ray node label
-    ``verl-tpu-node-rank`` (``TPU_NODE_RANK_LABEL``) with a non-negative integer value, the placement groups are
-    sorted by (rank, node ip) instead, so worker ranks, ``TORCH_TPU_SLICEBUILDER_ADDRESSES`` and
-    ``TPU_WORKER_HOSTNAMES`` follow the host order torch_tpu uses for the slice mesh. On GKE the pod IPs of a
-    multi-host TPU slice are unrelated to the physical host positions; with IP order the mesh still forms, but
-    collectives fail (an 8-host TPU 7x slice halted in the first FSDP collective).
+    TPU host order: if the node of every placement group carries the Ray node label ``verl-tpu-node-rank``
+    (``TPU_NODE_RANK_LABEL``) with a non-negative integer value, the placement groups are sorted by (rank, node ip)
+    instead, so worker ranks, ``TORCH_TPU_SLICEBUILDER_ADDRESSES`` and ``TPU_WORKER_HOSTNAMES`` follow the host
+    order the slice's TPU runtime expects. On GKE the pod IPs of a multi-host TPU slice are unrelated to that order
+    (which every TPU process also sees as ``TPU_WORKER_ID``); with IP order the mesh still forms, but collectives
+    fail (an 8-host TPU 7x slice halted in the first FSDP collective).
 
     Label contract: the TPU launcher sets the label on each TPU worker host before Ray starts there, e.g.
-    ``ray start ... --labels=verl-tpu-node-rank=3``. The value is the host's rank inside its own slice, computed
-    from the physical coordinates of its TPU chips in the order torch_tpu ranks hosts (Z-major), starting at 0.
-    Ranks are only comparable within one slice; verl only reads the label. If only some nodes carry it, or a
-    value is not an integer, the IP order is used and a warning is logged; without the label the order is
-    unchanged.
+    ``ray start ... --labels=verl-tpu-node-rank=3``. The value is the host's rank inside its own slice, starting
+    at 0, in the order torch_tpu's multi-host launcher ranks hosts: the Kubernetes job completion index (GKE's
+    ``TPU_WORKER_ID``) for torch_tpu 0.1.x, the Z-major order of the hosts' chip coordinates for builds that rank
+    hosts topologically. Ranks are only comparable within one slice; verl only reads the label. If only some nodes
+    carry it, or a value is not an integer, the IP order is used and a warning is logged; without the label the
+    order is unchanged.
 
     Args:
         pgs: Placement groups that are already placed (each maps to a node through its lowest bundle index).

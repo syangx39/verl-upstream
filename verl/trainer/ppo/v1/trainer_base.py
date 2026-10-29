@@ -73,6 +73,7 @@ from verl.trainer.ppo.utils import (
     need_teacher_policy,
 )
 from verl.trainer.ppo.v1.replay_buffer import DAPO_FILTERED_REWARD_COUNTS_KEY, ReplayBuffer, ReplayBufferAsync
+from verl.trainer.ppo.v1.rollout_audit import collect_rollout_audit_records, write_rollout_audit_jsonl
 from verl.trainer.ppo.v1.utils import MetricsAggregator, compute_advantage_for_multi_trajectories
 from verl.utils import tensordict_utils as tu
 from verl.utils.checkpoint.checkpoint_manager import find_latest_ckpt_path
@@ -524,6 +525,11 @@ class PPOTrainer(ABC):
             rollout_data_dir = self.config.trainer.get("rollout_data_dir", None)
             if rollout_data_dir:
                 self._log_rollout_data(batch, self.timing_raw, rollout_data_dir)
+            # token-level audit (token IDs, response masks) of a few whole sessions
+            rollout_audit_dir = self.config.trainer.get("rollout_audit_dir", None)
+            if rollout_audit_dir:
+                num_audit_sessions = self.config.trainer.get("rollout_audit_sessions", 4)
+                self._log_rollout_audit(batch, self.timing_raw, rollout_audit_dir, num_audit_sessions)
 
             # 7. cleanup transfer queue
             tq.kv_clear(keys=batch.keys, partition_id=batch.partition_id)
@@ -1361,6 +1367,40 @@ class PPOTrainer(ABC):
                 reward_extra_infos_dict=reward_extra_infos_dict,
                 dump_path=rollout_data_dir,
             )
+
+    def _log_rollout_audit(self, batch: KVBatchMeta, timing_raw: dict, audit_dir: str, num_sessions: int):
+        """Dump token-level audit records of a few whole sessions to ``{audit_dir}/{global_steps}.jsonl``.
+
+        Records hold the raw prompt/response token IDs, the response (loss) mask and its contiguous segments
+        decoded with special tokens, the score and the reward extra info (see ``verl.trainer.ppo.v1.rollout_audit``).
+        Only the selected keys are read from TransferQueue, and the file is written by the dump thread. Failures
+        are logged and never stop training.
+        """
+        with marked_timer("dump_rollout_audit", timing_raw, color="green"):
+            try:
+                records = collect_rollout_audit_records(
+                    kv_batch_get=tq.kv_batch_get,
+                    keys=batch.keys,
+                    tags=batch.tags,
+                    partition_id=batch.partition_id,
+                    tokenizer=self.tokenizer,
+                    step=self.global_steps,
+                    num_sessions=int(num_sessions),
+                )
+                if records:
+                    path = os.path.join(audit_dir, f"{self.global_steps}.jsonl")
+                    self._dump_futures.append(self._dump_executor.submit(self._write_rollout_audit, records, path))
+            except Exception:
+                logger.warning("Rollout audit failed at step %s; training continues", self.global_steps, exc_info=True)
+
+    @staticmethod
+    def _write_rollout_audit(records: list[dict], path: str) -> None:
+        """Write rollout audit records as JSONL (runs in the dump thread); failures are logged, not raised."""
+        try:
+            write_rollout_audit_jsonl(records, path)
+            logger.info("Dumped %d rollout audit records to %s", len(records), path)
+        except Exception:
+            logger.warning("Failed to write rollout audit records to %s", path, exc_info=True)
 
     def _val_metrics_update(
         self,

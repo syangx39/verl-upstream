@@ -15,8 +15,8 @@
 # ===================================================================================
 # Bootstrap of one TPU 7x host (pod) of a slice in the JobSet rendered by run_ray_jobset_v7x_nap.sh.
 #
-#   1. Multi-host slices: compute the host's topological rank inside the slice (tpu_node_rank.py), on every host
-#      at about the same time and before anything changes the TPU environment GKE provides.
+#   1. Multi-host slices: determine the host's rank inside the slice, by default its Kubernetes job completion index
+#      (= GKE's TPU_WORKER_ID), or with VERL_NAP_NODE_RANK_SOURCE=probe its topological rank (tpu_node_rank.py).
 #   2. Unset the multi-slice MEGASCALE_* variables GKE injects into JobSets, so every slice is its own libtpu mesh.
 #      The other TPU_* variables stay: Ray derives its TPU node labels from them, and verl sets the per-process
 #      TPU environment of its workers explicitly.
@@ -37,10 +37,24 @@ log() { echo "[verl-nap ${VERL_NAP_ROLE:-worker} ${POD}] $*"; }
 
 mkdir -p "${VERL_NAP_RUN_DIR}/env" || log "WARNING: cannot create ${VERL_NAP_RUN_DIR}/env"
 
-# 1. Topological rank inside the slice.
+# 1. The host's rank inside its slice (published as the Ray node label verl-tpu-node-rank in step 4).
+#    job-index (default): the Kubernetes job completion index. GKE exports it as TPU_WORKER_ID (inherited by every
+#      TPU process) and lists TPU_WORKER_HOSTNAMES in that order, and torch_tpu 0.1.x's own multi-host launcher uses
+#      it as NODE_RANK; verl's host order then agrees with all of them (verl orders by IP string otherwise).
+#    probe: the topological rank from torch_tpu's calculate_topological_node_rank (only in builds that have it),
+#      computed on every host of the slice at about the same time, before Ray starts.
 NODE_RANK=""
 NODE_RANK_OUT=""
-if (( VERL_NAP_HOSTS_PER_SLICE > 1 )); then
+NODE_RANK_SOURCE="${VERL_NAP_NODE_RANK_SOURCE:-job-index}"
+if (( VERL_NAP_HOSTS_PER_SLICE == 1 )); then
+  NODE_RANK=0
+elif [[ "${NODE_RANK_SOURCE}" == "job-index" ]]; then
+  NODE_RANK="${JOB_COMPLETION_INDEX:-}"
+  if [[ -n "${TPU_WORKER_ID:-}" && "${TPU_WORKER_ID}" != "${NODE_RANK}" ]]; then
+    log "WARNING: JOB_COMPLETION_INDEX=${NODE_RANK} differs from GKE TPU_WORKER_ID=${TPU_WORKER_ID}"
+  fi
+  log "node rank ${NODE_RANK:-MISSING} (source: job completion index)"
+elif [[ "${NODE_RANK_SOURCE}" == "probe" ]]; then
   NODE_RANK_OUT="$(timeout "${VERL_NAP_NODE_RANK_TIMEOUT_S:-600}" python3 "${HERE}/tpu_node_rank.py" \
     "${VERL_NAP_SLICE_TOPOLOGY}" 2>/tmp/verl-nap-node-rank.err | grep '^NODE_RANK=' | tail -n 1 || true)"
   NODE_RANK="$(sed -n 's/^NODE_RANK=\([0-9][0-9]*\) .*/\1/p' <<<"${NODE_RANK_OUT}")"
@@ -52,7 +66,7 @@ if (( VERL_NAP_HOSTS_PER_SLICE > 1 )); then
   # A probe killed by the timeout can leave libtpu's lock file behind, which would block the TPU for Ray's workers.
   rm -f /tmp/libtpu_lockfile
 else
-  NODE_RANK=0
+  log "WARNING: unknown VERL_NAP_NODE_RANK_SOURCE=${NODE_RANK_SOURCE}; no node rank label"
 fi
 
 # 2. Multi-slice variables off.
@@ -64,7 +78,8 @@ done
 # 3. Environment evidence.
 python3 "${HERE}/pod_env_snapshot.py" pod --out "${VERL_NAP_RUN_DIR}/env/${POD}.json" \
   --set "role=${VERL_NAP_ROLE:-}" --set "slice=${VERL_NAP_SLICE_RESOURCE}" --set "node_rank=${NODE_RANK}" \
-  --set "node_rank_probe=${NODE_RANK_OUT}" --set "gke_tpu_worker_id=${TPU_WORKER_ID:-}" \
+  --set "node_rank_source=${NODE_RANK_SOURCE}" --set "node_rank_probe=${NODE_RANK_OUT}" \
+  --set "job_completion_index=${JOB_COMPLETION_INDEX:-}" --set "gke_tpu_worker_id=${TPU_WORKER_ID:-}" \
   || log "WARNING: pod environment snapshot failed"
 nohup python3 "${HERE}/pod_env_snapshot.py" procs --out "${VERL_NAP_RUN_DIR}/env/${POD}-procs.jsonl" \
   --interval 60 >/tmp/verl-nap-procs.log 2>&1 &

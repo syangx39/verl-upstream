@@ -67,6 +67,7 @@ def _values(**overrides) -> dict:
         "JOBSET_MAX_RESTARTS": "0",
         "JOBSET_TTL_SECONDS": "1800",
         "NODE_WAIT_TIMEOUT_S": "1200",
+        "NODE_RANK_SOURCE": "job-index",
         "NODE_RANK_TIMEOUT_S": "600",
         "DRIVER_TIMEOUT_S": "6600",
         "REQUIRE_NODE_RANK": "1",
@@ -135,6 +136,7 @@ def test_manifest_two_slices_follows_cluster_rules():
         assert env["VERL_NAP_SLICE_RESOURCE"] == resource
         assert env["VERL_NAP_HEAD_HOST"] == f"{values['RUN_NAME']}-head-0-0.{values['RUN_NAME']}"
         assert env["VERL_NAP_HOSTS_PER_SLICE"] == "4"
+        assert env["VERL_NAP_NODE_RANK_SOURCE"] == "job-index"
         assert values["SRC_TARBALL"] in container["args"][0]
         volumes = {v["name"]: v for v in pod["spec"]["volumes"]}
         assert volumes["gcs-volume"]["csi"]["volumeAttributes"]["bucketName"] == "example-bucket"

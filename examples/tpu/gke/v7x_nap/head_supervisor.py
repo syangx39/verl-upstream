@@ -246,7 +246,7 @@ class Supervisor:
         if not ranks_ok:
             msg = f"multi-host slices without a complete set of {NODE_RANK_LABEL} labels (see cluster/slices.txt)"
             if self.require_rank:
-                return self.finish("FAILED", msg + "; set REQUIRE_NODE_RANK=0 to run with verl's IP order")
+                return self.finish("FAILED", msg + "; REQUIRE_NODE_RANK=0 runs with verl's IP order instead")
             log("WARNING: " + msg + "; verl falls back to ordering hosts by IP")
         return None
 

@@ -21,6 +21,10 @@ the trainer's collectives pair the wrong hosts.
 
 Run it on every host of the slice at about the same time (as torch_tpu's launcher does), before Ray starts and
 before anything changes the TPU environment GKE provides. Usage: ``tpu_node_rank.py <slice topology, e.g. 2x2x4>``.
+
+Used only with ``NODE_RANK_SOURCE=probe``: it needs a torch_tpu build whose multi-host launcher has
+``calculate_topological_node_rank``. torch_tpu 0.1.x does not; its launcher uses the Kubernetes job completion index
+as the host rank, which is the launcher's default (``NODE_RANK_SOURCE=job-index``).
 """
 
 import os

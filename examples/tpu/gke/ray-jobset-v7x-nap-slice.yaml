@@ -10,8 +10,8 @@
 #   pods on one node pool.
 # * safe-to-evict=false: the pods request no cpu/memory, so the autoscaler would otherwise see their nodes as idle.
 #
-# Each host computes its topological rank inside the slice before Ray starts and registers it as the Ray node label
-# `verl-tpu-node-rank` (verl orders a slice's hosts by it), plus the Ray resources
+# Each host registers its rank inside the slice (`${NODE_RANK_SOURCE}`: job completion index = GKE TPU_WORKER_ID, or a
+# topological probe) as the Ray node label `verl-tpu-node-rank` (verl orders a slice's hosts by it), plus the Ray resources
 # `{"TPU": ${RAY_TPU_PER_HOST}, "${SLICE_RAY_RESOURCE}": 1}` (`v7x_nap/worker.sh`).
     - name: ${SLICE_JOB}
       replicas: 1
@@ -92,6 +92,8 @@ ${SLICE_EXTRA_NODE_SELECTOR}
                       value: "${HOSTS_PER_SLICE}"
                     - name: VERL_NAP_RAY_TPU_PER_HOST
                       value: "${RAY_TPU_PER_HOST}"
+                    - name: VERL_NAP_NODE_RANK_SOURCE
+                      value: "${NODE_RANK_SOURCE}"
                     - name: VERL_NAP_NODE_RANK_TIMEOUT_S
                       value: "${NODE_RANK_TIMEOUT_S}"
                     - name: VERL_NAP_WORKER_NUM_CPUS

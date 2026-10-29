@@ -50,10 +50,10 @@ All P0 preparation deliverables (`P0.1`–`P0.4`, `P0.6`, `P0.8`–`P0.10`) are 
 | Stage | Run name | Code SHA | Image digest | Slices (`2x2x4`) | Steps (start->end) | Submit / Admit / Ready / End (UTC) | Median step time | Status | Output prefix |
 |---|---|---|---|---|---|---|---|---|---|
 | `P1b` | `p1b-retool-sft-01` | `cfabaada` | `sha256:dcece4bc...` | 1 (1 trainer) | 1->3 | 11:06:20 / 11:15:33 / 11:16:31 / 11:32:31 | 28.4 s (steps 1–3: 55.6 s, 28.4 s, 27.1 s) | **SUCCEEDED** (exit 0) | `<RUN_DIR>/p1b-retool-sft-01` |
-| `P1a` | `p1a-moe-smoke-04` | `cfabaada` | `sha256:dcece4bc...` | 2 (1 trainer + 1 rollout) | 1->3 | queued | - | Queued | `<RUN_DIR>/p1a-moe-smoke-04` |
+| `P2` | `p2-retool-sft-01` | `cfabaada` | `sha256:dcece4bc...` | 1 (1 trainer) | 1->372 | 11:46:17 / 12:03:14 / 12:04:12 / 13:36:05 | 9.57 s mean / 10.0 s median warm (Epochs 2–6; Epoch 1 mean 15.73 s) | **SUCCEEDED** (exit 0) | `<RUN_DIR>/p2-retool-sft-01` |
+| `P1a` | `p1a-moe-smoke-05` | `cfabaada` | `sha256:dcece4bc...` | 2 (1 trainer + 1 rollout) | 1->3 | 12:18:52 (`w0` running on 1st slice; `w1` waiting for 2nd slice) | - | Pre-warming (4/8 pods running) | `<RUN_DIR>/p1a-moe-smoke-05` |
 | `P1c` | `p1c-retool-rl-01` | `cfabaada` | `sha256:dcece4bc...` | 2 (1 trainer + 1 rollout) | 1->2 | queued (`P1b` export ready) | - | Queued | `<RUN_DIR>/p1c-retool-rl-01` |
-| `P2` | `p2-retool-sft-01` | `cfabaada` | `sha256:dcece4bc...` | 1 (1 trainer) | 1->372 | queued | - | Queued | `<RUN_DIR>/p2-retool-sft-01` |
-| `P3` | pending | `cfabaada` | `sha256:dcece4bc...` | 2 (1 trainer + 1 rollout) | 1->25 | - | - | Pending (`P2` export) | `<RUN_DIR>/p3-*` |
+| `P3` | `p3-retool-rl-01` | `cfabaada` | `sha256:dcece4bc...` | 2 (1 trainer + 1 rollout) | 1->25 | queued (`P2` step-372 export ready) | - | Queued | `<RUN_DIR>/p3-retool-rl-01` |
 
 ---
 
@@ -61,16 +61,16 @@ All P0 preparation deliverables (`P0.1`–`P0.4`, `P0.6`, `P0.8`–`P0.10`) are 
 
 | Check | Kind | Phase | Target / Reference | Measured on TPU 7x | Verdict |
 |---|---|---|---|---|---|
-| `R1` | gate | every run | `LIBTPU_INIT_ARGS` contains `--xla_tpu_bf16_emission_mode=PROMOTE_F32` on all active roles | `P1b`: verified in `<RUN_DIR>/p1b-retool-sft-01/env/*-procs.jsonl` across all 4 trainer hosts (`LIBTPU_INIT_ARGS="--xla_tpu_use_enhanced_launch_barrier=false --xla_tpu_bf16_emission_mode=PROMOTE_F32"`, `TPU_ACCELERATOR_TYPE="tpu7x"`). Rollout role pending `P1a`/`P1c` | **PASS (trainer)** / pending rollout |
-| `R2` | gate | `P1a`, `P1c` | 32 trainer devices (4D mesh) + 32 rollout devices (TP=32, EP=32) on distinct `2x2x4` slices; trainer rank order matches `verl-tpu-node-rank`; Raiden sync completes | `P1b` (1-slice trainer): 4 hosts had scrambled IP order (`10.224.130.8`, `10.224.106.8`, `10.224.114.8`, `10.224.113.8` for workers `0, 1, 2, 3`) and were ordered `0, 1, 2, 3` by `verl-tpu-node-rank`. Dual-slice trainer+rollout + Raiden sync pending `P1a`/`P1c` | Partial (`P1b` trainer host order PASS; dual-slice pending `P1a`/`P1c`) |
-| `R3` | observation | `P1b` | SFT 3-step smoke `train/loss` (`0.7950 -> 0.5787 -> 0.5177`, step 3 `+-0.05`) and step-3 `val/loss` (`0.4050`, `+-0.05`) | `train/loss`: `0.7932` (step 1) -> `0.5881` (step 2) -> `0.5224` (step 3, `+0.0047` vs ref); step-3 `val/loss`: `0.4095` (`+0.0045` vs ref) | **PASS** |
-| `R4` | observation | `P2` | SFT steps 363–372 mean `train/loss` (~0.25) and step-372 in-sample `val/loss` (`0.214`, +-10%) | Pending `P2` | PENDING |
-| `R5a` | gate | `P1b`, `P2` | `global_step_N/huggingface` export complete (16 bf16 shards, index, config, tokenizer) and reloadable | `P1b`: `<RUN_DIR>/p1b-retool-sft-01/checkpoint/global_step_3/huggingface/` exported 16 bf16 `.safetensors` shards + `model.safetensors.index.json` + config/tokenizer (`61,084,185,820` bytes total). `P2` step-372 export pending | **PASS (`P1b`)** / pending `P2` |
-| `R5b` | gate | `P1c`, `P3` | Staged SFT export matches source hashes across all hosts; TorchTitan + multi-host vLLM load cleanly; first Raiden sync completes | Pending `P1c` | PENDING |
+| `R1` | gate | every run | `LIBTPU_INIT_ARGS` contains `--xla_tpu_bf16_emission_mode=PROMOTE_F32` on all active roles | `P1b`, `P2`: verified in `<RUN_DIR>/{p1b-retool-sft-01,p2-retool-sft-01}/env/*-procs.jsonl` across all 4 trainer hosts (`LIBTPU_INIT_ARGS` includes `--xla_tpu_use_enhanced_launch_barrier=false --xla_tpu_bf16_emission_mode=PROMOTE_F32`, `TPU_ACCELERATOR_TYPE="tpu7x"`). Rollout role pending `P1a`/`P1c`/`P3` | **PASS (trainer in `P1b`, `P2`)** / pending rollout |
+| `R2` | gate | `P1a`, `P1c` | 32 trainer devices (4D mesh) + 32 rollout devices (TP=32, EP=32) on distinct `2x2x4` slices; trainer rank order matches `verl-tpu-node-rank`; Raiden sync completes | `P1b` & `P2` (1-slice trainer): in both runs the 4 hosts had non-monotonic IP order (`P1b`: `10.224.130.8, 10.224.106.8, 10.224.114.8, 10.224.113.8`; `P2`: `10.224.180.7, 10.224.242.7, 10.224.243.7, 10.224.181.7` for workers `0..3`) and were ordered `0, 1, 2, 3` by `verl-tpu-node-rank`. Dual-slice trainer+rollout + Raiden sync pending `P1a`/`P1c` | Partial (`P1b`/`P2` trainer host order PASS; dual-slice pending `P1a`/`P1c`) |
+| `R3` | observation | `P1b` | SFT 3-step smoke `train/loss` (`0.7950 -> 0.5787 -> 0.5177`, step 3 `+-0.05`) and step-3 `val/loss` (`0.4050`, `+-0.05`) | `train/loss`: `0.7932` (step 1) -> `0.5881` (step 2) -> `0.5224` (step 3, `+0.0047` vs ref); step-3 `val/loss`: `0.4095` (`+0.0045` vs ref). Moreover, step-1 `train/loss` in `P2` (`0.7931681871414185`) was bit-identical to `P1b` (`0.7931681871414185`) and within `-0.0009` of #108's v6e smoke (`0.7941`) | **PASS** |
+| `R4` | observation | `P2` | SFT steps 363–372 mean `train/loss` (~0.25 in #108; `0.038` in the author's 6-epoch doc) and step-372 in-sample `val/loss` (`0.214` in #108) | `P2` (372 steps, 6 epochs): `train/loss` decreased smoothly from `0.7932` (step 1) to `0.3832` (step 62, Epoch 1), `0.2818` (step 124, Epoch 2), `0.1612` (step 186, Epoch 3), `0.1017` (step 248, Epoch 4), `0.0612` (step 310, Epoch 5), and `0.0359` (step 372, Epoch 6; **steps 363–372 mean `0.0393`**, median `0.0393`, matching the author's 6-epoch doc's `0.038`). In-sample `val/loss` across epochs 1–6: `0.2713 -> 0.1793 -> 0.1078 -> 0.0618 -> 0.0395 -> 0.0263`. Both `global_step_186/huggingface` and `global_step_372/huggingface` were exported for downstream evaluation | **RECORDED** (see section 4.2 analysis) |
+| `R5a` | gate | `P1b`, `P2` | `global_step_N/huggingface` export complete (16 bf16 shards, index, config, tokenizer) and reloadable | `P1b` (`global_step_3/huggingface`) and `P2` (`global_step_186/huggingface`, `global_step_372/huggingface`): each exported all 16 bf16 `.safetensors` shards + `model.safetensors.index.json` (`18,867` tensors, `61,064,245,248` param bytes, `lm_head.weight` & `model.embed_tokens.weight` present, `tie_word_embeddings=false`) + config/tokenizer (`27` objects, `61,084,185,820` bytes total) | **PASS (`P1b`, `P2`)** |
+| `R5b` | gate | `P1c`, `P3` | Staged SFT export matches source hashes across all hosts; TorchTitan + multi-host vLLM load cleanly; first Raiden sync completes | Pending `P1c`, `P3` | PENDING |
 | `R6` | observation | `P3` | Step-0 AIME 2024 (`22.44%`) and AIME 2025 (`14.17%`) mean@30 (+-4.5 pp), maj@30, best@30 | Pending `P3` | PENDING |
 | `R7` | observation | `P3` | Early RL numerics (`actor/ppo_kl`, `actor/rollout_corr/k3_kl`, steps 3–10) | Pending `P3` | PENDING |
 | `R8` | observation | `P3` | Step-25 AIME 2024 (`30.00%`) and AIME 2025 (`18.33%`) mean@30 (+-5 pp) | Pending `P3` | PENDING |
-| `R9` | observation | `P2`, `P3` | Median step time and stage split (`gen`, `update_actor`, `update_weights`) vs v6e (`18.6 s` SFT, `108 s` RL) | Pending `P2`, `P3` | PENDING |
+| `R9` | observation | `P2`, `P3` | Median step time and stage split (`gen`, `update_actor`, `update_weights`) vs v6e (`18.6 s` SFT, `108 s` RL) | `P2` SFT: **warm mean `9.57 s/step`**, **median `10.0 s/step`**, **p90 `10.0 s/step`** (`min=9 s, max=11 s` across Epochs 2–6, `n=300` steps; **1.94x faster** than v6e's `18.6 s/step`). Epoch 1 mean was `15.73 s/step` while XLA bucket shapes compiled; cached 32-sample validation took `12 s`. RL step time pending `P3` | **RECORDED (`P2`)** / pending `P3` |
 | `R10` | gate | `P3` | Complete step-0 and step-25 eval dumps (30 questions x 30 sessions by trajectory ID for both AIME 2024 and 2025) | Pending `P3` | PENDING |
 | `R11` | gate | `P1c`, `P3` | Token-level rollout audit dump (`response_mask == 0` on tool results, `1` on assistant turns, multi-turn propagation, `compute_score` behavior) | Pending `P1c` | PENDING |
 | `R12` | gate | `P1c`, `P3` | Post-Raiden-sync policy version & staleness within `max_off_policy_threshold=4` | Pending `P1c` | PENDING |
@@ -96,12 +96,44 @@ All P0 preparation deliverables (`P0.1`–`P0.4`, `P0.6`, `P0.8`–`P0.10`) are 
 
 | Step | TPU 7x `train/loss` | TPU v6e ref `train/loss` | Diff (7x - v6e) | `train/grad_norm` | `train/lr` | `train/global_tokens` | Step time |
 |---|---|---|---|---|---|---|---|
-| 1 | `0.793168` | `0.7950` | `-0.0018` | `13.9740` | `7.75e-06` | `59,418` | `55.57 s` (first compile) |
-| 2 | `0.588094` | `0.5787` | `+0.0094` | `6.0704` | `3.25e-06` | `64,348` | `28.43 s` |
-| 3 | `0.522368` | `0.5177` | `+0.0047` | `2.8164` | `1.00e-06` | `55,789` | `27.10 s` |
-| 3 (val) | `val/loss = 0.409530` | `val/loss = 0.4050` | `+0.0045` | - | - | 32 val samples | `46.0 s` |
+| 1 | `0.793168` | `0.7950` (`0.7941` in #108 body) | `-0.0018` (`-0.0009`) | `13.9740` | `7.75e-06` | `59,418` | `55.57 s` (first compile) |
+| 2 | `0.588094` | `0.5787` (`0.5874` in #108 body) | `+0.0094` (`+0.0007`) | `6.0704` | `3.25e-06` | `64,348` | `28.43 s` |
+| 3 | `0.522368` | `0.5177` (`0.5215` in #108 body) | `+0.0047` (`+0.0009`) | `2.8164` | `1.00e-06` | `55,789` | `27.10 s` |
+| 3 (val) | `val/loss = 0.409530` | `val/loss = 0.4050` (`0.4093` in #108 body) | `+0.0045` (`+0.0002`) | - | - | 32 val samples | `46.0 s` |
 
 - **Exported HF checkpoint (`R5a`)**:
   - Path: `<RUN_DIR>/p1b-retool-sft-01/checkpoint/global_step_3/huggingface/`
-  - Contents: 16 bf16 shards (`model-00001-of-00016.safetensors` through `model-00016-of-00016.safetensors`), `model.safetensors.index.json` (`1,699,757` bytes), `config.json`, `generation_config.json`, `tokenizer.json`, `tokenizer_config.json`, `vocab.json`, `merges.txt` (27 objects, `61,084,185,820` bytes total; export write time `9m 59s`).
+  - Contents: 16 bf16 shards (`model-00001-of-00016.safetensors` through `model-00016-of-00016.safetensors`), `model.safetensors.index.json` (`1,699,757` bytes, `18,867` tensors, `61,064,245,248` param bytes), `config.json`, `generation_config.json`, `tokenizer.json`, `tokenizer_config.json`, `vocab.json`, `merges.txt` (27 objects, `61,084,185,820` bytes total; export write time `9m 59s`).
   - `verdict.json`: `status="SUCCEEDED"`, `node_rank_ok=true`, `duration_s=961`, `timed_out=false`.
+
+### 4.2 Stage `P2`: Full 6-epoch (372-step) ReTool cold-start SFT (`p2-retool-sft-01`) — **PASS**
+
+- **Configuration**: `examples/tpu/retool/run_qwen3_30b_a3b_sft_torchtitan.sh` with script defaults (`TOTAL_EPOCHS=6`, `62` steps/epoch = `372` steps, `TRAIN_BATCH_SIZE=32`, `MAX_LENGTH=16384`, `SAVE_FREQ=186`, `TEST_FREQ=62`, `optim.lr=1e-5`, `lr_warmup_steps_ratio=0.1` = 37 warmup steps, cosine decay to `1e-6`, `LIBTPU_INIT_ARGS="--xla_tpu_use_enhanced_launch_barrier=false --xla_tpu_bf16_emission_mode=PROMOTE_F32"`).
+- **Host ordering (`P0.5`)**:
+  - Physical / JobSet completion order vs IP address on `tpu-group-0`:
+    - `verl-tpu-node-rank=0` (`tpu-worker-id=0`): `10.224.180.7` (`p2-retool-sft-01-trainer-0-0-0`)
+    - `verl-tpu-node-rank=1` (`tpu-worker-id=1`): `10.224.242.7` (`p2-retool-sft-01-trainer-0-0-1`)
+    - `verl-tpu-node-rank=2` (`tpu-worker-id=2`): `10.224.243.7` (`p2-retool-sft-01-trainer-0-0-2`)
+    - `verl-tpu-node-rank=3` (`tpu-worker-id=3`): `10.224.181.7` (`p2-retool-sft-01-trainer-0-0-3`)
+  - Without `verl-tpu-node-rank`, lexicographic IP order would have placed worker 3 (`10.224.181.7`) second (`[0, 3, 1, 2]`). With `verl-tpu-node-rank`, all 4 hosts ran in topological order `0, 1, 2, 3`.
+- **Per-epoch convergence and throughput summary (`R4`, `R9`)**:
+
+| Epoch | Steps | First `train/loss` | Last `train/loss` | Epoch mean `train/loss` | Last-10-step mean `train/loss` | Max `grad_norm` | End `grad_norm` | End-of-epoch `val/loss` (in-sample) | Pure training time (61 steps) | Mean step time |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | 1–62 | `0.793168` | `0.383225` | `0.426880` | `0.347975` | `14.3615` (step 3) | `0.4312` | `0.271294` (step 62) | `1,000 s` (+ `54 s` step 62 + val) | `15.73 s` (compiling buckets) |
+| 2 | 63–124 | `0.267472` | `0.281752` | `0.273512` | `0.266374` | `0.6228` | `0.4842` | `0.179302` (step 124) | `583 s` (+ `12 s` val) | `9.57 s` |
+| 3 | 125–186 | `0.195968` | `0.161228` | `0.176805` | `0.175233` | `1.7405` | `0.5058` | `0.107801` (step 186) | `583 s` (+ `12 s` val + `669 s` HF export) | `9.55 s` |
+| 4 | 187–248 | `0.127889` | `0.101719` | `0.107684` | `0.111980` | `0.9924` | `0.5146` | `0.061826` (step 248) | `584 s` (+ `12 s` val) | `9.58 s` |
+| 5 | 249–310 | `0.049699` | `0.061234` | `0.063903` | `0.065669` | `0.8272` | `0.4382` | `0.039511` (step 310) | `583 s` (+ `13 s` val) | `9.57 s` |
+| 6 | 311–372 | `0.080677` | `0.035875` | `0.040940` | **`0.039265`** | `0.9555` | `0.4085` | **`0.026332`** (step 372) | `584 s` (+ `12 s` val + `598 s` HF export) | `9.58 s` |
+
+- **Final 10 steps (`steps 363–372`, `R4`)**:
+  - `train/loss` values: `[0.040568, 0.036545, 0.045109, 0.040919, 0.035504, 0.040524, 0.038072, 0.046814, 0.032716, 0.035875]`
+  - Mean `train/loss` (`steps 363–372`): **`0.039265`** (median `0.039298`), `step 372 val/loss`: **`0.026332`**, total tokens processed: `23,798,553` (`0.0238 B`).
+  - Comparison with reference notes:
+    - Step 1 `train/loss` (`0.793168`) matches `P1b` bit-for-bit and matches #108's v6e smoke (`0.7941`) within `-0.0009`.
+    - Over 6 epochs on the 2,000-row dataset, `train/loss` reaches `0.0393` (mean of steps 363–372) and `0.0359` (step 372), which matches the `train/loss = 0.038` reported in the recipe author's 6-epoch TPU v6e report. Meanwhile, Epoch 1 (`val/loss = 0.2713`) and Epoch 2 (`mean train/loss = 0.2735`, `last-10 mean = 0.2664`, `val/loss = 0.1793`) bracket the `train/loss ~ 0.25, val/loss = 0.214` numbers quoted in #108's PR summary. Because `SAVE_FREQ=186` exported both `global_step_186/huggingface` and `global_step_372/huggingface`, `P3` starts from `global_step_372/huggingface` per `D9` while preserving `global_step_186/huggingface` for comparison if needed.
+- **Exported HF checkpoints (`R5a`)**:
+  - Mid-run export: `<RUN_DIR>/p2-retool-sft-01/checkpoint/global_step_186/huggingface/` (27 objects, `61,084,185,820` bytes, 16 bf16 `.safetensors` shards, `18,867` tensors).
+  - Final export: `<RUN_DIR>/p2-retool-sft-01/checkpoint/global_step_372/huggingface/` (27 objects, `61,084,185,820` bytes, 16 bf16 `.safetensors` shards, `18,867` tensors, `61,064,245,248` param bytes, `lm_head.weight` & `model.embed_tokens.weight` present, `tie_word_embeddings=false`).
+  - `verdict.json`: `status="SUCCEEDED"`, `node_rank_ok=true`, `duration_s=5548` (`92m 28s` head runtime, including model staging, 372 training steps, 6 validations, and two 57 GiB HF checkpoint exports), `timed_out=false`.

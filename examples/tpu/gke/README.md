@@ -51,7 +51,7 @@ See [`examples/tpu/grpo/README.md`](../grpo/README.md) for full details and step
   - Exit, Ctrl-C, SIGTERM and SIGHUP delete the run's `JobSet` and any placeholders, which stops the run.
   - To keep a run going without the launcher, set `KEEP_JOBSET=1`. The `JobSet` then ends with its head and is removed `JOBSET_TTL_SECONDS` after it finishes; checking on it is up to you.
 - **Bounded reruns.** Each `JobSet` restart (after a TPU pod failure, at most `JOBSET_MAX_RESTARTS`) and each Kueue eviction with re-admission reruns the job from the start. A failed job (head exit ≠ 0) is never restarted.
-  - The head enforces the total. The job runs at most `MAX_ATTEMPTS = 1 + JOBSET_MAX_RESTARTS + ALLOW_REQUEUE` times: every head registers under `<run dir>/attempts/`, and one that finds the budget used up exits without running the job, which fails the `JobSet`.
+  - The head enforces the total. The job runs at most `MAX_ATTEMPTS = 1 + JOBSET_MAX_RESTARTS + ALLOW_REQUEUE` times: before Ray starts, every head claims one of `MAX_ATTEMPTS` slots `<run dir>/attempt-slots/<n>.json` with an atomic GCS create-if-absent (`ifGenerationMatch=0`) and reads it back. A head that cannot claim and confirm a slot (all taken, or any error) exits without running the job, which fails the `JobSet`. GCS FUSE caches play no part in this.
   - The budget holds with `KEEP_JOBSET=1` and without the launcher.
   - Kueue can still re-admit the `JobSet` after that; its pods then start and stop again without running the job.
   - The launcher additionally deletes the `JobSet` once Kueue's eviction count for the workload (`status.schedulingStats.evictions`) exceeds `ALLOW_REQUEUE`. It logs JobSet restarts, evictions, and each head attempt.

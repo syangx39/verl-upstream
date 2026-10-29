@@ -132,6 +132,10 @@ spec:
                       value: "${DRIVER_TIMEOUT_S}"
                     - name: VERL_NAP_MAX_ATTEMPTS
                       value: "${MAX_ATTEMPTS}"
+                    - name: VERL_NAP_GCS_BUCKET
+                      value: "${GCS_BUCKET}"
+                    - name: VERL_NAP_RUN_PREFIX
+                      value: "${RUN_PREFIX}"
                   ports:
                     - containerPort: 6379
                     - containerPort: 8265

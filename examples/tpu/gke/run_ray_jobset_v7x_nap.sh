@@ -40,10 +40,12 @@
 #
 # Reruns: a JobSet restart after a TPU pod failure (at most JOBSET_MAX_RESTARTS; a failed job is never restarted) or a
 # Kueue eviction and re-admission (preemption, reclaim, node failure, pods-ready timeout) reruns the job from the start.
-# The head enforces the total: the job runs at most MAX_ATTEMPTS = 1 + JOBSET_MAX_RESTARTS + ALLOW_REQUEUE times (each
-# head registers under <run dir>/attempts/ and refuses to run beyond the budget, which fails the JobSet), also with
-# KEEP_JOBSET=1 or without the launcher. Kueue can still re-admit the JobSet after that; its pods then start and stop
-# again without running the job. The launcher additionally gives up (and deletes the JobSet) once the workload's
+# The head enforces the total: the job runs at most MAX_ATTEMPTS = 1 + JOBSET_MAX_RESTARTS + ALLOW_REQUEUE times. Before
+# Ray starts, every head claims one of MAX_ATTEMPTS slots <run dir>/attempt-slots/<n>.json with an atomic GCS
+# create-if-absent (ifGenerationMatch=0) and reads it back; a head that cannot claim and confirm a slot (all taken, or
+# any error) exits without running the job, which fails the JobSet. This holds with KEEP_JOBSET=1, without the
+# launcher, and regardless of GCS FUSE caches. Kueue can still re-admit the JobSet after that; its pods then start and
+# stop again without running the job. The launcher additionally gives up (and deletes the JobSet) once the workload's
 # eviction count exceeds ALLOW_REQUEUE. RUN_LIMIT_MIN is the cluster's limit for one run, counted from the pods
 # becoming ready; queueing and pre-warm time come on top.
 #
@@ -171,6 +173,7 @@ fi
 RUN_SUBDIR="${RUN_ROOT%/}/${RUN_NAME}"
 RUN_SUBDIR="${RUN_SUBDIR#/}"
 RUN_GCS="gs://${GCS_BUCKET}/${RUN_SUBDIR}"
+RUN_PREFIX="${RUN_SUBDIR}"  # object prefix of the run directory (the head claims its attempt slot under it)
 RUN_DIR="${DATA_MOUNT%/}/${RUN_SUBDIR}"
 SRC_NAME="src-${CODE_SHA:0:12}.tar.gz"
 SRC_TARBALL="${RUN_DIR}/${SRC_NAME}"
@@ -188,7 +191,7 @@ SRC_DIR="${LOG_DIR}/src"
 RENDER="${SRC_DIR}/examples/tpu/gke/v7x_nap/render.py"
 
 export RUN_NAME RAY_NAMESPACE KUEUE_QUEUE PRIORITY_CLASS SERVICE_ACCOUNT RUN_OWNER CODE_SHA IMAGE
-export POD_TPU_ACCELERATOR_TYPE GCS_BUCKET GCSFUSE_MOUNT_OPTIONS DATA_MOUNT RUN_DIR SRC_TARBALL INPUTS_ROOT
+export POD_TPU_ACCELERATOR_TYPE GCS_BUCKET GCSFUSE_MOUNT_OPTIONS DATA_MOUNT RUN_DIR RUN_PREFIX SRC_TARBALL INPUTS_ROOT
 export HEAD_NODEPOOL HEAD_NUM_CPUS HEAD_OBJECT_STORE_BYTES HEAD_DSHM_SIZE TPU_DSHM_SIZE TPU_TOPOLOGY
 export TRAINER_SLICES ROLLOUT_SLICES RAY_TPU_PER_HOST WORKER_NUM_CPUS JOBSET_MAX_RESTARTS JOBSET_TTL_SECONDS
 export NODE_WAIT_TIMEOUT_S NODE_RANK_SOURCE NODE_RANK_TIMEOUT_S DRIVER_TIMEOUT_S REQUIRE_NODE_RANK PREWARM_HOLD_S KUBE_CONTEXT

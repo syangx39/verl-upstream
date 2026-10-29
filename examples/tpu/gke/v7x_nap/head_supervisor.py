@@ -24,7 +24,9 @@
    JobSet's success policy (and its failure policy) follow the job.
 
 The attempt dir is ``$VERL_NAP_RUN_DIR/attempts/<first 8 chars of the head pod UID>``: a Kueue eviction and
-re-admission starts a new head pod, and each attempt keeps its own evidence.
+re-admission starts a new head pod, and each attempt keeps its own evidence. Before step 1, every head claims one of
+``VERL_NAP_MAX_ATTEMPTS`` attempt slots (``attempt-slots/<n>.json``, an atomic GCS create-if-absent that is read back
+to confirm it); a head that cannot claim and confirm a slot exits without running the job (fail closed).
 """
 
 from __future__ import annotations
@@ -39,8 +41,10 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.parse
 import urllib.request
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 WORKING_DIR = "/workspace/verl"
 DASHBOARD = "http://127.0.0.1:8265"
@@ -167,20 +171,85 @@ def check_slices(nodes: list[dict], expected: dict[str, int]) -> tuple[bool, boo
     return hosts_ok, ranks_ok, lines
 
 
-def attempt_budget(run_dir: str, max_attempts: int) -> tuple[bool, int, str]:
-    """Count the head attempts registered under ``<run_dir>/attempts/`` (this one included) against the budget.
+METADATA_TOKEN_URL = "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token"
+GCS_API = "https://storage.googleapis.com"
 
-    Every rerun of the JobSet (a JobSet restart or a Kueue eviction and re-admission) starts a new head pod, which
-    registers its own attempt directory before anything else. Returns (allowed, attempts, message); fails closed
-    when the attempts cannot be listed.
+
+def gcs_token(timeout_s: int = 10) -> str:
+    """Access token of the pod's identity (GKE metadata server; the identity the GCS FUSE mount also uses)."""
+    req = urllib.request.Request(METADATA_TOKEN_URL, headers={"Metadata-Flavor": "Google"})
+    with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+        return json.load(resp)["access_token"]
+
+
+def gcs_create_if_absent(bucket: str, name: str, data: bytes, token: str) -> bool:
+    """Create object ``name`` only if it does not exist (``ifGenerationMatch=0``, atomic in GCS).
+
+    Returns True if this call created it, False if it already existed (HTTP 412); any other error raises.
     """
+    query = urllib.parse.urlencode({"uploadType": "media", "name": name, "ifGenerationMatch": "0"})
+    req = urllib.request.Request(
+        f"{GCS_API}/upload/storage/v1/b/{bucket}/o?{query}",
+        data=data,
+        method="POST",
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+    )
     try:
-        attempts = sorted(e for e in os.listdir(os.path.join(run_dir, "attempts")) if not e.startswith("."))
-    except OSError as e:
-        return False, -1, f"cannot list {run_dir}/attempts ({e}); refusing to run"
-    if len(attempts) > max_attempts:
-        return False, len(attempts), f"attempt {len(attempts)} of at most {max_attempts} (attempts: {attempts})"
-    return True, len(attempts), f"attempt {len(attempts)} of at most {max_attempts}"
+        with urllib.request.urlopen(req, timeout=30):
+            return True
+    except urllib.error.HTTPError as e:
+        if e.code == 412:
+            return False
+        raise
+
+
+def gcs_read(bucket: str, name: str, token: str) -> bytes:
+    """Content of object ``name`` (read through the JSON API, not through the FUSE mount and its caches)."""
+    req = urllib.request.Request(
+        f"{GCS_API}/storage/v1/b/{bucket}/o/{urllib.parse.quote(name, safe='')}?alt=media",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return resp.read()
+
+
+def claim_attempt_slot(
+    max_attempts: int,
+    claim: dict,
+    create: Callable[[int, bytes], bool],
+    read: Callable[[int], bytes],
+    retries: int = 3,
+    sleep: Callable[[float], None] = time.sleep,
+) -> tuple[Optional[int], bool, str]:
+    """Claim one of the attempt slots 1..max_attempts for this head; returns (slot, exhausted, message).
+
+    Every rerun of the JobSet (a JobSet restart or a Kueue eviction and re-admission) starts a new head pod. Each head
+    claims a slot with an atomic create-if-absent (``create(slot, data)``: True = created by this call, False = the
+    slot already exists) and confirms the claim by reading the slot back (``read(slot)``). A slot whose content is
+    this head's claim id is this head's, also when an earlier, failed-looking call of this head created it, so
+    retries are safe. The result is fail closed: when no slot can be claimed and confirmed (all taken, or any error
+    or inconsistency) the slot is None and the job must not run. ``exhausted`` is True only when every slot is
+    held by another claim.
+    """
+    claim_id = claim["claim_id"]
+    data = json.dumps(claim, sort_keys=True).encode()
+    for slot in range(1, max_attempts + 1):
+        for attempt in range(retries):
+            try:
+                created = create(slot, data)
+                owner = json.loads(read(slot)).get("claim_id")
+            except Exception as e:  # network, auth, storage or JSON errors: retry, then fail closed
+                if attempt + 1 == retries:
+                    return None, False, f"cannot register attempt slot {slot}: {type(e).__name__}: {e}"
+                sleep(2.0)
+                continue
+            if owner == claim_id:
+                note = "" if created else " (created by an earlier try of this head)"
+                return slot, False, f"claimed attempt slot {slot} of {max_attempts}{note}"
+            if created:
+                return None, False, f"attempt slot {slot} reads back claim {owner!r} after this head created it"
+            break  # held by another attempt: try the next slot
+    return None, True, f"all {max_attempts} attempt slot(s) are taken"
 
 
 def package_versions() -> dict[str, Optional[str]]:
@@ -218,13 +287,38 @@ class Supervisor:
         self.client = None
         self.submitted = False
 
-    def finish(self, status: str, message: str = "", code: int = 1) -> int:
-        """Record the verdict and return the exit code."""
+    def finish(self, status: str, message: str = "", code: int = 1, top: bool = True) -> int:
+        """Record the verdict (in the attempt dir, and at the top of the run dir if ``top``); return the exit code."""
         self.verdict.update({"status": status, "message": message, "finished_at": time.time()})
         self.verdict["duration_s"] = round(time.time() - START)
-        publish_json("verdict.json", self.verdict, also_top=True)
+        publish_json("verdict.json", self.verdict, also_top=top)
         log(f"VERDICT {status}: {message}")
         return code
+
+    def claim_slot(self) -> tuple[Optional[int], bool, str]:
+        """Claim this head's attempt slot ``<run prefix>/attempt-slots/<n>.json`` in the run's bucket."""
+        claim = {
+            "claim_id": os.environ.get("POD_UID") or f"pid-{os.getpid()}-{START}",
+            "pod": os.environ.get("POD_NAME"),
+            "run_name": self.run_name,
+            "claimed_at": time.time(),
+        }
+        try:
+            bucket = os.environ["VERL_NAP_GCS_BUCKET"]
+            prefix = os.environ["VERL_NAP_RUN_PREFIX"].strip("/")
+            token = gcs_token()
+        except Exception as e:
+            return None, False, f"cannot register the attempt: {type(e).__name__}: {e}"
+
+        def slot_name(slot: int) -> str:
+            return f"{prefix}/attempt-slots/{slot}.json"
+
+        return claim_attempt_slot(
+            self.max_attempts,
+            claim,
+            create=lambda slot, data: gcs_create_if_absent(bucket, slot_name(slot), data, token),
+            read=lambda slot: gcs_read(bucket, slot_name(slot), token),
+        )
 
     def start_ray(self) -> None:
         """Start the Ray head (non-blocking)."""
@@ -371,14 +465,16 @@ class Supervisor:
         if not os.path.isfile(os.path.join(RUN_DIR, "job_spec.json")):
             log(f"ERROR: {RUN_DIR}/job_spec.json not found (the launcher stages it before creating the JobSet)")
             return 2
-        # Register this attempt first, then enforce the budget: the job runs at most VERL_NAP_MAX_ATTEMPTS times, no
-        # matter how often the JobSet is restarted or re-admitted (with or without the launcher watching).
-        publish_json("started.json", {"pod": os.environ.get("POD_NAME"), "started_at": START})
-        allowed, attempts, msg = attempt_budget(RUN_DIR, self.max_attempts)
-        self.verdict["attempt"] = attempts
+        # Claim an attempt slot before anything else: the job runs at most VERL_NAP_MAX_ATTEMPTS times, no matter how
+        # often the JobSet is restarted or re-admitted (with or without the launcher watching). Fail closed.
+        slot, exhausted, msg = self.claim_slot()
         log(msg)
-        if not allowed:
-            return self.finish("ATTEMPTS_EXHAUSTED", msg + "; the job is not run again", 3)
+        if slot is None:
+            status = "ATTEMPTS_EXHAUSTED" if exhausted else "ATTEMPT_REGISTRATION_FAILED"
+            # The top-level verdict stays the one of the last attempt that ran the job.
+            return self.finish(status, msg + "; the job is not run", 3, top=False)
+        self.verdict["attempt_slot"] = slot
+        publish_json("started.json", {"pod": os.environ.get("POD_NAME"), "slot": slot, "started_at": START})
         publish_json("cluster/packages.json", package_versions())
         self.start_ray()
         code = self.wait_for_slices()

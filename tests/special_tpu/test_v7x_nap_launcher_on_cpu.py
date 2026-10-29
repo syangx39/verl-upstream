@@ -57,6 +57,7 @@ def _values(**overrides) -> dict:
         "GCSFUSE_MOUNT_OPTIONS": "implicit-dirs",
         "DATA_MOUNT": "/data",
         "RUN_DIR": "/data/runs/v7x-test-1029-0800",
+        "RUN_PREFIX": "runs/v7x-test-1029-0800",
         "SRC_TARBALL": "/data/runs/v7x-test-1029-0800/src-0123456789ab.tar.gz",
         "HEAD_NODEPOOL": "cpu-np",
         "HEAD_NUM_CPUS": "12",
@@ -124,6 +125,10 @@ def test_manifest_two_slices_follows_cluster_rules():
     assert head_env["VERL_NAP_EXPECTED_SLICES"] == "tpu-group-0=4,tpu-group-1=4"
     assert head_env["VERL_NAP_RUN_DIR"] == values["RUN_DIR"]
     assert head_env["VERL_NAP_MAX_ATTEMPTS"] == "2"
+    assert (head_env["VERL_NAP_GCS_BUCKET"], head_env["VERL_NAP_RUN_PREFIX"]) == (
+        "example-bucket",
+        values["RUN_PREFIX"],
+    )
     assert head_pod["spec"]["nodeSelector"] == {"cloud.google.com/gke-nodepool": "cpu-np"}
 
     for name, resource in (("trainer-0", "tpu-group-0"), ("rollout-0", "tpu-group-1")):
@@ -511,12 +516,136 @@ owned_list
     assert "delete" not in (k.state / "_calls.log").read_text()
 
 
-def test_head_attempt_budget(tmp_path):
-    (tmp_path / "attempts" / "aaaa1111").mkdir(parents=True)
-    assert head.attempt_budget(str(tmp_path), 1)[:2] == (True, 1)
-    (tmp_path / "attempts" / "bbbb2222").mkdir()
-    allowed, attempts, message = head.attempt_budget(str(tmp_path), 1)
-    assert (allowed, attempts) == (False, 2) and "at most 1" in message
-    assert head.attempt_budget(str(tmp_path), 2)[:2] == (True, 2)
-    allowed, attempts, message = head.attempt_budget(str(tmp_path / "missing"), 5)
-    assert (allowed, attempts) == (False, -1) and "refusing" in message
+class FakeSlotStore:
+    """Attempt slots with GCS create-if-absent semantics, plus fault injection."""
+
+    def __init__(self, taken=()):
+        self.objects = {slot: json.dumps({"claim_id": f"earlier-{slot}"}).encode() for slot in taken}
+        self.lock = __import__("threading").Lock()
+        self.fail_creates = 0  # the next N writes of a new slot fail (nothing is written)
+        self.write_then_fail = 0  # write, then raise on the next N creates (lost response)
+        self.corrupt_reads = False  # reads return another claim
+
+    def create(self, slot, data):
+        with self.lock:
+            if slot in self.objects:
+                return False
+            if self.fail_creates:  # the write a new slot needs fails
+                self.fail_creates -= 1
+                raise OSError("injected: storage write failed")
+            self.objects[slot] = data
+            if self.write_then_fail:
+                self.write_then_fail -= 1
+                raise TimeoutError("injected: response lost after the write")
+            return True
+
+    def read(self, slot):
+        with self.lock:
+            if self.corrupt_reads:
+                return json.dumps({"claim_id": "someone-else"}).encode()
+            return self.objects[slot]
+
+
+def _claim(store, max_attempts, claim_id="pod-new"):
+    return head.claim_attempt_slot(
+        max_attempts, {"claim_id": claim_id}, store.create, store.read, retries=3, sleep=lambda _: None
+    )
+
+
+def test_attempt_slots_bound_the_job_runs():
+    assert _claim(FakeSlotStore(), 2)[:2] == (1, False)
+    assert _claim(FakeSlotStore(taken=[1]), 2)[:2] == (2, False)
+    slot, exhausted, message = _claim(FakeSlotStore(taken=[1, 2]), 2)
+    assert (slot, exhausted) == (None, True) and "taken" in message
+    assert _claim(FakeSlotStore(taken=[1, 2]), 3)[:2] == (3, False)
+
+
+def test_attempt_slot_registration_failure_fails_closed():
+    # The user's case: two attempts already ran, the limit is 2, and the third head's write fails.
+    store = FakeSlotStore(taken=[1, 2])
+    store.fail_creates = 99
+    assert _claim(store, 2)[0] is None
+    # One attempt ran, the limit is 2, and the second head cannot write its slot: it must not run either.
+    store = FakeSlotStore(taken=[1])
+    store.fail_creates = 99
+    slot, exhausted, message = _claim(store, 2)
+    assert (slot, exhausted) == (None, False) and "cannot register attempt slot 2" in message and 2 not in store.objects
+    # A transient write failure is retried.
+    store = FakeSlotStore()
+    store.fail_creates = 1
+    assert _claim(store, 1)[:2] == (1, False)
+
+
+def test_attempt_slot_lost_response_and_inconsistent_storage():
+    store = FakeSlotStore()
+    store.write_then_fail = 1  # the create reached the store but its response was lost
+    slot, _, message = _claim(store, 1)
+    assert slot == 1 and "earlier try of this head" in message
+    store = FakeSlotStore()
+    store.corrupt_reads = True  # the slot we just created reads back as somebody else's
+    slot, exhausted, message = _claim(store, 2)
+    assert (slot, exhausted) == (None, False) and "after this head created it" in message
+
+
+def _claim_concurrently(max_attempts: int, claimers: int = 8) -> list:
+    import threading
+
+    store = FakeSlotStore()
+    results = {}
+
+    def claim(i: int) -> None:
+        results[i] = _claim(store, max_attempts, f"pod-{i}")[0]
+
+    threads = [threading.Thread(target=claim, args=(i,)) for i in range(claimers)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    return sorted(slot for slot in results.values() if slot is not None)
+
+
+def test_attempt_slots_are_exclusive_under_concurrency():
+    for max_attempts in (1, 2, 3):
+        assert _claim_concurrently(max_attempts) == list(range(1, max_attempts + 1))
+
+
+def test_head_without_a_slot_never_starts_ray(tmp_path, monkeypatch):
+    (tmp_path / "job_spec.json").write_text("{}")
+    monkeypatch.setattr(head, "RUN_DIR", str(tmp_path))
+    for key, value in {
+        "VERL_NAP_RUN_NAME": "run-a",
+        "VERL_NAP_EXPECTED_SLICES": "tpu-group-0=4",
+        "VERL_NAP_MAX_ATTEMPTS": "2",
+        "VERL_NAP_GCS_BUCKET": "example-bucket",
+        "VERL_NAP_RUN_PREFIX": "runs/run-a",
+        "POD_UID": "abcdef12-3456-7890-abcd-ef1234567890",
+    }.items():
+        monkeypatch.setenv(key, value)
+
+    def no_token(timeout_s=10):
+        raise OSError("injected: metadata server unreachable")
+
+    def must_not_run(self):
+        raise AssertionError("Ray must not start without an attempt slot")
+
+    monkeypatch.setattr(head, "gcs_token", no_token)
+    monkeypatch.setattr(head.Supervisor, "start_ray", must_not_run)
+    assert head.Supervisor().run() == 3
+    verdict = json.loads((tmp_path / "attempts" / "abcdef12" / "verdict.json").read_text())
+    assert verdict["status"] == "ATTEMPT_REGISTRATION_FAILED"
+    assert not (tmp_path / "verdict.json").exists()  # the top-level verdict is left to the attempts that ran
+
+    # All slots taken: ATTEMPTS_EXHAUSTED, and still no Ray.
+    store = FakeSlotStore(taken=[1, 2])
+    monkeypatch.setattr(head, "gcs_token", lambda timeout_s=10: "token")
+    monkeypatch.setattr(
+        head,
+        "gcs_create_if_absent",
+        lambda bucket, name, data, token: store.create(int(name.rsplit("/", 1)[1].split(".")[0]), data),
+    )
+    monkeypatch.setattr(
+        head, "gcs_read", lambda bucket, name, token: store.read(int(name.rsplit("/", 1)[1].split(".")[0]))
+    )
+    assert head.Supervisor().run() == 3
+    verdict = json.loads((tmp_path / "attempts" / "abcdef12" / "verdict.json").read_text())
+    assert verdict["status"] == "ATTEMPTS_EXHAUSTED"

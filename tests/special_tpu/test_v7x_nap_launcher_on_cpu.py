@@ -14,8 +14,11 @@
 """CPU tests for the TPU 7x NAP JobSet launcher (examples/tpu/gke/run_ray_jobset_v7x_nap.sh and v7x_nap/)."""
 
 import importlib.util
+import json
 import os
+import subprocess
 import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -47,6 +50,7 @@ def _values(**overrides) -> dict:
         "SERVICE_ACCOUNT": "default",
         "RUN_OWNER": "tester",
         "CODE_SHA": "0123456789abcdef0123456789abcdef01234567",
+        "LAUNCH_ID": "0f1e2d3c4b5a6978",
         "IMAGE": "registry.example/verl-tpu@sha256:" + "0" * 64,
         "POD_TPU_ACCELERATOR_TYPE": "tpu7x",
         "GCS_BUCKET": "example-bucket",
@@ -106,6 +110,7 @@ def test_manifest_two_slices_follows_cluster_rules():
     (jobset,) = [d for d in yaml.safe_load_all(text) if d]
     assert jobset["kind"] == "JobSet"
     assert jobset["spec"]["successPolicy"] == {"operator": "All", "targetReplicatedJobs": ["head"]}
+    assert jobset["metadata"]["annotations"]["verl-nap/launch-id"] == values["LAUNCH_ID"]
     assert jobset["spec"]["failurePolicy"] == {
         "maxRestarts": 0,
         "rules": [{"name": "head_failure_is_final", "action": "FailJobSet", "targetReplicatedJobs": ["head"]}],
@@ -175,8 +180,15 @@ def test_check_manifest_reports_violations():
     assert any("cpu" in p for p in problems)
 
 
-def test_prewarm_one_placeholder_per_slice():
+def test_prewarm_one_placeholder_per_slice(tmp_path, monkeypatch):
     values = _values()
+    for key, value in values.items():
+        monkeypatch.setenv(key, value)
+    assert render.main(["prewarm", "--out", str(tmp_path / "all.yaml"), "--out-dir", str(tmp_path / "one")]) == 0
+    for name in render.prewarm_names(values):
+        (doc,) = [d for d in yaml.safe_load_all((tmp_path / "one" / f"{name}.yaml").read_text()) if d]
+        assert doc["metadata"]["name"] == name
+        assert doc["metadata"]["annotations"]["verl-nap/launch-id"] == values["LAUNCH_ID"]
     docs = [d for d in yaml.safe_load_all(render.render_prewarm(values)) if d]
     assert [d["metadata"]["name"] for d in docs] == render.prewarm_names(values)
     assert render.prewarm_names(values) == [f"{values['RUN_NAME']}-w0", f"{values['RUN_NAME']}-w1"]
@@ -242,6 +254,16 @@ def test_head_checks_slice_hosts_and_ranks():
     assert hosts_ok and ranks_ok
     assert lines[0] == "tpu-group-0: 4/4 hosts"
 
+    # Ray's worker id agrees with every rank: fine; one host whose rank disagrees with its worker id: not fine.
+    agree = [
+        dict(n, labels={**n["labels"], head.RAY_TPU_WORKER_ID_LABEL: n["labels"][head.NODE_RANK_LABEL]}) for n in nodes
+    ]
+    assert head.check_slices(agree, expected)[:2] == (True, True)
+    swapped = [dict(n) for n in agree]
+    swapped[0] = dict(swapped[0], labels={**swapped[0]["labels"], head.RAY_TPU_WORKER_ID_LABEL: "3"})
+    hosts_ok, ranks_ok, lines = head.check_slices(swapped, expected)
+    assert (hosts_ok, ranks_ok) == (True, False) and "rank != tpu-worker-id" in lines[0]
+
     unlabelled = nodes[:-1] + [node("10.0.1.9", "tpu-group-1")]
     assert head.check_slices(unlabelled, expected)[:2] == (True, False)
     duplicate = nodes[:-1] + [node("10.0.1.9", "tpu-group-1", 0)]
@@ -257,3 +279,167 @@ def test_rendered_from_environment(tmp_path, monkeypatch):
     assert "${" not in out.read_text()
     assert render.main(["prewarm-names", "--out", str(tmp_path / "names")]) == 0
     assert (tmp_path / "names").read_text().split() == render.prewarm_names(dict(os.environ))
+
+
+# --- ownership of created objects (v7x_nap/owned_objects.sh) with a fake kubectl -------------------------------------
+
+FAKE_KUBECTL = textwrap.dedent(
+    """\
+    #!/usr/bin/env python3
+    import json, os, re, sys, uuid
+    state = os.environ["FAKE_KUBE_STATE"]
+    args = sys.argv[1:]
+    with open(os.path.join(state, "_calls.log"), "a") as f:
+        f.write(" ".join(args) + "\\n")
+    a, i = [], 0
+    while i < len(args):
+        if args[i] in ("--context", "-n"):
+            i += 2
+            continue
+        a.append(args[i])
+        i += 1
+    def path(name):
+        return os.path.join(state, name + ".json")
+    def fail(msg):
+        sys.stderr.write(msg + "\\n")
+        sys.exit(1)
+    if a[0] == "create":
+        text = open(a[a.index("-f") + 1]).read()
+        name = re.search(r"^  name: (\\S+)", text, re.M).group(1).strip('"')
+        launch = re.search(r'verl-nap/launch-id: "([^"]*)"', text)
+        if os.path.exists(path(name)):
+            fail(f'Error from server (AlreadyExists): jobsets.jobset.x-k8s.io "{name}" already exists')
+        uid = str(uuid.uuid4())
+        json.dump({"uid": uid, "launch_id": launch.group(1) if launch else ""}, open(path(name), "w"))
+        if os.environ.get("FAKE_LOSE_CREATE_RESPONSE") == name:
+            fail("Unable to connect to the server: net/http: request canceled")
+        print(f"JobSet {name} {uid}", end="")
+    elif a[0] == "get":
+        name = a[2]
+        if not os.path.exists(path(name)):
+            fail(f'Error from server (NotFound): jobsets.jobset.x-k8s.io "{name}" not found')
+        obj = json.load(open(path(name)))
+        meta = {"name": name, "uid": obj["uid"], "annotations": {"verl-nap/launch-id": obj["launch_id"]}}
+        print(json.dumps({"metadata": meta}))
+    elif a[0] == "delete" and "--raw" in a:
+        name = a[a.index("--raw") + 1].rsplit("/", 1)[1]
+        want = json.load(open(a[a.index("-f") + 1]))["preconditions"]["uid"]
+        if not os.path.exists(path(name)):
+            fail(f'Error from server (NotFound): jobsets.jobset.x-k8s.io "{name}" not found')
+        have = json.load(open(path(name)))["uid"]
+        if have != want:
+            fail(f"Error from server (Conflict): Precondition failed: UID in precondition: {want}, object: {have}")
+        os.remove(path(name))
+    else:
+        fail("fake kubectl: unsupported " + " ".join(a))
+    """
+)
+
+
+class FakeCluster:
+    """A directory of JobSets (name -> uid, launch id) behind a fake kubectl, plus a bash runner for the library."""
+
+    def __init__(self, tmp_path: Path):
+        self.state = tmp_path / "state"
+        self.state.mkdir(parents=True)
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        kubectl = bin_dir / "kubectl"
+        kubectl.write_text(FAKE_KUBECTL)
+        kubectl.chmod(0o755)
+        self.tmp = tmp_path
+        self.env = {
+            **os.environ,
+            "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+            "FAKE_KUBE_STATE": str(self.state),
+            "KUBE_CONTEXT": "ctx",
+            "RAY_NAMESPACE": "ns",
+            "LAUNCH_ID": "launch-ours",
+            "OWNED_LEDGER": str(tmp_path / "ledger.log"),
+        }
+
+    def manifest(self, name: str, launch_id: str = "launch-ours") -> str:
+        f = self.tmp / f"{name}.yaml"
+        f.write_text(
+            f'kind: JobSet\nmetadata:\n  name: {name}\n  annotations:\n    verl-nap/launch-id: "{launch_id}"\n'
+        )
+        return str(f)
+
+    def preexisting(self, name: str, uid: str = "someone-elses-uid", launch_id: str = "launch-theirs"):
+        (self.state / f"{name}.json").write_text(json.dumps({"uid": uid, "launch_id": launch_id}))
+
+    def names(self) -> set:
+        return {p.stem for p in self.state.glob("*.json")}
+
+    def run(self, script: str, **extra_env) -> subprocess.CompletedProcess:
+        lib = LAUNCHER_DIR / "owned_objects.sh"
+        body = f'set -euo pipefail\nlog() {{ echo "LOG: $*" >&2; }}\nsource "{lib}"\n{script}\n'
+        return subprocess.run(["bash", "-c", body], env={**self.env, **extra_env}, capture_output=True, text=True)
+
+
+def test_owned_objects_delete_only_what_this_run_created(tmp_path):
+    k = FakeCluster(tmp_path)
+    script = f'owned_create {k.manifest("run-a")}\necho "UID=$OWNED_LAST_UID"\nowned_delete_all\n'
+    res = k.run(script + 'echo "LEFT=${#OWNED_OBJECTS[@]}"')
+    assert res.returncode == 0, res.stderr
+    assert "UID=" in res.stdout and "LEFT=0" in res.stdout
+    assert k.names() == set()
+    assert "created jobset run-a" in (tmp_path / "ledger.log").read_text()
+
+
+def test_owned_objects_never_delete_a_preexisting_object(tmp_path):
+    k = FakeCluster(tmp_path)
+    k.preexisting("run-a")
+    script = f"owned_create {k.manifest('run-a')} || echo CREATE_FAILED\nowned_delete_all\n"
+    res = k.run(script + 'echo "LEFT=${#OWNED_OBJECTS[@]}"')
+    assert res.returncode == 0, res.stderr
+    assert "CREATE_FAILED" in res.stdout and "already exists and is not ours" in res.stderr
+    assert k.names() == {"run-a"}
+    assert "delete" not in (k.state / "_calls.log").read_text()
+
+
+def test_owned_objects_leave_a_replaced_object_alone(tmp_path):
+    k = FakeCluster(tmp_path)
+    script = f"""
+owned_create {k.manifest("run-a")}
+python3 - "$FAKE_KUBE_STATE/run-a.json" <<'PY'
+import json, sys
+json.dump({{"uid": "replacement-uid", "launch_id": "launch-theirs"}}, open(sys.argv[1], "w"))
+PY
+owned_delete_all
+echo "LEFT=${{#OWNED_OBJECTS[@]}}"
+"""
+    res = k.run(script)
+    assert res.returncode == 0, res.stderr
+    assert "replaced by someone else" in res.stderr and "LEFT=0" in res.stdout
+    assert json.loads((k.state / "run-a.json").read_text())["uid"] == "replacement-uid"
+
+
+def test_owned_objects_partial_placeholder_creation(tmp_path):
+    k = FakeCluster(tmp_path)
+    k.preexisting("run-a-w1")
+    script = f"""
+owned_create {k.manifest("run-a-w0")}
+owned_create {k.manifest("run-a-w1")} || echo W1_FAILED
+owned_delete_all
+"""
+    res = k.run(script)
+    assert res.returncode == 0, res.stderr
+    assert "W1_FAILED" in res.stdout
+    assert k.names() == {"run-a-w1"}  # ours deleted, the other one untouched
+
+
+def test_owned_objects_adopt_only_with_our_launch_id(tmp_path):
+    k = FakeCluster(tmp_path)
+    # The create reached the server but its response was lost: the object carries our launch id, so it is ours.
+    res = k.run(f"owned_create {k.manifest('run-a')}\nowned_delete_all", FAKE_LOSE_CREATE_RESPONSE="run-a")
+    assert res.returncode == 0, res.stderr
+    assert "adopting it" in res.stderr and k.names() == set()
+    # Same failure, but the object of that name was made by another launch: not adopted, not deleted.
+    k2 = FakeCluster(tmp_path / "second")
+    res = k2.run(
+        f"owned_create {k2.manifest('run-b', launch_id='launch-theirs')} || echo NOT_OURS\nowned_delete_all",
+        FAKE_LOSE_CREATE_RESPONSE="run-b",
+    )
+    assert res.returncode == 0, res.stderr
+    assert "NOT_OURS" in res.stdout and k2.names() == {"run-b"}

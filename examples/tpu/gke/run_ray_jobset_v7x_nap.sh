@@ -25,14 +25,23 @@
 #      cluster's admission webhooks (`kubectl create --dry-run=server`). DRY_RUN=1 stops here: nothing is uploaded,
 #      nothing is created.
 #   4. PREWARM=1: node auto-provisioning grows at most one node group per capacity request, so a job that needs two
-#      new multi-host slices is never provisioned. One placeholder JobSet per slice is created first; once their pods
-#      run they are deleted and the real JobSet is created right away, on the freed nodes.
+#      new multi-host slices is never provisioned. One placeholder JobSet per slice is created first (same chips and
+#      priority as the run); once their pods run they are deleted and the real JobSet is created right away. This is
+#      best effort: the freed nodes are not reserved, and another job can take them before the run is admitted.
 #   5. Creates the JobSet, waits for Kueue admission and the pods, follows the head log into LOG_DIR, waits for the
 #      JobSet to finish and exits with the job's verdict (<run dir>/verdict.json).
-#   6. On exit deletes only the objects of this run (its JobSet and placeholders), unless KEEP_JOBSET=1.
+#   6. Deletes only objects this invocation created: every JobSet is created on its own, its UID recorded
+#      (LOG_DIR/owned_objects.log), and deleted with a UID precondition (v7x_nap/owned_objects.sh).
 #
-# The head pod submits the job itself and the JobSet ends with the head, so a run completes (and releases its TPUs)
-# even when this launcher is interrupted.
+# Exit, Ctrl-C, SIGTERM and SIGHUP all delete the run's JobSet (and placeholders), which stops the run. To let a run
+# continue without the launcher, set KEEP_JOBSET=1: the JobSet then ends with its head (success or failure) and is
+# removed JOBSET_TTL_SECONDS later; checking and cleaning up is then yours. A launcher killed without running its
+# exit handler (SIGKILL, lost machine) leaves the run going the same way.
+#
+# Retries are bounded: JOBSET_MAX_RESTARTS JobSet restarts after TPU pod failures (a failed job is never restarted)
+# and ALLOW_REQUEUE Kueue evictions (preemption, reclaim, node-failure or pods-ready timeouts); every restart or
+# requeue reruns the job from the start. RUN_LIMIT_MIN is the cluster's limit for one run, counted from the pods
+# becoming ready; queueing and pre-warm time come on top.
 #
 # Usage:
 #   # Validate only (render + server-side dry-run; creates nothing):
@@ -41,6 +50,7 @@
 #   # Qwen3-30B-A3B GRPO (examples/tpu/grpo/run_qwen3_30b_a3b_torchtitan.sh) on 1 trainer + 1 rollout 2x2x4 slice,
 #   # inputs (assets/hf/Qwen3-30B-A3B, data/gsm8k) under gs://<bucket>/<inputs prefix>:
 #   GCS_BUCKET=<bucket> RUN_ROOT=<runs prefix> INPUTS_ROOT=<inputs prefix> RAY_NAMESPACE=<namespace> PREWARM=1 \
+#   IMAGE=<image@sha256:...> JOBSET_MAX_RESTARTS=1 ALLOW_REQUEUE=0 \
 #   JOBENV_MODEL_PATH=/dev/shm/models/Qwen3-30B-A3B \
 #   JOBENV_LIBTPU_INIT_ARGS="--xla_tpu_use_enhanced_launch_barrier=false --xla_tpu_bf16_emission_mode=PROMOTE_F32" \
 #   bash examples/tpu/gke/run_ray_jobset_v7x_nap.sh \
@@ -48,6 +58,7 @@
 #
 # Do not pass credentials through JOBENV_*: the job spec is stored in the run directory.
 # ===================================================================================
+# shellcheck source-path=SCRIPTDIR
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -72,8 +83,9 @@ KUEUE_QUEUE="${KUEUE_QUEUE:-multislice-queue}"
 PRIORITY_CLASS="${PRIORITY_CLASS:-medium}"
 SERVICE_ACCOUNT="${SERVICE_ACCOUNT:-default}"
 HEAD_NODEPOOL="${HEAD_NODEPOOL:-cpu-np}"
-# Pin images by digest (`...@sha256:...`) so a run can be reproduced.
-IMAGE="${IMAGE:-${VERL_TPU_CI_IMAGE:-}}"
+# Pin images by digest (`...@sha256:...`) so a run can be reproduced. Default: the TPU CI image
+# (TPU_CI_IMAGE in tests/special_tpu/gke/tpu-ci-image.env).
+IMAGE="${IMAGE:-${TPU_CI_IMAGE:-}}"
 
 # --- Storage (GCS bucket mounted with GCS FUSE at DATA_MOUNT on every pod) ---
 GCS_BUCKET="${GCS_BUCKET:-}"
@@ -124,15 +136,19 @@ PREWARM="${PREWARM:-0}"
 PREWARM_TIMEOUT_MIN="${PREWARM_TIMEOUT_MIN:-30}"
 PREWARM_HOLD_S="${PREWARM_HOLD_S:-1800}"
 KEEP_JOBSET="${KEEP_JOBSET:-0}"
-# Kueue evictions (preemption, reclaim, node-failure requeue) put the workload back in the queue; 1 = wait for the
-# re-admission (the run restarts from scratch), 0 = give up and delete the JobSet.
-ALLOW_REQUEUE="${ALLOW_REQUEUE:-1}"
+# Kueue evictions (preemption, reclaim, node-failure requeue, pods-ready timeout) put the workload back in the queue
+# and the run restarts from scratch on re-admission: number of evictions to wait through before giving up and
+# deleting the JobSet (default 0: the first eviction ends the run).
+ALLOW_REQUEUE="${ALLOW_REQUEUE:-0}"
 POLL_S="${POLL_S:-20}"
 LOG_DIR="${LOG_DIR:-/tmp/verl_nap_logs/${RUN_NAME}}"
 
 # --- Derived ---
 [[ -n "${GCS_BUCKET}" ]] || die "GCS_BUCKET is required (bucket mounted at ${DATA_MOUNT} on every pod)"
 [[ -n "${IMAGE}" ]] || die "IMAGE is required"
+if [[ "${IMAGE}" != *@sha256:* ]]; then
+  log "WARNING: IMAGE ${IMAGE} is not pinned by digest; the run record will not identify the exact image"
+fi
 for tool in kubectl git python3; do
   command -v "${tool}" >/dev/null 2>&1 || die "${tool} not found on PATH"
 done
@@ -174,10 +190,15 @@ export NODE_WAIT_TIMEOUT_S NODE_RANK_SOURCE NODE_RANK_TIMEOUT_S DRIVER_TIMEOUT_S
 
 k() { kubectl --context "${KUBE_CONTEXT}" -n "${RAY_NAMESPACE}" "$@"; }
 
-JOBSET_CREATED=0
-PREWARM_CREATED=0
 WARM_NAMES=()
+WARM_DIR="${LOG_DIR}/prewarm"
 FOLLOWER_PID=""
+JOBSET_UID=""
+LAUNCH_ID="$(python3 -c 'import uuid; print(uuid.uuid4().hex[:16])')"
+OWNED_LEDGER="${LOG_DIR}/owned_objects.log"  # read by owned_objects.sh
+export LAUNCH_ID OWNED_LEDGER
+# shellcheck source=v7x_nap/owned_objects.sh
+source "${SCRIPT_DIR}/v7x_nap/owned_objects.sh"
 
 stop_follower() {
   if [[ -n "${FOLLOWER_PID}" ]] && kill -0 "${FOLLOWER_PID}" 2>/dev/null; then
@@ -187,35 +208,29 @@ stop_follower() {
   FOLLOWER_PID=""
 }
 
-delete_placeholders() {
-  local name
-  for name in "${WARM_NAMES[@]}"; do  # one named object per command
-    k delete jobset "${name}" --ignore-not-found=true --wait=false || true
-  done
-  PREWARM_CREATED=0
-}
-
 cleanup() {
   local rc=$?
+  trap - INT TERM HUP
   stop_follower
-  if [[ "${PREWARM_CREATED}" == "1" ]]; then
-    log "deleting pre-warm placeholders ${WARM_NAMES[*]}"
-    delete_placeholders
-  fi
-  if [[ "${JOBSET_CREATED}" == "1" ]]; then
+  if (( ${#OWNED_OBJECTS[@]} > 0 )); then
     if [[ "${KEEP_JOBSET}" == "1" ]]; then
-      log "KEEP_JOBSET=1: leaving JobSet ${RUN_NAME}; delete it with:"
-      log "  kubectl --context ${KUBE_CONTEXT} -n ${RAY_NAMESPACE} delete jobset ${RUN_NAME}"
+      log "KEEP_JOBSET=1: leaving the run's JobSets in place:"
+      owned_list
     else
-      log "deleting JobSet ${RUN_NAME}"
-      k delete jobset "${RUN_NAME}" --ignore-not-found=true --wait=false || true
+      owned_delete_all
+      if (( ${#OWNED_OBJECTS[@]} > 0 )); then
+        log "WARNING: some JobSets of this run could not be deleted:"
+        owned_list
+      fi
     fi
   fi
   log "local files: ${LOG_DIR}; run directory: ${RUN_GCS} (exit ${rc})"
   exit "${rc}"
 }
 trap cleanup EXIT
-trap 'exit 130' INT TERM
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
 
 # --- 1. Pin the code and render from the pinned tree ---
 git -C "${REPO_ROOT}" archive --format=tar.gz -o "${LOG_DIR}/${SRC_NAME}" "${CODE_SHA}"
@@ -349,8 +364,13 @@ rm -f "${CQ_JSON}"
 log "server-side dry-run of ${MANIFEST}"
 k create --dry-run=server -f "${MANIFEST}" -o name
 if [[ "${PREWARM}" == "1" || "${DRY_RUN}" == "1" ]]; then
-  python3 "${RENDER}" prewarm --out "${PREWARM_MANIFEST}"
+  python3 "${RENDER}" prewarm --out "${PREWARM_MANIFEST}" --out-dir "${WARM_DIR}"
   mapfile -t WARM_NAMES < <(python3 "${RENDER}" prewarm-names)
+  for name in "${WARM_NAMES[@]}"; do
+    if k get jobset "${name}" >/dev/null 2>&1; then
+      die "pre-warm placeholder ${name} already exists; every run needs a new RUN_NAME"
+    fi
+  done
   log "server-side dry-run of ${PREWARM_MANIFEST}"
   k create --dry-run=server -f "${PREWARM_MANIFEST}" -o name
 fi
@@ -406,8 +426,9 @@ PY
 # --- 5. Optional pre-warm ---
 if [[ "${PREWARM}" == "1" ]]; then
   log "pre-warm: creating ${#WARM_NAMES[@]} placeholder JobSet(s): ${WARM_NAMES[*]}"
-  PREWARM_CREATED=1
-  k create -f "${PREWARM_MANIFEST}" -o name
+  for name in "${WARM_NAMES[@]}"; do  # one object per create, so a partial failure is tracked exactly
+    owned_create "${WARM_DIR}/${name}.yaml" || die "could not create pre-warm placeholder ${name}"
+  done
   WARM_START=$(date +%s)
   LAST=""
   while true; do
@@ -425,25 +446,31 @@ if [[ "${PREWARM}" == "1" ]]; then
     sleep 10
   done
   log "pre-warm: all ${TOTAL_HOSTS} hosts held; swapping the placeholders for the run"
-  delete_placeholders
+  owned_delete_all
+  (( ${#OWNED_OBJECTS[@]} == 0 )) || die "could not delete the pre-warm placeholders"
+  sleep 2  # let Kueue release the placeholders' quota before the run asks for it
 fi
 
 # --- 6. Create and watch ---
-JOBSET_CREATED=1
-k create -f "${MANIFEST}" -o name
-JOBSET_UID="$(k get jobset "${RUN_NAME}" -o jsonpath='{.metadata.uid}')"
+owned_create "${MANIFEST}" || die "could not create JobSet ${RUN_NAME}"
+JOBSET_UID="${OWNED_LAST_UID}"
 START_TS=$(date +%s)
 ADMITTED_TS=""
 LAST_WL=""
 LAST_PODS=""
 RESULT=""
+REQUEUES=0
+LAST_RESTARTS="0"
 TOTAL_PODS=$((TOTAL_HOSTS + 1))
 while true; do
   NOW=$(date +%s)
   CONDS="$(k get jobset "${RUN_NAME}" -o jsonpath='{range .status.conditions[*]}{.type}={.status};{end}' 2>/dev/null || true)"
   if [[ "${CONDS}" == *"Completed=True"* ]]; then RESULT="Completed"; break; fi
   if [[ "${CONDS}" == *"Failed=True"* ]]; then RESULT="Failed"; break; fi
-  if ! k get jobset "${RUN_NAME}" >/dev/null 2>&1; then RESULT="Deleted"; break; fi
+  if [[ "$(k get jobset "${RUN_NAME}" -o jsonpath='{.metadata.uid}' 2>/dev/null || true)" != "${JOBSET_UID}" ]]; then
+    RESULT="Deleted"  # gone, or replaced by another object of that name (which is not ours to touch)
+    break
+  fi
 
   WL="$(k get workloads.kueue.x-k8s.io -l "kueue.x-k8s.io/job-uid=${JOBSET_UID}" \
     -o jsonpath='{range .items[0].status.conditions[*]}{.type}={.status}({.reason}) {end}' 2>/dev/null || true)"
@@ -455,13 +482,19 @@ while true; do
     ADMITTED_TS=${NOW}
     log "admitted after $((NOW - START_TS)) s"
   elif [[ -n "${ADMITTED_TS}" && "${WL}" != *"Admitted=True"* && "${WL}" == *"Evicted=True"* ]]; then
-    # Preempted, reclaimed by the quota's owner, or Kueue's node-failure requeue: the pods are gone and the
-    # workload is back in the queue; on re-admission the head starts a new attempt (attempts/<pod uid>/).
-    [[ "${ALLOW_REQUEUE}" == "1" ]] || die "workload evicted (${WL}); ALLOW_REQUEUE=0"
-    log "workload evicted and requeued; waiting for re-admission (ALLOW_REQUEUE=1)"
+    # Preempted, reclaimed by the quota's owner, Kueue's node-failure requeue or a pods-ready timeout: the pods are
+    # gone and the workload is back in the queue; on re-admission the head starts a new attempt (attempts/<pod uid>/).
+    REQUEUES=$((REQUEUES + 1))
+    (( REQUEUES <= ALLOW_REQUEUE )) || die "workload evicted (${WL}); eviction ${REQUEUES} > ALLOW_REQUEUE=${ALLOW_REQUEUE}"
+    log "workload evicted and requeued (${REQUEUES}/${ALLOW_REQUEUE}); waiting for re-admission"
     ADMITTED_TS=""
     START_TS=${NOW}
     stop_follower
+  fi
+  RESTARTS="$(k get jobset "${RUN_NAME}" -o jsonpath='{.status.restarts}' 2>/dev/null || true)"
+  if [[ -n "${RESTARTS}" && "${RESTARTS}" != "${LAST_RESTARTS}" ]]; then
+    log "JobSet restarts: ${RESTARTS} (JOBSET_MAX_RESTARTS=${JOBSET_MAX_RESTARTS})"
+    LAST_RESTARTS="${RESTARTS}"
   fi
 
   mapfile -t S < <(pod_summary "verl-nap/run=${RUN_NAME},verl-nap/prewarm!=true")

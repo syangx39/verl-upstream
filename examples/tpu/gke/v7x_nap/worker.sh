@@ -51,7 +51,10 @@ if (( VERL_NAP_HOSTS_PER_SLICE == 1 )); then
 elif [[ "${NODE_RANK_SOURCE}" == "job-index" ]]; then
   NODE_RANK="${JOB_COMPLETION_INDEX:-}"
   if [[ -n "${TPU_WORKER_ID:-}" && "${TPU_WORKER_ID}" != "${NODE_RANK}" ]]; then
-    log "WARNING: JOB_COMPLETION_INDEX=${NODE_RANK} differs from GKE TPU_WORKER_ID=${TPU_WORKER_ID}"
+    # The premise of this rank source is that both orders agree; if they do not, publish no rank so that the head
+    # (REQUIRE_NODE_RANK=1) stops the run for investigation instead of guessing.
+    log "ERROR: JOB_COMPLETION_INDEX=${NODE_RANK} differs from GKE TPU_WORKER_ID=${TPU_WORKER_ID}; no node rank label"
+    NODE_RANK=""
   fi
   log "node rank ${NODE_RANK:-MISSING} (source: job completion index)"
 elif [[ "${NODE_RANK_SOURCE}" == "probe" ]]; then

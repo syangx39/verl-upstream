@@ -45,6 +45,8 @@ from typing import Any, Optional
 WORKING_DIR = "/workspace/verl"
 DASHBOARD = "http://127.0.0.1:8265"
 NODE_RANK_LABEL = "verl-tpu-node-rank"
+# Ray's own TPU label, derived from the TPU_WORKER_ID that GKE gives each host of a slice.
+RAY_TPU_WORKER_ID_LABEL = "ray.io/tpu-worker-id"
 EXCLUDES = [".git", "logs", "*.log", "*.pt", "*.bin", "__pycache__", ".ruff_cache", ".mypy_cache"]
 PACKAGES = (
     "ray",
@@ -132,21 +134,35 @@ def node_record(node: dict) -> dict:
 
 
 def check_slices(nodes: list[dict], expected: dict[str, int]) -> tuple[bool, bool, list[str]]:
-    """Per-slice host counts and node-rank labels; returns (hosts_ok, ranks_ok, report lines)."""
+    """Per-slice host counts and node-rank labels; returns (hosts_ok, ranks_ok, report lines).
+
+    For a multi-host slice the ranks must be exactly 0..hosts-1, and on every host where Ray reports a TPU worker
+    id (``ray.io/tpu-worker-id``, from GKE's TPU_WORKER_ID) the rank must equal it: the rank labels alone only prove
+    a complete order, the worker id is the order the TPU runtime uses.
+    """
     hosts_ok, ranks_ok, lines = True, True, []
     for name, want in expected.items():
         members = [n for n in nodes if n["alive"] and name in n["resources"]]
         ranks = [n["labels"].get(NODE_RANK_LABEL) for n in members]
         if len(members) != want:
             hosts_ok = False
+        mismatched = [
+            n
+            for n in members
+            if n["labels"].get(RAY_TPU_WORKER_ID_LABEL) not in (None, "")
+            and n["labels"].get(RAY_TPU_WORKER_ID_LABEL) != n["labels"].get(NODE_RANK_LABEL)
+        ]
         if want > 1:
             valid = all(isinstance(r, str) and r.isdigit() for r in ranks)
-            if not valid or sorted(int(r) for r in ranks) != list(range(want)):
+            if not valid or sorted(int(r) for r in ranks) != list(range(want)) or mismatched:
                 ranks_ok = False
-        lines.append(f"{name}: {len(members)}/{want} hosts")
+        note = f", {len(mismatched)} with rank != tpu-worker-id" if mismatched else ""
+        lines.append(f"{name}: {len(members)}/{want} hosts{note}")
         for n in sorted(members, key=lambda m: (str(m["labels"].get(NODE_RANK_LABEL, "")), m["ip"] or "")):
+            labels = n["labels"]
             lines.append(
-                f"  {NODE_RANK_LABEL}={n['labels'].get(NODE_RANK_LABEL, '-')} ip={n['ip']} host={n['hostname']}"
+                f"  {NODE_RANK_LABEL}={labels.get(NODE_RANK_LABEL, '-')} "
+                f"tpu-worker-id={labels.get(RAY_TPU_WORKER_ID_LABEL, '-')} ip={n['ip']} host={n['hostname']}"
             )
     return hosts_ok, ranks_ok, lines
 
@@ -244,7 +260,10 @@ class Supervisor:
             log(line)
         self.verdict["node_rank_ok"] = ranks_ok
         if not ranks_ok:
-            msg = f"multi-host slices without a complete set of {NODE_RANK_LABEL} labels (see cluster/slices.txt)"
+            msg = (
+                f"multi-host slices without a complete set of {NODE_RANK_LABEL} labels matching the TPU worker ids "
+                "(see cluster/slices.txt)"
+            )
             if self.require_rank:
                 return self.finish("FAILED", msg + "; REQUIRE_NODE_RANK=0 runs with verl's IP order instead")
             log("WARNING: " + msg + "; verl falls back to ordering hosts by IP")

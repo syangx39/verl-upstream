@@ -61,6 +61,7 @@ MANIFEST_KEYS = (
     "SERVICE_ACCOUNT",
     "RUN_OWNER",
     "CODE_SHA",
+    "LAUNCH_ID",
     "IMAGE",
     "POD_TPU_ACCELERATOR_TYPE",
     "GCS_BUCKET",
@@ -83,7 +84,16 @@ MANIFEST_KEYS = (
     "DRIVER_TIMEOUT_S",
     "REQUIRE_NODE_RANK",
 )
-PREWARM_KEYS = ("RUN_NAME", "RAY_NAMESPACE", "KUEUE_QUEUE", "PRIORITY_CLASS", "IMAGE", "TPU_TOPOLOGY", "PREWARM_HOLD_S")
+PREWARM_KEYS = (
+    "RUN_NAME",
+    "RAY_NAMESPACE",
+    "KUEUE_QUEUE",
+    "PRIORITY_CLASS",
+    "IMAGE",
+    "TPU_TOPOLOGY",
+    "PREWARM_HOLD_S",
+    "LAUNCH_ID",
+)
 
 
 @dataclass(frozen=True)
@@ -207,16 +217,22 @@ def prewarm_names(values: Mapping[str, str]) -> list[str]:
     return [f"{values['RUN_NAME']}-w{sl.index}" for sl in plan_slices(*_slice_counts(values))]
 
 
-def render_prewarm(values: Mapping[str, str]) -> str:
-    """Render one placeholder JobSet per TPU slice (multi-document YAML)."""
+def render_prewarm_docs(values: Mapping[str, str]) -> list[tuple[str, str]]:
+    """Render one placeholder JobSet per TPU slice; returns (name, manifest) pairs."""
     _require(values, PREWARM_KEYS)
     check_run_name(values["RUN_NAME"])
     topology = values["TPU_TOPOLOGY"]
     tpl = string.Template(PREWARM_TEMPLATE.read_text())
     docs = []
     for sl, name in zip(plan_slices(*_slice_counts(values)), prewarm_names(values), strict=True):
-        docs.append(tpl.substitute({**_slice_values(values, sl, topology), "WARM_NAME": name}).rstrip("\n") + "\n")
-    return "---\n".join(docs)
+        text = tpl.substitute({**_slice_values(values, sl, topology), "WARM_NAME": name}).rstrip("\n") + "\n"
+        docs.append((name, text))
+    return docs
+
+
+def render_prewarm(values: Mapping[str, str]) -> str:
+    """Render one placeholder JobSet per TPU slice (multi-document YAML)."""
+    return "---\n".join(text for _, text in render_prewarm_docs(values))
 
 
 def check_manifest(text: str, values: Mapping[str, str]) -> list[str]:
@@ -304,6 +320,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("what", choices=["manifest", "prewarm", "prewarm-names", "plan"])
     ap.add_argument("--out", help="output file (default: stdout)")
+    ap.add_argument("--out-dir", help="prewarm: also write one <name>.yaml per placeholder into this directory")
     args = ap.parse_args(argv)
     values = dict(os.environ)
     if args.what == "manifest":
@@ -315,6 +332,10 @@ def main(argv: Optional[list[str]] = None) -> int:
             return 2
     elif args.what == "prewarm":
         text = render_prewarm(values)
+        if args.out_dir:
+            Path(args.out_dir).mkdir(parents=True, exist_ok=True)
+            for name, doc in render_prewarm_docs(values):
+                (Path(args.out_dir) / f"{name}.yaml").write_text(doc)
     elif args.what == "prewarm-names":
         text = "\n".join(prewarm_names(values)) + "\n"
     else:

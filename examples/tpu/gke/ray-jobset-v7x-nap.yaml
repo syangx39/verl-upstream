@@ -31,6 +31,7 @@ metadata:
   annotations:
     verl-nap/owner: "${RUN_OWNER}"
     verl-nap/code-sha: "${CODE_SHA}"
+    verl-nap/launch-id: "${LAUNCH_ID}"
 spec:
   ttlSecondsAfterFinished: ${JOBSET_TTL_SECONDS}
   network:

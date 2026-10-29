@@ -7,7 +7,9 @@
 # for a short while before the autoscaler removes them, and the real job then needs no new nodes. The placeholders
 # use the run's image, so it is already pulled on those nodes.
 #
-# A placeholder only holds the chips: it sleeps and exits by itself after PREWARM_HOLD_S seconds if it is forgotten.
+# Best effort: the freed nodes are not reserved for the run, and another job can take them first. A placeholder holds
+# the same chips at the same priority as the run (it counts against the queue's quota and can preempt like the run);
+# it only sleeps, and exits by itself after PREWARM_HOLD_S seconds if it is forgotten.
 apiVersion: jobset.x-k8s.io/v1alpha2
 kind: JobSet
 metadata:
@@ -18,6 +20,8 @@ metadata:
     verl-nap/managed: "true"
     verl-nap/run: ${RUN_NAME}
     verl-nap/prewarm: "true"
+  annotations:
+    verl-nap/launch-id: "${LAUNCH_ID}"
 spec:
   ttlSecondsAfterFinished: 300
   failurePolicy:

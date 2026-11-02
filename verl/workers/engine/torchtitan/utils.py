@@ -148,6 +148,30 @@ def derive_torchtitan_name_and_flavor(hf_config) -> tuple[str, str]:
     )
 
 
+def configure_qwen3_moe_for_rl(
+    model_config,
+    *,
+    use_pallas_grouped_mm: bool = False,
+    expert_parallel_size: int = 1,
+    token_multiple: int = 1,
+):
+    """Adapt a TorchTitan Qwen3 MoE model config for RL against an HF-format rollout engine."""
+    from dataclasses import fields
+    from torchtitan.models.common.moe import MoE
+
+    moe_field_names = {f.name for f in fields(MoE.Config)}
+    moe_configs = [moe for _, moe, _, _ in model_config.traverse(MoE.Config)]
+    if not moe_configs:
+        return model_config
+    for moe in moe_configs:
+        if "load_balance_coeff" in moe_field_names:
+            moe.load_balance_coeff = None
+        if "aux_loss" in moe_field_names:
+            moe.aux_loss = None
+    logger.warning("MoE: disabled expert-bias load balancing on %d layers", len(moe_configs))
+    return model_config
+
+
 def enable_fsdp_gradient_division(model: nn.Module, dp_size: int) -> None:
     """
     Re-enable FSDP's automatic gradient division.

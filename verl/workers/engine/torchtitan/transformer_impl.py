@@ -57,6 +57,7 @@ from verl.workers.config import HFModelConfig, TorchtitanEngineConfig, Torchtita
 from verl.workers.engine.torchtitan.utils import (
     ContextParallelGather,
     NoOpDataLoader,
+    configure_qwen3_moe_for_rl,
     derive_torchtitan_name_and_flavor,
     enable_fsdp_gradient_division,
     get_attention_masks,
@@ -141,6 +142,8 @@ class TorchTitanEngine(BaseEngine):
         # Get ModelSpec from model registry
         model_module = importlib.import_module(f"torchtitan.models.{torchtitan_name}")
         model_spec = model_module.model_registry(torchtitan_flavor, attn_backend=self.engine_config.attn_type)
+        if torchtitan_name == "qwen3":
+            model_spec.model = configure_qwen3_moe_for_rl(model_spec.model)
 
         optimizer = OptimizersContainer.Config(
             param_groups=[
@@ -225,6 +228,11 @@ class TorchTitanEngine(BaseEngine):
             # Provide a concrete loss so Trainer.__init__ can build it;
             # verl uses its own loss function and ignores this one.
             loss=CrossEntropyLoss.Config(),
+        )
+        logger.warning(
+            "TorchTitan grad clipping uses training.max_norm=%s; optim.clip_grad=%s is not passed to TorchTitan",
+            self.config.training.max_norm,
+            self.optimizer_config.clip_grad,
         )
         self.trainer = Trainer(self.config)
 

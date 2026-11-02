@@ -92,14 +92,17 @@
 **标准构建与校验命令：**
 
 ```bash
-cd examples/tpu/retool/gb200
-docker buildx build --platform linux/arm64 --progress=plain \
-  --build-arg VERL_REPO=https://github.com/syangx39/verl-upstream.git \
-  --build-arg VERL_PIN=<GPU_CODE_SHA> \
-  --build-arg EXPECT_LOCK_SHA256=<UV_LOCK_SHA256> \
-  --build-arg FLASH_ATTN_FROM_SOURCE=0 \
-  -f Dockerfile.gb200.torchtitan \
-  -t retool-gb200-torchtitan:<GPU_CODE_SHA> --load . 2>&1 | tee build_arm64.log
+(
+  set -euo pipefail
+  cd examples/tpu/retool/gb200
+  docker buildx build --platform linux/arm64 --progress=plain \
+    --build-arg VERL_REPO=https://github.com/syangx39/verl-upstream.git \
+    --build-arg VERL_PIN=<GPU_CODE_SHA> \
+    --build-arg EXPECT_LOCK_SHA256=<UV_LOCK_SHA256> \
+    --build-arg FLASH_ATTN_FROM_SOURCE=0 \
+    -f Dockerfile.gb200.torchtitan \
+    -t retool-gb200-torchtitan:<GPU_CODE_SHA> --load . 2>&1 | tee build_arm64.log
+)
 ```
 
 - `Dockerfile.gb200.torchtitan` 在 `uv sync --frozen --all-packages --extra fsdp --extra vllm --extra torchtitan` 前后强校验 `uv.lock` 的 SHA256 与 `VERL_PIN`；若 `flash-attn` 在 `aarch64` 上需源码构建，传 `--build-arg FLASH_ATTN_FROM_SOURCE=1` 会同时启用 `FLASH_ATTENTION_FORCE_BUILD=TRUE` 与 `--no-binary flash-attn`（防止 `pip`/`uv` 或 `setup.py` 静默回退预编译 wheel），并须归档 `build_arm64.log` 与 `flash_attn` 扩展 import 结果。

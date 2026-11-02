@@ -7,10 +7,13 @@
 #     torch==2.13.0+cu130, vllm==0.32.0, torchtitan==0.3.0, torch-checkpointing==0.1.0, TransferQueue==0.1.11.
 #
 # Build on a native linux/arm64 builder from examples/tpu/retool/gb200/ and archive the full build log:
-#   docker buildx build --platform linux/arm64 --progress=plain \
-#     --build-arg VERL_REPO=https://github.com/syangx39/verl-upstream.git \
-#     --build-arg VERL_PIN=<GPU_CODE_SHA> \
-#     -f Dockerfile.gb200.torchtitan -t retool-gb200-torchtitan:latest --load . 2>&1 | tee build_arm64.log
+#   (
+#     set -euo pipefail
+#     docker buildx build --platform linux/arm64 --progress=plain \
+#       --build-arg VERL_REPO=https://github.com/syangx39/verl-upstream.git \
+#       --build-arg VERL_PIN=<GPU_CODE_SHA> \
+#       -f Dockerfile.gb200.torchtitan -t retool-gb200-torchtitan:latest --load . 2>&1 | tee build_arm64.log
+#   )
 FROM verlai/verl@sha256:6d7c328b1e7aedd2dece2f939a827704295b13f4bb75f2f17a962a91a19376b9
 
 ARG VERL_REPO=https://github.com/syangx39/verl-upstream.git

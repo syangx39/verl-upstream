@@ -11,8 +11,9 @@ This script intentionally separates two verification levels and labels them expl
      - Verifies `verl.__file__` resolves strictly inside `<repo_dir>/`, `torchtitan.__file__` resolves inside active
        site-packages, `torch` carries a CUDA build tag (`+cu*`), and `flash_attn` loads its compiled extension;
      - Under `--require-torchtitan`, verifies TorchTitan `0.3.x` / `0.1.x` `LRSchedulersContainer` and
-       `Qwen3StateDictAdapter` imports, plus slotted `MoE.Config` (`load_balance_coeff` field without legacy `aux_loss`
-       assumption).
+       `Qwen3StateDictAdapter` imports, plus inspects `MoE.Config` via `dataclasses.fields(MoE.Config)` (without
+       assuming zero-arg construction, since TorchTitan 0.3 `MoE.Config` has required fields) and fails explicitly if
+       `MoE.Config` cannot be found or lacks `load_balance_coeff`.
   2. Target-host GPU / GB200 precheck (`--require-gpu` / `--require-gb200`):
      - Actively enforces `torch.cuda.is_available()`, a working `torch.cuda.nccl.version()`, minimum GPU count
        (`--min-gpus`), minimum compute capability (`--min-sm`), minimum per-GPU memory in GiB (`--min-hbm-gib`), and
@@ -26,6 +27,7 @@ This script intentionally separates two verification levels and labels them expl
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import hashlib
 import importlib
 import importlib.metadata as md
@@ -142,6 +144,57 @@ def verify_identity_pins(repo: str, args: argparse.Namespace, bad: list[str]) ->
     return lock_sha
 
 
+def inspect_moe_config_schema(bad: list[str]) -> None:
+    """Inspect TorchTitan MoE.Config schema via dataclasses.fields without instantiating MoE.Config().
+
+    In TorchTitan 0.3.x, `torchtitan.models.common.moe.MoE.Config` is a `@dataclass(slots=True)` class with required
+    positional fields (`num_experts`, `top_k`, etc.) and no `aux_loss` field, so calling `MoE.Config()` raises
+    `TypeError`. If `MoE.Config` cannot be found or is not a dataclass with `load_balance_coeff`, append to `bad`.
+    """
+    moe_checked = False
+    last_err: str | None = None
+    for moe_mod_name in ("torchtitan.models.common.moe", "torchtitan.models.moe"):
+        try:
+            moe_mod = importlib.import_module(moe_mod_name)
+        except Exception as exc:
+            last_err = f"{moe_mod_name}:{exc}"
+            continue
+        moe_cls = getattr(moe_mod, "MoE", None)
+        cfg_cls = getattr(moe_cls, "Config", None) if moe_cls is not None else getattr(moe_mod, "MoEArgs", None)
+        if cfg_cls is None:
+            last_err = f"{moe_mod_name}:missing-MoE.Config"
+            continue
+        if not dataclasses.is_dataclass(cfg_cls):
+            bad.append(f"torchtitan:{moe_mod_name}.Config-not-dataclass")
+            return
+        field_map = {f.name: f for f in dataclasses.fields(cfg_cls)}
+        has_lbc = "load_balance_coeff" in field_map
+        has_aux = "aux_loss" in field_map
+        slots = "__slots__" in cfg_cls.__dict__
+        default_lbc = (
+            field_map["load_balance_coeff"].default
+            if has_lbc and field_map["load_balance_coeff"].default is not dataclasses.MISSING
+            else "REQUIRED/FACTORY"
+        )
+        req_fields = [
+            f.name
+            for f in field_map.values()
+            if f.default is dataclasses.MISSING and f.default_factory is dataclasses.MISSING
+        ]
+        print(
+            f"torchtitan MoE.Config ({moe_mod_name}): slotted={slots} "
+            f"required_fields={req_fields} has_load_balance_coeff={has_lbc} "
+            f"has_aux_loss={has_aux} default_load_balance_coeff={default_lbc!r}"
+        )
+        if not has_lbc:
+            bad.append(f"torchtitan:{moe_mod_name}.Config-missing-load_balance_coeff")
+        moe_checked = True
+        break
+
+    if not moe_checked:
+        bad.append(f"torchtitan:MoE.Config-not-found({last_err})")
+
+
 def check_torchtitan_surface(bad: list[str], require_rl_moe_helper: bool = False) -> str:
     import torchtitan
 
@@ -182,28 +235,7 @@ def check_torchtitan_surface(bad: list[str], require_rl_moe_helper: bool = False
     if not adapter_ok:
         bad.append("torchtitan:Qwen3StateDictAdapter-not-found")
 
-    # Inspect TorchTitan MoE config schema (in 0.3.x MoE.Config is a slotted dataclass with
-    # `load_balance_coeff` and no `aux_loss` field; setting `moe.aux_loss = None` blindly raises AttributeError).
-    for moe_mod_name in ("torchtitan.models.common.moe", "torchtitan.models.moe"):
-        try:
-            moe_mod = importlib.import_module(moe_mod_name)
-            moe_cls = getattr(moe_mod, "MoE", None)
-            cfg_cls = getattr(moe_cls, "Config", None) if moe_cls is not None else None
-            if cfg_cls is not None:
-                cfg_obj = cfg_cls()
-                has_lbc = hasattr(cfg_obj, "load_balance_coeff")
-                has_aux = hasattr(cfg_obj, "aux_loss")
-                slots = hasattr(cfg_cls, "__slots__")
-                print(
-                    f"torchtitan MoE.Config ({moe_mod_name}): slotted={slots} "
-                    f"has_load_balance_coeff={has_lbc} has_aux_loss={has_aux} "
-                    f"default_load_balance_coeff={getattr(cfg_obj, 'load_balance_coeff', 'N/A')!r}"
-                )
-                if not has_lbc:
-                    bad.append("torchtitan:MoE.Config-missing-load_balance_coeff")
-                break
-        except Exception:
-            continue
+    inspect_moe_config_schema(bad)
 
     try:
         tt_utils = importlib.import_module("verl.workers.engine.torchtitan.utils")
@@ -284,7 +316,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--require-torchtitan",
         action="store_true",
-        help="Assert TorchTitan package path, Qwen3 MoE state-dict adapter, and scheduler container resolve",
+        help="Assert TorchTitan package path, Qwen3 MoE state-dict adapter, MoE.Config schema, and scheduler container resolve",
     )
     parser.add_argument(
         "--require-rl-moe-helper",

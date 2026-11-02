@@ -107,6 +107,10 @@ spec:
   - key: nvidia.com/gpu
     operator: Exists
     effect: NoSchedule
+  - key: kubernetes.io/arch
+    operator: Equal
+    value: arm64
+    effect: NoSchedule
   volumes:
   - name: dshm
     emptyDir:
@@ -221,6 +225,10 @@ spec:
   tolerations:
   - key: nvidia.com/gpu
     operator: Exists
+    effect: NoSchedule
+  - key: kubernetes.io/arch
+    operator: Equal
+    value: arm64
     effect: NoSchedule
   volumes:
   - name: dshm

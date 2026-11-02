@@ -181,7 +181,7 @@ LOGGER_LIST="${LOGGER_LIST:-['console','tensorboard']}"
 
 python3 -m verl.trainer.main_ppo \
     "+ray_kwargs.ray_init.runtime_env.env_vars.PYTHONPATH=${PYTHONPATH}" \
-    "+ray_kwargs.ray_init.runtime_env.env_vars.SANDBOX_FUSION_PORT=${SANDBOX_FUSION_PORT}" \
+    "+ray_kwargs.ray_init.runtime_env.env_vars.SANDBOX_FUSION_PORT='${SANDBOX_FUSION_PORT}'" \
     trainer.use_v1=True \
     trainer.v1.trainer_mode=separate_async \
     trainer.v1.separate_async.num_warmup_batches="${NUM_WARMUP_BATCHES}" \

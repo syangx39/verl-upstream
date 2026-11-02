@@ -156,7 +156,7 @@ _TPU_PALLAS_GROUPED_MM_TILE_M = 256
 def configure_qwen3_moe_for_rl(
     model_config,
     *,
-    use_pallas_grouped_mm: bool,
+    use_pallas_grouped_mm: bool = False,
     expert_parallel_size: int = 1,
     token_multiple: int = 1,
 ):
@@ -170,9 +170,10 @@ def configure_qwen3_moe_for_rl(
     ``expert_bias_E`` before every optimizer step, and the router adds that bias to the scores it picks the
     top-k experts from. HF Qwen2/Qwen3 MoE checkpoints have no such bias and ``Qwen3StateDictAdapter.to_hf``
     drops it, so the rollout engine (and the ref model) never see it: from the second step on the actor would
-    route tokens to other experts than the rollout that sampled them. The ``*-global-aux`` flavors instead
-    inject an aux-loss gradient through a custom autograd function, outside verl's policy loss and scaled for
-    torchtitan's batch accounting. Both are cleared so the trainer routes exactly like the HF model.
+    route tokens to other experts than the rollout that sampled them. Older torchtitan snapshots also exposed
+    ``MoE.Config.aux_loss`` (removed in slotted ``MoE.Config`` on torchtitan>=0.3.0). We inspect
+    ``dataclasses.fields(MoE.Config)`` and clear ``load_balance_coeff`` (and ``aux_loss`` when present) so the
+    trainer routes like the HF model across both TorchTitan 0.3.0 and earlier TPU snapshots.
     ``model_registry`` does not forward flavor kwargs, so the built config is edited, as torchtitan's TPU
     235B-A22B recipe does (``experiments/tpu/qwen3/config_registry.py``).
 
@@ -195,14 +196,18 @@ def configure_qwen3_moe_for_rl(
     Returns:
         The edited model config.
     """
+    from dataclasses import fields
     from torchtitan.models.common.moe import MoE
 
+    moe_field_names = {f.name for f in fields(MoE.Config)}
     moe_configs = [moe for _, moe, _, _ in model_config.traverse(MoE.Config)]
     if not moe_configs:
         return model_config
     for moe in moe_configs:
-        moe.load_balance_coeff = None
-        moe.aux_loss = None
+        if "load_balance_coeff" in moe_field_names:
+            moe.load_balance_coeff = None
+        if "aux_loss" in moe_field_names:
+            moe.aux_loss = None
     logger.warning("MoE: disabled expert-bias load balancing and aux loss on %d layers", len(moe_configs))
 
     if not use_pallas_grouped_mm:

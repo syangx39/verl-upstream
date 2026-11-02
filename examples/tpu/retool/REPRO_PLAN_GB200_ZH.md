@@ -52,7 +52,7 @@
 **建议构建流程：**
 
 1. 在候选新版上建立 GPU 工作分支，把必要移植纳入同一 commit，审计配置/reward/tool/async 差异并保留补丁清单；固定 `<GPU_CODE_SHA>` 和其 `pyproject.toml`、`uv.lock`。不要对浮动 `main` 建生产对照镜像。
-2. 使用该 SHA 对应的 [官方 CUDA 13 uv Dockerfile](https://github.com/verl-project/verl/blob/3fdf2b548882a8aeccf0842c2150d9c9f1790a55/docker/Dockerfile.uv.cu130) 在原生 arm64 构建，或沿用旧 Dockerfile 的固定 arm64 base digest 做派生层；先确认基础 manifest、驱动和目标 GPU 兼容。官方 Dockerfile 从**构建上下文**复制 checkout 并预取 uv cache，不等于已经提供含目标三 extras 的固定 venv。可在派生层 materialize 统一 venv，并确保 head 与每个 Ray worker 用同一路径和相同 extras。不要让运行时挂载的另一份源码覆盖固定 checkout。
+2. 使用该 SHA 对应的 [官方 CUDA 13 uv Dockerfile](https://github.com/verl-project/verl/blob/3fdf2b548882a8aeccf0842c2150d9c9f1790a55/docker/Dockerfile.uv.cu130) 在原生 arm64 构建，或沿用旧 Dockerfile 的固定 arm64 base digest 做派生层；先确认基础 manifest、驱动和目标 GPU 兼容。官方 Dockerfile 从**构建上下文**复制 checkout 并预取 uv cache，不等于已经提供含目标三 extras 的固定 venv。候选版本的 prefetch 逻辑可能重新执行 `uv lock`：应在预取前后比较 `uv.lock` 的哈希并在不一致时失败，确保中间预取、最终 COPY 的 lock 和目标 commit 一致；否则调整构建阶段保证全程使用同一 lock，再验证 frozen sync。可在派生层 materialize 统一 venv，并确保 head 与每个 Ray worker 用同一路径和相同 extras。不要让运行时挂载的另一份源码覆盖固定 checkout。
 3. 示意命令如下，须替换为已移植并 lock 的实际 commit；这是构建方案，非现成已测试镜像：
 
 ```bash

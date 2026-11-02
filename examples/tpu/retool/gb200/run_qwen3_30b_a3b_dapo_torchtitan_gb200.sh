@@ -16,7 +16,7 @@
 
 set -xeuo pipefail
 
-export VERL_PLATFORM=cuda
+export VERL_PLATFORM=nvidia
 export VLLM_USE_V1="${VLLM_USE_V1:-1}"
 export RAY_OVERRIDE_JOB_RUNTIME_ENV=1
 export PYTHONUNBUFFERED=1

@@ -64,11 +64,11 @@ All P0 preparation deliverables (`P0.1`–`P0.4`, `P0.6`, `P0.8`–`P0.10`) are 
 | `R1` | gate | every run | `LIBTPU_INIT_ARGS` contains `--xla_tpu_bf16_emission_mode=PROMOTE_F32` on all active roles | `P1b`, `P2`: verified in `<RUN_DIR>/{p1b-retool-sft-01,p2-retool-sft-01}/env/*-procs.jsonl` across all 4 trainer hosts (`LIBTPU_INIT_ARGS` includes `--xla_tpu_use_enhanced_launch_barrier=false --xla_tpu_bf16_emission_mode=PROMOTE_F32`, `TPU_ACCELERATOR_TYPE="tpu7x"`). Rollout role pending `P1a`/`P1c`/`P3` | **PASS (trainer in `P1b`, `P2`)** / pending rollout |
 | `R2` | gate | `P1a`, `P1c` | 32 trainer devices (4D mesh) + 32 rollout devices (TP=32, EP=32) on distinct `2x2x4` slices; trainer rank order matches `verl-tpu-node-rank`; Raiden sync completes | `P1b` & `P2` (1-slice trainer): in both runs the 4 hosts had non-monotonic IP order (`P1b`: `10.224.130.8, 10.224.106.8, 10.224.114.8, 10.224.113.8`; `P2`: `10.224.180.7, 10.224.242.7, 10.224.243.7, 10.224.181.7` for workers `0..3`) and were ordered `0, 1, 2, 3` by `verl-tpu-node-rank`. Dual-slice trainer+rollout + Raiden sync pending `P1a`/`P1c` | Partial (`P1b`/`P2` trainer host order PASS; dual-slice pending `P1a`/`P1c`) |
 | `R3` | observation | `P1b` | SFT 3-step smoke `train/loss` (`0.7950 -> 0.5787 -> 0.5177`, step 3 `+-0.05`) and step-3 `val/loss` (`0.4050`, `+-0.05`) | `train/loss`: `0.7932` (step 1) -> `0.5881` (step 2) -> `0.5224` (step 3, `+0.0047` vs ref); step-3 `val/loss`: `0.4095` (`+0.0045` vs ref). Moreover, step-1 `train/loss` in `P2` (`0.7931681871414185`) was bit-identical to `P1b` (`0.7931681871414185`) and within `-0.0009` of #108's v6e smoke (`0.7941`) | **PASS** |
-| `R4` | observation | `P2` | SFT steps 363–372 mean `train/loss` (~0.25 in #108; `0.038` in the author's 6-epoch doc) and step-372 in-sample `val/loss` (`0.214` in #108) | `P2` (372 steps, 6 epochs): `train/loss` decreased smoothly from `0.7932` (step 1) to `0.3832` (step 62, Epoch 1), `0.2818` (step 124, Epoch 2), `0.1612` (step 186, Epoch 3), `0.1017` (step 248, Epoch 4), `0.0612` (step 310, Epoch 5), and `0.0359` (step 372, Epoch 6; **steps 363–372 mean `0.0393`**, median `0.0393`, matching the author's 6-epoch doc's `0.038`). In-sample `val/loss` across epochs 1–6: `0.2713 -> 0.1793 -> 0.1078 -> 0.0618 -> 0.0395 -> 0.0263`. Both `global_step_186/huggingface` and `global_step_372/huggingface` were exported for downstream evaluation | **RECORDED** (see section 4.2 analysis) |
+| `R4` | observation | `P2` | SFT steps 363–372 mean `train/loss` (`0.039429` in TPU v5p 6-epoch ref `myaf5pal`; `0.038` in the author's 6-epoch doc) and step-372 in-sample `val/loss` (`0.026605` in `myaf5pal`) | `P2` (372 steps, 6 epochs): `train/loss` decreased smoothly from `0.7932` (step 1) to `0.3832` (step 62, Epoch 1), `0.2818` (step 124, Epoch 2), `0.1612` (step 186, Epoch 3), `0.1017` (step 248, Epoch 4), `0.0612` (step 310, Epoch 5), and `0.0359` (step 372, Epoch 6; **steps 363–372 mean `0.039265`**, `-0.000164` vs `myaf5pal`'s `0.039429`). In-sample `val/loss` across epochs 1–6: `0.2713 -> 0.1793 -> 0.1078 -> 0.0618 -> 0.0395 -> 0.0263` (within `+-0.0004` of `myaf5pal`'s `0.2710 -> 0.1796 -> 0.1076 -> 0.0622 -> 0.0392 -> 0.0266` at every single epoch; total tokens bit-identical at `23,798,553`). Both `global_step_186/huggingface` and `global_step_372/huggingface` were exported for downstream evaluation | **PASS** (see section 4.2 & 4.3) |
 | `R5a` | gate | `P1b`, `P2` | `global_step_N/huggingface` export complete (16 bf16 shards, index, config, tokenizer) and reloadable | `P1b` (`global_step_3/huggingface`) and `P2` (`global_step_186/huggingface`, `global_step_372/huggingface`): each exported all 16 bf16 `.safetensors` shards + `model.safetensors.index.json` (`18,867` tensors, `61,064,245,248` param bytes, `lm_head.weight` & `model.embed_tokens.weight` present, `tie_word_embeddings=false`) + config/tokenizer (`27` objects, `61,084,185,820` bytes total) | **PASS (`P1b`, `P2`)** |
 | `R5b` | gate | `P1c`, `P3` | Staged SFT export matches source hashes across all hosts; TorchTitan + multi-host vLLM load cleanly; first Raiden sync completes | Pending `P1c`, `P3` | PENDING |
-| `R6` | observation | `P3` | Step-0 AIME 2024 (`22.44%`) and AIME 2025 (`14.17%`) mean@30 (+-4.5 pp), maj@30, best@30 | Pending `P3` | PENDING |
-| `R7` | observation | `P3` | Early RL numerics (`actor/ppo_kl`, `actor/rollout_corr/k3_kl`, steps 3–10) | Pending `P3` | PENDING |
+| `R6` | observation | `P3` | Step-0 AIME 2024 (`22.44%`) and AIME 2025 (`14.17%`) mean@30 (+-4.5 pp), maj@30, best@30 | Pending `P3` (note: TPU v5p RL reference `fcze3xlx` ran with `val_before_train=false, test_freq=25` and terminated at step 23 before logging `val-core/*`; `P3` enables step-0 and step-25 evaluation explicitly) | PENDING |
+| `R7` | observation | `P3` | Early RL numerics vs TPU v5p reference `fcze3xlx` (steps 3–10 `actor/ppo_kl` `0.0101–0.0123` mean `0.0110`; `actor/rollout_corr/k3_kl` `0.0099–0.0124` mean `0.0109`; `actor/grad_norm` `0.1222–0.1548` mean `0.1345`; `critic/rewards/mean` rising from `-0.5233` at step 1 to `+0.3531` at step 10 and `+0.6562` at step 23) | Pending `P3` (full 23-step `fcze3xlx` baseline recorded in section 4.3) | PENDING |
 | `R8` | observation | `P3` | Step-25 AIME 2024 (`30.00%`) and AIME 2025 (`18.33%`) mean@30 (+-5 pp) | Pending `P3` | PENDING |
 | `R9` | observation | `P2`, `P3` | Median step time and stage split (`gen`, `update_actor`, `update_weights`) vs v6e (`18.6 s` SFT, `108 s` RL) | `P2` SFT: **warm mean `9.57 s/step`**, **median `10.0 s/step`**, **p90 `10.0 s/step`** (`min=9 s, max=11 s` across Epochs 2–6, `n=300` steps; **1.94x faster** than v6e's `18.6 s/step`). Epoch 1 mean was `15.73 s/step` while XLA bucket shapes compiled; cached 32-sample validation took `12 s`. RL step time pending `P3` | **RECORDED (`P2`)** / pending `P3` |
 | `R10` | gate | `P3` | Complete step-0 and step-25 eval dumps (30 questions x 30 sessions by trajectory ID for both AIME 2024 and 2025) | Pending `P3` | PENDING |
@@ -137,3 +137,69 @@ All P0 preparation deliverables (`P0.1`–`P0.4`, `P0.6`, `P0.8`–`P0.10`) are 
   - Mid-run export: `<RUN_DIR>/p2-retool-sft-01/checkpoint/global_step_186/huggingface/` (27 objects, `61,084,185,820` bytes, 16 bf16 `.safetensors` shards, `18,867` tensors).
   - Final export: `<RUN_DIR>/p2-retool-sft-01/checkpoint/global_step_372/huggingface/` (27 objects, `61,084,185,820` bytes, 16 bf16 `.safetensors` shards, `18,867` tensors, `61,064,245,248` param bytes, `lm_head.weight` & `model.embed_tokens.weight` present, `tie_word_embeddings=false`).
   - `verdict.json`: `status="SUCCEEDED"`, `node_rank_ok=true`, `duration_s=5548` (`92m 28s` head runtime, including model staging, 372 training steps, 6 validations, and two 57 GiB HF checkpoint exports), `timed_out=false`.
+
+### 4.3 Reference baseline comparison: TPU v5p runs (`myaf5pal` and `fcze3xlx`)
+
+To establish exact step-by-step parity targets across SFT (`R4`) and DAPO RL (`R6`–`R9`), both reference runs linked in PR #2 (`myaf5pal` for 6-epoch SFT and `fcze3xlx` for DAPO RL) are recorded below alongside our completed TPU 7x Stage `P2` run (`p2-retool-sft-01`).
+
+#### 4.3.1 Cold-start SFT parity: TPU v5p `myaf5pal` vs. TPU 7x `p2-retool-sft-01`
+
+- **Reference setup (`myaf5pal` / `multiturn-sft-qwen3-30b-a3b-v5p`)**: `finished` in `3,295.6 s` (`54m 56s`), `4 nodes x 4 chips = 16` TPU v5p devices (`data_parallel_shard_size=16`, `context_parallel_size=1`, `use_splash_attention=true`, `attn_type="varlen"`), `train_batch_size=32`, `micro_batch_size_per_gpu=1`, `max_length=16384`, `lr=1e-5` (cosine decay to `1e-6`, `lr_warmup_steps_ratio=0.1`), `clip_grad=1.0`, `seed=42`, `372` steps (`6` epochs), `train/total_tokens = 23,798,553` (`0.023798553 B` — bit-for-bit identical to `p2-retool-sft-01`).
+- **Epoch-by-epoch comparison (`R4`)**:
+
+| Checkpoint / Metric | TPU v5p ref (`myaf5pal`) | TPU 7x `P2` (`p2-retool-sft-01`) | Delta (`7x - v5p`) |
+|---|---|---|---|
+| Step 1 `train/loss` | `0.791439` | `0.793168` | `+0.001729` |
+| Epoch 1 (steps 1–62) mean / last-10 `train/loss` | `0.426701` / `0.347942` | `0.426880` / `0.347975` | `+0.000179` / `+0.000033` |
+| Epoch 1 (step 62) `val/loss` | `0.271026` | `0.271294` | `+0.000268` |
+| Epoch 2 (steps 63–124) mean / last-10 `train/loss` | `0.273237` / `0.266112` | `0.273512` / `0.266374` | `+0.000275` / `+0.000262` |
+| Epoch 2 (step 124) `val/loss` | `0.179572` | `0.179302` | `-0.000270` |
+| Epoch 3 (steps 125–186) mean / last-10 `train/loss` | `0.176942` / `0.175286` | `0.176805` / `0.175233` | `-0.000137` / `-0.000053` |
+| Epoch 3 (step 186) `val/loss` | `0.107577` | `0.107801` | `+0.000224` |
+| Epoch 4 (steps 187–248) mean / last-10 `train/loss` | `0.107932` / `0.111990` | `0.107684` / `0.111980` | `-0.000248` / `-0.000010` |
+| Epoch 4 (step 248) `val/loss` | `0.062240` | `0.061826` | `-0.000414` |
+| Epoch 5 (steps 249–310) mean / last-10 `train/loss` | `0.064055` / `0.066167` | `0.063903` / `0.065669` | `-0.000152` / `-0.000498` |
+| Epoch 5 (step 310) `val/loss` | `0.039194` | `0.039511` | `+0.000317` |
+| Epoch 6 (steps 311–372) mean / last-10 `train/loss` | `0.041088` / **`0.039429`** | `0.040940` / **`0.039265`** | `-0.000148` / **`-0.000164`** |
+| Epoch 6 (step 372) `val/loss` | **`0.026605`** | **`0.026332`** | **`-0.000273`** |
+| Total tokens (`train/total_tokens`) | `23,798,553` | `23,798,553` | `0` |
+
+Across all 6 epochs, `p2-retool-sft-01` on TPU 7x agrees with `myaf5pal` on TPU v5p within `+-0.0005` on every epoch mean, last-10-step mean, and validation loss.
+
+#### 4.3.2 DAPO RL reference trajectory: TPU v5p `fcze3xlx` (steps 1–23)
+
+- **Reference setup (`fcze3xlx` / `retool-dapo-qwen3-30b-a3b-v5p-cp2`)**:
+  - **Runtime & termination**: `state="crashed"` after completing `training/global_step = 23 / 150` (`_runtime = 30,573.5 s` = `8h 30m`, including two synchronous checkpoint saves of `1,430.7 s` at step 10 and `1,349.8 s` at step 20). Because `trainer.val_before_train=false` and `trainer.test_freq=25`, no `val-core/*` (AIME 2024 / AIME 2025) evaluations were logged before the run terminated at step 23.
+  - **Topology & sharding**: Trainer `4 nodes x 4 chips = 16` devices (`strategy="torchtitan"`, `use_simple_fsdp=true`, `context_parallel_size=2`, `data_parallel_shard_size=8`, `use_splash_attention=true`, `attn_type="varlen"`, `max_seq_len=18432`, `ppo_max_token_len_per_gpu=9216`, `use_dynamic_bsz=true`, actor `activation_checkpoint="full"`, ref `activation_checkpoint="selective"`) + Rollout `4 nodes x 4 chips = 16` devices (`tensor_model_parallel_size=16`, `expert_parallel_size=16`, `USE_MOE_SPARSE_CORE=0`, `max_model_len=18432`, `max_num_batched_tokens=4096`, `max_num_seqs=512`, `block_size=256`, `gpu_memory_utilization=0.85`, `checkpoint_engine.backend="raiden"`).
+  - **Hyperparameters**: `train_batch_size=64`, `ppo_mini_batch_size=64`, `n=16`, `prompt_length=2048`, `response_length=16384`, `lr=2e-6`, `betas=[0.9, 0.999]`, `clip_grad=0.0625`, `clip_ratio_low=0.2`, `clip_ratio_high=0.28`, `loss_agg_mode="token-mean"`, `policy_loss.loss_mode="bypass_mode"`, `algorithm.rollout_correction={bypass_mode: true, loss_type: "ppo_clip", rollout_is: "token", rollout_is_threshold: 2}`, `trainer_mode="separate_async"` (`num_warmup_batches=2`, `parameter_sync_step=1`, `max_off_policy_threshold=4`), `multi_turn={enable: true, format: "hermes", max_assistant_turns: 16, max_user_turns: 16, max_tool_response_length: 256}`.
+  - **Window summaries (`R7`, `R9`)**:
+    - Steps 3–10: `actor/ppo_kl` `0.010070–0.012328` (mean `0.010971`), `actor/rollout_corr/k3_kl` `0.009899–0.012421` (mean `0.010882`), `actor/grad_norm` `0.122238–0.154805` (mean `0.134469`), `critic/rewards/mean` `-0.445996` -> `+0.381152` (mean `+0.026599`).
+    - All 23 steps: `critic/rewards/mean` rises from `-0.5233` (step 1, ~23.8% solve rate) across `0.0` at step 6 (`+0.1005`, ~55.0%) to `+0.5825` at step 13 (~79.1%) and **`+0.6562` at step 23 (~82.8%)**; `timing_s/gen` `0.2–2,724.7 s` (mean `1,001.6 s`; `0.22 s` at steps 11 & 21 when the async buffer was already full), `timing_s/update_actor` `99.8–190.8 s` (mean `134.9 s`), `timing_s/update_weights` `9.8–16.4 s` (mean `14.6 s`).
+- **Complete 23-step trajectory (`fcze3xlx`)**:
+
+| Step | `critic/rewards/mean` | `response_length/mean` | `response_length/clip_ratio` | `num_turns/mean` | `actor/grad_norm` | `actor/ppo_kl` | `timing_s/step` | `timing_s/gen` | `timing_s/update_actor` | `timing_s/update_weights` |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | `-0.5233` | `1,612.9` | `0.000977` | `6.48` | `0.1649` | `0.01259` | `2,869.6 s` | `2,724.7 s` | `125.4 s` | `15.0 s` |
+| 2 | `-0.4161` | `2,039.9` | `0.000977` | `9.59` | `0.1453` | `0.01132` | `576.3 s` | `440.7 s` | `119.4 s` | `15.4 s` |
+| 3 | `-0.4460` | `2,791.2` | `0.001953` | `9.37` | `0.1222` | `0.01066` | `1,303.4 s` | `1,096.7 s` | `190.8 s` | `15.2 s` |
+| 4 | `-0.1520` | `2,053.2` | `0.000977` | `8.44` | `0.1548` | `0.01158` | `197.6 s` | `60.3 s` | `120.8 s` | `15.3 s` |
+| 5 | `-0.2827` | `2,433.3` | `0.000977` | `8.39` | `0.1269` | `0.01098` | `1,896.9 s` | `1,750.8 s` | `132.5 s` | `12.7 s` |
+| 6 | `+0.1005` | `1,925.3` | `0.000977` | `8.60` | `0.1498` | `0.01233` | `583.1 s` | `469.1 s` | `101.6 s` | `11.6 s` |
+| 7 | `-0.0002` | `2,491.2` | `0.000977` | `8.67` | `0.1264` | `0.01078` | `1,378.1 s` | `1,234.1 s` | `131.3 s` | `11.9 s` |
+| 8 | `+0.3812` | `1,971.0` | `0.000977` | `8.78` | `0.1398` | `0.01098` | `856.5 s` | `736.4 s` | `107.7 s` | `11.6 s` |
+| 9 | `+0.2589` | `2,567.5` | `0.000977` | `8.76` | `0.1245` | `0.01007` | `1,271.0 s` | `1,121.7 s` | `138.1 s` | `9.8 s` |
+| 10 | `+0.3531` | `2,167.9` | `0.001953` | `8.11` | `0.1313` | `0.01039` | `2,471.9 s` (ckpt `1,430.7 s`) | `904.2 s` | `121.1 s` | `15.1 s` |
+| 11 | `+0.1180` | `3,214.9` | `0.001953` | `9.71` | `0.1017` | `0.00843` | `203.0 s` | `0.2 s` | `186.0 s` | `15.9 s` |
+| 12 | `+0.2935` | `2,447.8` | `0.001953` | `8.66` | `0.1263` | `0.00972` | `1,494.6 s` | `1,349.8 s` | `127.3 s` | `16.3 s` |
+| 13 | `+0.5825` | `1,808.3` | `0.000977` | `7.20` | `0.1471` | `0.01091` | `1,267.1 s` | `1,150.2 s` | `99.8 s` | `16.4 s` |
+| 14 | `+0.4082` | `2,355.2` | `0.003906` | `8.88` | `0.1196` | `0.00870` | `862.2 s` | `724.3 s` | `121.4 s` | `15.7 s` |
+| 15 | `+0.2918` | `2,603.1` | `0.001953` | `8.25` | `0.1158` | `0.00855` | `1,444.1 s` | `1,292.8 s` | `135.2 s` | `15.3 s` |
+| 16 | `+0.4662` | `2,419.2` | `0.001953` | `8.97` | `0.1170` | `0.00850` | `917.9 s` | `768.3 s` | `132.6 s` | `16.1 s` |
+| 17 | `+0.3906` | `2,586.9` | `0.000977` | `8.95` | `0.1080` | `0.00902` | `1,474.2 s` | `1,324.4 s` | `133.5 s` | `15.5 s` |
+| 18 | `+0.4184` | `2,298.6` | `0.000977` | `9.19` | `0.1341` | `0.00909` | `1,137.0 s` | `945.4 s` | `175.1 s` | `15.2 s` |
+| 19 | `+0.3231` | `2,827.7` | `0.000977` | `9.80` | `0.1079` | `0.00833` | `1,246.9 s` | `1,083.9 s` | `147.5 s` | `14.6 s` |
+| 20 | `+0.3169` | `2,501.2` | `0.000977` | `9.41` | `0.1103` | `0.00834` | `2,415.2 s` (ckpt `1,349.8 s`) | `919.2 s` | `131.4 s` | `14.0 s` |
+| 21 | `+0.2702` | `3,251.5` | `0.006836` | `9.64` | `0.1004` | `0.00796` | `187.5 s` | `0.2 s` | `170.1 s` | `15.8 s` |
+| 22 | `+0.4424` | `2,635.4` | `0.000977` | `9.12` | `0.1004` | `0.00750` | `1,795.3 s` | `1,639.2 s` | `140.4 s` | `14.9 s` |
+| 23 | `+0.6562` | `2,200.7` | `0.000977` | `7.52` | `0.1060` | `0.00833` | `1,430.7 s` | `1,299.6 s` | `114.7 s` | `15.6 s` |
+

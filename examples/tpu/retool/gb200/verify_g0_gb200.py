@@ -214,19 +214,34 @@ def verify_moe_config_and_step(model_dir: Path) -> dict[str, Any]:
         model.init_weights(buffer_device=device)
 
         opt = torch.optim.AdamW(model.parameters(), lr=1e-3)
-        #TorchTitan registers post_optimizer_build_fn(model_parts, optimizers) when present
+        # TorchTitan 0.3 registers post_optimizer_build_fn(model_parts, optimizers, parallel_dims)
         if spec.post_optimizer_build_fn is not None:
-            try:
-                spec.post_optimizer_build_fn([model], opt)
-            except TypeError:
-                # OptimizersContainer wraps register_step_pre_hook; support both raw Optimizer and container
-                class _OptWrap:
-                    def __init__(self, inner):
-                        self.inner = inner
+            import inspect
 
-                    def register_step_pre_hook(self, fn):
-                        return self.inner.register_step_pre_hook(fn)
+            class _OptWrap:
+                def __init__(self, inner):
+                    self.inner = inner
+                    self.optimizers = [inner]
 
+                def register_step_pre_hook(self, fn):
+                    return self.inner.register_step_pre_hook(fn)
+
+            class _DummyParallelDims:
+                dp_cp_enabled = False
+                dp_enabled = False
+                cp_enabled = False
+                ep_enabled = False
+                pp_enabled = False
+                tp_enabled = False
+
+                @staticmethod
+                def get_optional_mesh(_name: str):
+                    return None
+
+            n_params = len(inspect.signature(spec.post_optimizer_build_fn).parameters)
+            if n_params >= 3:
+                spec.post_optimizer_build_fn([model], _OptWrap(opt), _DummyParallelDims())
+            else:
                 spec.post_optimizer_build_fn([model], _OptWrap(opt))
 
         from verl.workers.engine.torchtitan.utils import get_attention_masks

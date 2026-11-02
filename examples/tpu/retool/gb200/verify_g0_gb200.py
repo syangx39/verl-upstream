@@ -157,7 +157,7 @@ def verify_moe_config_and_step(model_dir: Path) -> dict[str, Any]:
     from transformers import AutoConfig
     from torchtitan.models.common.moe import MoE
     import torchtitan.models.qwen3 as tt_qwen3
-    from torchtitan.models.qwen3.model.state_dict_adapter import Qwen3StateDictAdapter
+    from torchtitan.models.qwen3.state_dict_adapter import Qwen3StateDictAdapter
     from verl.workers.engine.torchtitan.utils import (
         configure_qwen3_moe_for_rl,
         derive_torchtitan_name_and_flavor,

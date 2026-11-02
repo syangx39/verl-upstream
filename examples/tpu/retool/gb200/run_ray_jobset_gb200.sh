@@ -40,7 +40,7 @@ while IFS='=' read -r name val; do
     if [[ "${name}" == JOBENV_* ]]; then
         env_key="${name#JOBENV_}"
         escaped_val="${val//\"/\\\"}"
-        JOBENV_YAML+="        - name: ${env_key}"$'\n'"          value: \"${escaped_val}\""$'\n'
+        JOBENV_YAML+="    - name: ${env_key}"$'\n'"      value: \"${escaped_val}\""$'\n'
     fi
 done < <(env | sort)
 
@@ -153,11 +153,16 @@ ${JOBENV_YAML}    resources:
       set -xeuo pipefail
       HOST_TAG="\$(hostname)"
       mkdir -p "${RUN_DIR}/env"
+      if [[ -n "\${EXPECT_GIT_SHA:-}" && "\$(git rev-parse HEAD)" != "\${EXPECT_GIT_SHA}" ]]; then
+        git fetch --depth=1 https://github.com/syangx39/verl-upstream.git "\${EXPECT_GIT_SHA}"
+        git checkout -f "\${EXPECT_GIT_SHA}"
+      fi
       nvidia-smi -L > "${RUN_DIR}/env/\${HOST_TAG}-nvidia-smi-L.txt"
       nvidia-smi topo -m > "${RUN_DIR}/env/\${HOST_TAG}-topo.txt" || true
       python3 examples/tpu/retool/gb200/verify_venv_lock.py \
         /workspace/verl-pin \
         --check-all-locked \
+        --expect-git-sha "\${EXPECT_GIT_SHA:-\$(git -C /workspace/verl-pin rev-parse HEAD)}" \
         --expect-lock-sha256 df508db0b957fa181c229fb75885cd3863cb651fd5233d0fa5af95e990bda0be \
         --require-async \
         --require-torchtitan \
@@ -278,11 +283,16 @@ ${JOBENV_YAML}    resources:
       HOST_TAG="\$(hostname)"
       mkdir -p "${RUN_DIR}/env" "${RUN_DIR}/rollout" "${RUN_DIR}/validation" "${RUN_DIR}/rollout_audit"
       rm -f "${RUN_DIR}/exit_code.txt"
+      if [[ -n "\${EXPECT_GIT_SHA:-}" && "\$(git rev-parse HEAD)" != "\${EXPECT_GIT_SHA}" ]]; then
+        git fetch --depth=1 https://github.com/syangx39/verl-upstream.git "\${EXPECT_GIT_SHA}"
+        git checkout -f "\${EXPECT_GIT_SHA}"
+      fi
       nvidia-smi -L > "${RUN_DIR}/env/\${HOST_TAG}-nvidia-smi-L.txt"
       nvidia-smi topo -m > "${RUN_DIR}/env/\${HOST_TAG}-topo.txt" || true
       python3 examples/tpu/retool/gb200/verify_venv_lock.py \
         /workspace/verl-pin \
         --check-all-locked \
+        --expect-git-sha "\${EXPECT_GIT_SHA:-\$(git -C /workspace/verl-pin rev-parse HEAD)}" \
         --expect-lock-sha256 df508db0b957fa181c229fb75885cd3863cb651fd5233d0fa5af95e990bda0be \
         --require-async \
         --require-torchtitan \

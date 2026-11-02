@@ -238,11 +238,18 @@ def verify_moe_config_and_step(model_dir: Path) -> dict[str, Any]:
                 def get_optional_mesh(_name: str):
                     return None
 
-            n_params = len(inspect.signature(spec.post_optimizer_build_fn).parameters)
-            if n_params >= 3:
-                spec.post_optimizer_build_fn([model], _OptWrap(opt), _DummyParallelDims())
+            param_names = list(inspect.signature(spec.post_optimizer_build_fn).parameters.keys())
+            first_is_opt = bool(param_names and param_names[0].startswith("opt"))
+            if len(param_names) >= 3:
+                if first_is_opt:
+                    spec.post_optimizer_build_fn(_OptWrap(opt), [model], _DummyParallelDims())
+                else:
+                    spec.post_optimizer_build_fn([model], _OptWrap(opt), _DummyParallelDims())
             else:
-                spec.post_optimizer_build_fn([model], _OptWrap(opt))
+                if first_is_opt:
+                    spec.post_optimizer_build_fn(_OptWrap(opt), [model])
+                else:
+                    spec.post_optimizer_build_fn([model], _OptWrap(opt))
 
         from verl.workers.engine.torchtitan.utils import get_attention_masks
 

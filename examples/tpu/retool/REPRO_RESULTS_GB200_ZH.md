@@ -17,8 +17,8 @@
 | **Stage G0** | 共享 P2 Checkpoint 跨节点缓存 + 20 核心文件 SHA-256 清单 + `debugmodel_moe` 1 步 `to_hf()->from_hf()` 路由单测 + Sandbox 四用例 | [`verify_g0_gb200.py`](./gb200/verify_g0_gb200.py) (`bace5a04`) | 2 节点 × 4 张 GB200（`4 trainer + 4 rollout`） | 跨双节点 `/dev/shm` 拷贝全部 25 文件并对 20 个核心文件（16 分片 + 4 元数据）计算组合 SHA-256、校验 48 层 `30B-A3B` 配置并基于 8 层 `debugmodel_moe` 单测 1 步 `expert_bias_E` 与 `to_hf()->from_hf()` 路由一致性（注：**完整 30B 权重加载与真实 `actor -> NCCL -> vLLM` 同步由 `Stage G1` 验证**） | Head 59.2 s / Worker 72.2 s | **PASS（单元预检）** |
 | **Stage G1 (Attempt 1)** | GB200 ReTool 多轮工具调用 2 步 RL Smoke（初次尝试） | `g1-retool-rl-smoke-01` (`bace5a04`) | 2 节点 × 4 张 GB200（`NV16/NV17` 降级链路节点，未挂载 `ComputeDomain`） | 进入 `actor_init_model()`（已打印 `disabled expert-bias load balancing on 48 layers`），在 `torch.distributed.broadcast` 报 `ncclUnhandledCudaError: P2P is disabled between NVLINK connected GPUs 1 and 0` | 110 s | **FAIL（缺 `ComputeDomain` IMEX 通道 + `NV16/NV17` 节点）** |
 | **Stage G1 (Attempt 2)** | GB200 ReTool 多轮工具调用 3 步 RL Smoke（对照 TPU `P1c`） | `g1-retool-rl-smoke-02` (`bb704378`) | 2 节点 × 4 张 GB200（健康 `NV18` 全互联节点 + `ComputeDomain` IMEX 通道） | 挂载 `ComputeDomain` + `privileged: true` 并校验 `can_device_access_peer`，完成完整 30B 加载、真实 `actor -> NCCL -> vLLM` 同步（`4.42s / 3.07s / 3.02s / 3.89s`）及 3 步真实更新（`grad_norm: 0.637 -> 0.593 -> 0.864`，`score/mean: -0.625 -> -0.1875 -> +0.3125`，`num_turns/mean: 5.875 / 6.0 / 5.625`） | 冷启动含 SM100 JIT 44 m（其中 3 步训练仅 `108 s`） | **PASS（训练与多轮工具调用通过）** |
-| **Stage G1 (Attempt 3)** | GB200 ReTool 多轮工具调用 3 步 RL Smoke + Token 级 `rollout_audit` 落盘 | `g1-retool-rl-smoke-03` (`64ef634b`) | 2 节点 × 4 张 GB200（复用热 SM100 FlashInfer/vLLM 缓存） | 默认开启 `trainer.rollout_data_dir` 与 `+trainer.rollout_audit_dir`，落盘 `rollout_audit/{1,2,3}.jsonl` 以执行逐 token `response_mask` 离线审计 | 运行中（预计 ~5 m） | **RUNNING** |
-| **Stage G2** | GB200 ReTool 25 步 RL Pilot + Step 0/25 AIME 2024/2025 评估（对照 TPU `P3`） | `g2-retool-rl-pilot-01` (`64ef634b`) | 2 节点 × 4 张 GB200（`4 trainer + 4 rollout`） | **严格前置条件：需 `Stage G1` 落盘 `rollout_audit` 掩码核验与 TPU `Stage P1c` 均通过后方可启动** | 待 `G1` 审计与 `P1c` 通过后启动 | **BLOCKED on G1 audit & P1c** |
+| **Stage G1 (Attempt 3)** | GB200 ReTool 多轮工具调用 3 步 RL Smoke + Token 级 `rollout_audit` 落盘 | `g1-retool-rl-smoke-03` (`64ef634b`) | 2 节点 × 4 张 GB200（复用热 SM100 FlashInfer/vLLM 缓存） | 默认开启 `trainer.rollout_data_dir` 与 `+trainer.rollout_audit_dir`，落盘 `rollout/{1,2,3}.jsonl`（共 172 次 `<tool_response>`）与 `rollout_audit/{1,2,3}.jsonl`（24 个审计会话，`mask_length_matches=True`，`<tool_response>` 位于 `mask==1` 违规数 **`0`**） | 7 m 15 s（其中 3 步训练 `107.8 s`） | **PASS（全项门槛通过）** |
+| **Stage G2** | GB200 ReTool 25 步 RL Pilot + Step 0/25 AIME 2024/2025 评估（对照 TPU `P3`） | `g2-retool-rl-25step-01` (`64ef634b`) | 2 节点 × 4 张 GB200（`4 trainer + 4 rollout`） | `train_batch_size=64, ppo_mini_batch_size=64, n=8, total_training_steps=25, val_before_train=True, test_freq=25`（已通过 `Stage G1` 全部前置门槛） | 运行中 | **RUNNING** |
 
 ---
 
@@ -219,8 +219,20 @@ verl.workers.engine.torchtitan.utils.configure_qwen3_moe_for_rl: present
 | `actor/perf/max_memory_allocated_gb` / `reserved_gb` | `116.95 GB` / `124.12 GB` | `127.20 GB` / `161.86 GB` | `127.20 GB` / `161.86 GB` | 单卡峰值分配约 `118.5 GiB`、峰值预留约 `150.7 GiB`（均低于单卡实测 `184.31 GiB` HBM 上限） |
 | `timing_s/gen` / `update_actor` / `update_weights` / `step` | `8.02s` / `28.42s` / `3.91s` / **`43.23s`** | `0.01s` / `45.61s` / `3.93s` / **`49.67s`** | `0.01s` / `1.50s` / `4.79s` / **`6.42s`** | Step 1/2 含首次动态序列长度 `flex_attention` Triton autotune（各约 25~40s）；Step 3 热核下 `update_actor` 仅 **`1.50 s`**，单步仅 **`6.42 s`**（吞吐 `538.0 tok/s/GPU`） |
 
-- **补充落盘运行（`g1-retool-rl-smoke-03`，代码 SHA `64ef634b`）**：
-  - `g1-retool-rl-smoke-02` 启动命令未显式传入 `trainer.rollout_data_dir` 与 `+trainer.rollout_audit_dir`；已在 `64ef634b` 中将上述落盘参数及 SM100 缓存自动恢复设为默认并启动 `g1-retool-rl-smoke-03`，用于归档 `rollout_audit/{1,2,3}.jsonl` 逐 token 掩码审计文件。
+### 5.3 Attempt 3（`g1-retool-rl-smoke-03`，代码 SHA `64ef634b`）—— 热 SM100 缓存复用与 `rollout_audit/{1,2,3}.jsonl` 逐 Token 掩码核验（PASS）
+
+- **热缓存加速实测**：复用持久化至共享存储的 `flashinfer_cache_sm100a.tar.gz`（32 MB）与 `vllm_cache_sm100a.tar.gz`（31 MB），从 Pod 创建到 3 步训练全部完成并落盘仅耗时 **7 分 15 秒**（免除 33 分钟冷 JIT 编译，其中 3 步训练 `107.8 s`，`35.94 s/it`）。
+- **逐 Step 工具调用与 Token 级 `response_mask` 审计汇总（提取自 `rollout/{1,2,3}.jsonl` 与 `rollout_audit/{1,2,3}.jsonl`）**：
+
+| Step | 全批次轨迹数 (`rollout/*.jsonl`) | 全批次 `<tool_response>` 触发次数 | 抽样审计会话数 (`rollout_audit/*.jsonl`) | `mask_length_matches` | `num_loss_tokens` (`mask == 1`) | `num_non_loss_tokens` (`mask == 0`) | 审计会话 `<tool_call>` (`mask == 1`) | 审计会话 `<tool_response>` (`mask == 0`) | 掩码违规数（`<tool_response>` 落入 `mask == 1`） |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| **Step 1** | `32` | **`50`** | `8` | `True` (8/8) | `3,492` | `517` | `13` | `13` | **`0`** |
+| **Step 2** | `32` | **`74`** | `8` | `True` (8/8) | `6,795` | `787` | `18` | `18` | **`0`** |
+| **Step 3** | `32` | **`48`** | `8` | `True` (8/8) | `2,164` | `295` | `10` | `10` | **`0`** |
+| **合计** | **`96`** | **`172`** | **`24`** | **100% `True`** | **`12,451`** | **`1,599`** | **`41`** | **`41`** | **`0`（PASS）** |
+
+- **结论**：`Stage G1` 全部门槛（完整 30B SFT checkpoint 加载、真实 `actor -> NCCL -> vLLM` 同步、连续 3 次真实梯度更新、172 次多轮工具调用、Token 级 `response_mask` 0 违规）均已验证通过；现已正式启动 **`Stage G2`（`g2-retool-rl-25step-01`，25 步多轮 RL + Step 0/25 AIME 2024/2025 评估）**。
+
 
 
 

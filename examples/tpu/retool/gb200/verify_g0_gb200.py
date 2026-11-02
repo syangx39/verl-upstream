@@ -176,7 +176,7 @@ def verify_moe_config_and_step(model_dir: Path) -> dict[str, Any]:
             f"Unexpected TorchTitan 0.3 MoE.Config fields: {moe_field_names}"
         )
 
-    model_spec = tt_qwen3.model_registry(tt_flavor, attn_backend="flex_flash")
+    model_spec = tt_qwen3.model_registry(tt_flavor, attn_backend="flex")
     before_coeffs = [
         moe.load_balance_coeff
         for _, moe, _, _ in model_spec.model.traverse(MoE.Config)
@@ -201,7 +201,7 @@ def verify_moe_config_and_step(model_dir: Path) -> dict[str, Any]:
     torch.manual_seed(2026)
 
     def _make_mini_spec(apply_rl_fix: bool):
-        spec = copy.deepcopy(tt_qwen3.model_registry("debugmodel_moe", attn_backend="varlen"))
+        spec = copy.deepcopy(tt_qwen3.model_registry("debugmodel_moe", attn_backend="flex"))
         if apply_rl_fix:
             configure_qwen3_moe_for_rl(spec.model)
         return spec
@@ -233,7 +233,7 @@ def verify_moe_config_and_step(model_dir: Path) -> dict[str, Any]:
 
         tokens = torch.randint(0, spec.model.vocab_size, (2, 32), device=device)
         positions = torch.arange(32, device=device).unsqueeze(0).expand(2, -1)
-        attn_masks = get_attention_masks(tokens, positions, "varlen")
+        attn_masks = get_attention_masks(tokens, positions, "flex")
 
         out = model(tokens, attn_masks=attn_masks, positions=positions)
         loss = out.float().pow(2).mean()
@@ -269,7 +269,7 @@ def verify_moe_config_and_step(model_dir: Path) -> dict[str, Any]:
         # Capture router top-k indices on both actor and receiver on an evaluation batch
         eval_tokens = torch.randint(0, spec.model.vocab_size, (2, 32), device=device)
         eval_positions = torch.arange(32, device=device).unsqueeze(0).expand(2, -1)
-        eval_masks = get_attention_masks(eval_tokens, eval_positions, "varlen")
+        eval_masks = get_attention_masks(eval_tokens, eval_positions, "flex")
 
         actor_topk: list[torch.Tensor] = []
         recv_topk: list[torch.Tensor] = []

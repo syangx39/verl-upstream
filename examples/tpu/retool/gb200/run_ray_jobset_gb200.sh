@@ -40,7 +40,7 @@ while IFS='=' read -r name val; do
     if [[ "${name}" == JOBENV_* ]]; then
         env_key="${name#JOBENV_}"
         escaped_val="${val//\"/\\\"}"
-        JOBENV_YAML+="        - name: ${env_key}"$'\n'"          value: \"${escaped_val}\""$'\n'
+        JOBENV_YAML+="    - name: ${env_key}"$'\n'"      value: \"${escaped_val}\""$'\n'
     fi
 done < <(env | sort)
 

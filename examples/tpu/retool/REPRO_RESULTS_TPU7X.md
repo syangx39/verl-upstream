@@ -51,9 +51,9 @@ All P0 preparation deliverables (`P0.1`–`P0.4`, `P0.6`, `P0.8`–`P0.10`) are 
 |---|---|---|---|---|---|---|---|---|---|
 | `P1b` | `p1b-retool-sft-01` | `cfabaada` | `sha256:dcece4bc...` | 1 (1 trainer) | 1->3 | 11:06:20 / 11:15:33 / 11:16:31 / 11:32:31 | 28.4 s (steps 1–3: 55.6 s, 28.4 s, 27.1 s) | **SUCCEEDED** (exit 0) | `<RUN_DIR>/p1b-retool-sft-01` |
 | `P2` | `p2-retool-sft-01` | `cfabaada` | `sha256:dcece4bc...` | 1 (1 trainer) | 1->372 | 11:46:17 / 12:03:14 / 12:04:12 / 13:36:05 | 9.57 s mean / 10.0 s median warm (Epochs 2–6; Epoch 1 mean 15.73 s) | **SUCCEEDED** (exit 0) | `<RUN_DIR>/p2-retool-sft-01` |
-| `P1a` | `p1a-moe-smoke-05` | `cfabaada` | `sha256:dcece4bc...` | 2 (1 trainer + 1 rollout) | 1->3 | 12:18:52 (`w0` running on 1st slice; `w1` waiting for 2nd slice) | - | Pre-warming (4/8 pods running) | `<RUN_DIR>/p1a-moe-smoke-05` |
-| `P1c` | `p1c-retool-rl-01` | `cfabaada` | `sha256:dcece4bc...` | 2 (1 trainer + 1 rollout) | 1->2 | queued (`P1b` export ready) | - | Queued | `<RUN_DIR>/p1c-retool-rl-01` |
-| `P3` | `p3-retool-rl-01` | `cfabaada` | `sha256:dcece4bc...` | 2 (1 trainer + 1 rollout) | 1->25 | queued (`P2` step-372 export ready) | - | Queued | `<RUN_DIR>/p3-retool-rl-01` |
+| `P1a` | `p1a-moe-smoke-12` | `6fa65e49` | `sha256:dcece4bc...` | 2 (1 trainer + 1 rollout) | 1->3 | 19:07:34 / 19:11:31 / 19:13:03 / 19:36:40 | 11.45 s (`398.5 s` step 1 compile, `11.45 s` step 2, `7.94 s` step 3; Raiden sync `2.25–2.35 s` P2P / `3.04–3.21 s` total) | **SUCCEEDED** (exit 0) | `<RUN_DIR>/p1a-moe-smoke-12` |
+| `P1c` | `p1c-retool-rl-01` | `6fa65e49` | `sha256:dcece4bc...` | 2 (1 trainer + 1 rollout) | 1->2 | 19:40:32 (`w1` 4/8 running; `w0` provisioning 2nd slice) | - | Pre-warming (4/8 pods running) | `<RUN_DIR>/p1c-retool-rl-01` |
+| `P3` | `p3-retool-rl-01` | `6fa65e49` | `sha256:dcece4bc...` | 2 (1 trainer + 1 rollout) | 1->25 | queued (`P2` step-372 export ready) | - | Queued | `<RUN_DIR>/p3-retool-rl-01` |
 
 ---
 
@@ -61,8 +61,8 @@ All P0 preparation deliverables (`P0.1`–`P0.4`, `P0.6`, `P0.8`–`P0.10`) are 
 
 | Check | Kind | Phase | Target / Reference | Measured on TPU 7x | Verdict |
 |---|---|---|---|---|---|
-| `R1` | gate | every run | `LIBTPU_INIT_ARGS` contains `--xla_tpu_bf16_emission_mode=PROMOTE_F32` on all active roles | `P1b`, `P2`: verified in `<RUN_DIR>/{p1b-retool-sft-01,p2-retool-sft-01}/env/*-procs.jsonl` across all 4 trainer hosts (`LIBTPU_INIT_ARGS` includes `--xla_tpu_use_enhanced_launch_barrier=false --xla_tpu_bf16_emission_mode=PROMOTE_F32`, `TPU_ACCELERATOR_TYPE="tpu7x"`). Rollout role pending `P1a`/`P1c`/`P3` | **PASS (trainer in `P1b`, `P2`)** / pending rollout |
-| `R2` | gate | `P1a`, `P1c` | 32 trainer devices (4D mesh) + 32 rollout devices (TP=32, EP=32) on distinct `2x2x4` slices; trainer rank order matches `verl-tpu-node-rank`; Raiden sync completes | `P1b` & `P2` (1-slice trainer): in both runs the 4 hosts had non-monotonic IP order (`P1b`: `10.224.130.8, 10.224.106.8, 10.224.114.8, 10.224.113.8`; `P2`: `10.224.180.7, 10.224.242.7, 10.224.243.7, 10.224.181.7` for workers `0..3`) and were ordered `0, 1, 2, 3` by `verl-tpu-node-rank`. Dual-slice trainer+rollout + Raiden sync pending `P1a`/`P1c` | Partial (`P1b`/`P2` trainer host order PASS; dual-slice pending `P1a`/`P1c`) |
+| `R1` | gate | every run | `LIBTPU_INIT_ARGS` contains `--xla_tpu_bf16_emission_mode=PROMOTE_F32` on all active roles | `P1b`, `P2` (trainer) and `P1a` (both trainer `ray::WorkerDict.*` and rollout `ray::RayWorkerWrapper.execute_method`, `ray::CheckpointEngineWorker`, `ray::AgentLoopWorkerTQ`): verified in `<RUN_DIR>/{p1b-retool-sft-01,p2-retool-sft-01,p1a-moe-smoke-12}/env/*-procs.jsonl` across all 4 trainer hosts and all 4 rollout hosts (`LIBTPU_INIT_ARGS` includes `--xla_tpu_use_enhanced_launch_barrier=false --xla_tpu_bf16_emission_mode=PROMOTE_F32`, `TPU_ACCELERATOR_TYPE="tpu7x"`) | **PASS (`P1a`, `P1b`, `P2`)** |
+| `R2` | gate | `P1a`, `P1c` | 32 trainer devices (4D mesh) + 32 rollout devices (TP=32, EP=32) on distinct `2x2x4` slices; trainer rank order matches `verl-tpu-node-rank`; Raiden sync completes | `P1a` (`p1a-moe-smoke-12`): 32 trainer devices (`tpu-group-0`, `FSDP=8, CP=4`) and 32 rollout devices (`tpu-group-1`, `TP=32, EP=32`) ran on separate `2x2x4` slices. On `tpu-group-0`, host IPs were in strictly reverse lexicographic order (`10.224.53.11, 10.224.43.11, 10.224.37.11, 10.224.33.11` for workers `0..3`) and were placed `0, 1, 2, 3` by `verl-tpu-node-rank` (`tpu-group-1`: `10.224.75.7, 10.224.30.7, 10.224.84.7, 10.224.81.7` -> `0, 1, 2, 3`). Initial Raiden P2P sync completed in `17.79 s` (`19.59 s` total), and warm per-step Raiden P2P syncs completed in **`2.35 s`, `2.25 s`, `2.33 s`** (`3.04–3.21 s` total end-to-end sync) | **PASS (`P1a`, `P1b`, `P2`)** |
 | `R3` | observation | `P1b` | SFT 3-step smoke `train/loss` (`0.7950 -> 0.5787 -> 0.5177`, step 3 `+-0.05`) and step-3 `val/loss` (`0.4050`, `+-0.05`) | `train/loss`: `0.7932` (step 1) -> `0.5881` (step 2) -> `0.5224` (step 3, `+0.0047` vs ref); step-3 `val/loss`: `0.4095` (`+0.0045` vs ref). Moreover, step-1 `train/loss` in `P2` (`0.7931681871414185`) was bit-identical to `P1b` (`0.7931681871414185`) and within `-0.0009` of #108's v6e smoke (`0.7941`) | **PASS** |
 | `R4` | observation | `P2` | SFT steps 363–372 mean `train/loss` (`0.039429` in TPU v5p 6-epoch ref `myaf5pal`; `0.038` in the author's 6-epoch doc) and step-372 in-sample `val/loss` (`0.026605` in `myaf5pal`) | `P2` (372 steps, 6 epochs): `train/loss` decreased smoothly from `0.7932` (step 1) to `0.3832` (step 62, Epoch 1), `0.2818` (step 124, Epoch 2), `0.1612` (step 186, Epoch 3), `0.1017` (step 248, Epoch 4), `0.0612` (step 310, Epoch 5), and `0.0359` (step 372, Epoch 6; **steps 363–372 mean `0.039265`**, `-0.000164` vs `myaf5pal`'s `0.039429`). In-sample `val/loss` across epochs 1–6: `0.2713 -> 0.1793 -> 0.1078 -> 0.0618 -> 0.0395 -> 0.0263` (within `+-0.0005` of `myaf5pal`'s `0.2710 -> 0.1796 -> 0.1076 -> 0.0622 -> 0.0392 -> 0.0266` at every single epoch; total tokens identical at `23,798,553`). Both `global_step_186/huggingface` and `global_step_372/huggingface` were exported for downstream evaluation | **PASS** (see section 4.2 & 4.3) |
 | `R5a` | gate | `P1b`, `P2` | `global_step_N/huggingface` export complete (16 bf16 shards, index, config, tokenizer) and reloadable | `P1b` (`global_step_3/huggingface`) and `P2` (`global_step_186/huggingface`, `global_step_372/huggingface`): each exported all 16 bf16 `.safetensors` shards + `model.safetensors.index.json` (`18,867` tensors, `61,064,245,248` param bytes, `lm_head.weight` & `model.embed_tokens.weight` present, `tie_word_embeddings=false`) + config/tokenizer (`27` objects, `61,084,185,820` bytes total) | **PASS (`P1b`, `P2`)** |
@@ -72,13 +72,42 @@ All P0 preparation deliverables (`P0.1`–`P0.4`, `P0.6`, `P0.8`–`P0.10`) are 
 | `R8` | observation | `P3` | Step-25 AIME 2024 (`30.00%`) and AIME 2025 (`18.33%`) mean@30 (+-5 pp) | Pending `P3` | PENDING |
 | `R9` | observation | `P2`, `P3` | Median step time and stage split (`gen`, `update_actor`, `update_weights`) vs v6e (`18.6 s` SFT, `108 s` RL) | `P2` SFT: **warm mean `9.57 s/step`**, **median `10.0 s/step`**, **p90 `10.0 s/step`** (`min=9 s, max=11 s` across Epochs 2–6, `n=300` steps; **1.94x faster** than v6e's `18.6 s/step`). Epoch 1 mean was `15.73 s/step` while XLA bucket shapes compiled; cached 32-sample validation took `12 s`. RL step time pending `P3` | **RECORDED (`P2`)** / pending `P3` |
 | `R10` | gate | `P3` | Complete step-0 and step-25 eval dumps (30 questions x 30 sessions by trajectory ID for both AIME 2024 and 2025) | Pending `P3` | PENDING |
-| `R11` | gate | `P1c`, `P3` | Token-level rollout audit dump (`response_mask == 0` on tool results, `1` on assistant turns, multi-turn propagation, `compute_score` behavior) | Pending `P1c` | PENDING |
-| `R12` | gate | `P1c`, `P3` | Post-Raiden-sync policy version & staleness within `max_off_policy_threshold=4` | Pending `P1c` | PENDING |
+| `R11` | gate | `P1c`, `P3` | Token-level rollout audit dump (`response_mask == 0` on tool results, `1` on assistant turns, multi-turn propagation, `compute_score` behavior) | `P1a` dumped `<RUN_DIR>/p1a-moe-smoke-12/rollout_audit/{1,2,3}.jsonl` (4 single-turn sessions/step); multi-turn tool-call mask audit running in `P1c` | Pending `P1c` (multi-turn) |
+| `R12` | gate | `P1c`, `P3` | Post-Raiden-sync policy version & staleness within `max_off_policy_threshold=4` | `P1a` (`p1a-moe-smoke-12`): `trajectory_staleness/max = 1 <= max_off_policy_threshold=4` across all 3 steps (`step 3 trajectory_staleness/mean = 0.1016`, `rollout_corr/ppl_ratio = 1.0020`, `rollout_corr/kl = 0.0017`, `critic/score/mean` jumping from `0.0` during initial warmup batches to `0.7578` once post-Step-1 Raiden-synced weights were active); multi-turn `P1c`/`P3` verification in progress | **PASS (`P1a`)** / running `P1c` |
 | `R13` | gate | `P4a` | Resume equivalence (`TransferQueue==0.1.8` in current images lacks `save_checkpoint`/`load_checkpoint`; requires quiescent boundary verification or `TransferQueue >= 0.1.9`) | Blocked unless quiescent boundary verified in `P4a` | BLOCKED (pending `P4a`) |
 
 ---
 
 ## 4. Stage details
+
+### 4.0 Stage `P1a`: 3-step Qwen3-30B-A3B dual-slice platform smoke (`p1a-moe-smoke-12`) — **PASS**
+
+- **Configuration**: `examples/tpu/grpo/run_qwen3_30b_a3b_torchtitan.sh` on `2 x 2x2x4` TPU 7x slices (32 physical chips = 64 TensorCore devices: `tpu-group-0` 32 trainer devices with `SimpleFSDP=8, CP=4, EP=1, TP=1`, `TPU_EAGER_MODE=DEFER_NEVER`; `tpu-group-1` 32 rollout devices with 1 multi-host vLLM server `TP=32, EP=32`, `RELEASE_SYNC_BUFFERS=False`, `VERL_RAIDEN_RELEASE_BUFFERS=0`, `TOTAL_TRAINING_STEPS=3`, `LIBTPU_INIT_ARGS="--xla_tpu_use_enhanced_launch_barrier=false --xla_tpu_bf16_emission_mode=PROMOTE_F32"`).
+- **Host ordering (`P0.5` / `R2`)**:
+  - Trainer slice (`tpu-group-0`):
+    - `verl-tpu-node-rank=0` (`tpu-worker-id=0`): `10.224.53.11` (`p1a-moe-smoke-12-trainer-0-0-0`)
+    - `verl-tpu-node-rank=1` (`tpu-worker-id=1`): `10.224.43.11` (`p1a-moe-smoke-12-trainer-0-0-1`)
+    - `verl-tpu-node-rank=2` (`tpu-worker-id=2`): `10.224.37.11` (`p1a-moe-smoke-12-trainer-0-0-2`)
+    - `verl-tpu-node-rank=3` (`tpu-worker-id=3`): `10.224.33.11` (`p1a-moe-smoke-12-trainer-0-0-3`)
+  - Rollout slice (`tpu-group-1`):
+    - `verl-tpu-node-rank=0` (`tpu-worker-id=0`): `10.224.75.7` (`p1a-moe-smoke-12-rollout-0-0-0`)
+    - `verl-tpu-node-rank=1` (`tpu-worker-id=1`): `10.224.30.7` (`p1a-moe-smoke-12-rollout-0-0-1`)
+    - `verl-tpu-node-rank=2` (`tpu-worker-id=2`): `10.224.84.7` (`p1a-moe-smoke-12-rollout-0-0-2`)
+    - `verl-tpu-node-rank=3` (`tpu-worker-id=3`): `10.224.81.7` (`p1a-moe-smoke-12-rollout-0-0-3`)
+  - Notice that on `tpu-group-0` the 4 trainer host IPs were in strictly reverse lexicographic order (`53.11 > 43.11 > 37.11 > 33.11`), and on `tpu-group-1` the rollout host IPs were also non-monotonic (`75.7, 30.7, 84.7, 81.7`). `RayResourcePool.get_placement_groups()` sorted both slices into exact topological order `0, 1, 2, 3` via `verl-tpu-node-rank`.
+- **Per-step metrics, Raiden P2P weight sync, and policy propagation (`R2`, `R12`)**:
+
+| Step | `critic/score/mean` | `actor/grad_norm` | `actor/ppo_kl` | `rollout_corr/ppl_ratio` | `rollout_corr/kl` | `trajectory_staleness` (mean / max) | Raiden P2P / Total sync | `timing_s/update_actor` | `timing_s/step` |
+|---|---|---|---|---|---|---|---|---|---|
+| 0 (init sync) | - | - | - | - | - | - | `17.791 s` / `19.588 s` | - | - |
+| 1 (warmup batch 0) | `0.0000` | `0.0000` | `1.22e-4` | `31.530` | `3.1396` | `0.000` / `0` | `2.345 s` / `3.207 s` | `107.258 s` (compile) | `398.518 s` |
+| 2 (warmup batch 1) | `0.0000` | `0.0000` | `-2.28e-4` | `32.180` | `3.1676` | `1.000` / `1` | `2.254 s` / `3.044 s` | `6.034 s` | `11.451 s` |
+| 3 (post-sync policy) | **`0.7578`** | `0.4500` | `1.42e-4` | **`1.0020`** | **`0.0017`** | `0.1016` / `1` | `2.335 s` / `3.121 s` | `3.524 s` | **`7.944 s`** |
+| 3 (GSM8K val) | `val-core/openai/gsm8k/acc/mean@1 = 0.5859375` | - | - | - | - | - | - | - | `79.769 s` (val) |
+
+- **Artifacts & verdict**:
+  - Dumped `<RUN_DIR>/p1a-moe-smoke-12/rollout/{1,2,3}.jsonl`, `<RUN_DIR>/p1a-moe-smoke-12/rollout_audit/{1,2,3}.jsonl`, `<RUN_DIR>/p1a-moe-smoke-12/validation/3.jsonl`, and `<RUN_DIR>/p1a-moe-smoke-12/env/*-{env.json,procs.jsonl}`.
+  - `verdict.json`: `status="SUCCEEDED"`, `exit_code=0`, `duration_s=1413`.
 
 ### 4.1 Stage `P1b`: 3-step ReTool SFT smoke (`p1b-retool-sft-01`) — **PASS**
 

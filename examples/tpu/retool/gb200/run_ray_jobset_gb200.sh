@@ -158,6 +158,7 @@ ${JOBENV_YAML}    resources:
       python3 examples/tpu/retool/gb200/verify_venv_lock.py \
         /workspace/verl-pin \
         --check-all-locked \
+        --expect-git-sha "\${EXPECT_GIT_SHA:-\$(git -C /workspace/verl-pin rev-parse HEAD)}" \
         --expect-lock-sha256 df508db0b957fa181c229fb75885cd3863cb651fd5233d0fa5af95e990bda0be \
         --require-async \
         --require-torchtitan \
@@ -283,6 +284,7 @@ ${JOBENV_YAML}    resources:
       python3 examples/tpu/retool/gb200/verify_venv_lock.py \
         /workspace/verl-pin \
         --check-all-locked \
+        --expect-git-sha "\${EXPECT_GIT_SHA:-\$(git -C /workspace/verl-pin rev-parse HEAD)}" \
         --expect-lock-sha256 df508db0b957fa181c229fb75885cd3863cb651fd5233d0fa5af95e990bda0be \
         --require-async \
         --require-torchtitan \

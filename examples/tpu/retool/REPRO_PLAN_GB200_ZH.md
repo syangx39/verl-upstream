@@ -8,21 +8,20 @@
 
 ### 规模建议与 GB200 静态显存账本
 
-| 阶段 | TPU 已有/计划规模 | GB200 首轮建议（8 GPU 总计） | 同 8 GPU 容量调整备选 | 目的 |
+| 阶段 | TPU 已有/计划规模 | GB200 首轮主方案（8 GPU 总计） | 6+2 方案状态（非直接替换） | 目的 |
 | --- | --- | --- | --- | --- |
-| SFT（可选） | P2：1 slice，16 物理 chips，32 逻辑 TensorCore | 如后续开展，先试 4 GPU | 8 GPU | 比较各自 SFT，仅在需要 SFT 性能或端到端复现时执行 |
-| RL | 2 slices，32 物理 chips，64 逻辑 TensorCore；训练和 rollout 各 16 chips | **4 trainer (`FSDP=4`) + 4 rollout (`TP=4`)** | **6 trainer (`FSDP=6`) + 2 rollout (`TP=2`)** | 先验证运行可行，再比较相同工作量 |
+| SFT（可选） | P2：1 slice，16 物理 chips，32 逻辑 TensorCore | 如后续开展，先试 4 GPU | 另行评估 | 比较各自 SFT，仅在需要 SFT 性能或端到端复现时执行 |
+| RL | 2 slices，32 物理 chips，64 逻辑 TensorCore；训练和 rollout 各 16 chips | **4 trainer (`FSDP=4`) + 4 rollout (`TP=4`)** | **待专门设计验证方案**（见下方整除约束说明） | 先验证运行可行，再比较相同工作量 |
 
 8 卡是第一个工程实验规模，不是 32 个 TPU chip 的等算力换算，也不是 8 张 trainer 加 8 张 rollout。以上 SFT 与 RL 分别比较，不能把 RL 的 TPU 规模套到 SFT。记录每个角色的机器数、互联、HBM 和峰值占用；以现场 `nvidia-smi` 和拓扑为准，不假设 8 卡同机。
 
-针对单卡 `186 GiB` HBM3e 的 GB200，在运行前明确 `Qwen3-30B-A3B`（`30.53B` 总参数）的静态显存预算与红线：
+**统一单位（严格区分十进制 `GB = 10^9 B` 与二进制 `GiB = 2^30 B`）的 `4 Trainer + 4 Rollout` 静态显存估算：**
 
-| 切分方案（总计 8 × GB200） | Trainer 纯静态状态（fp32 master + fp32 grad + Adam `m, v` ≈ `488.5 GiB` 总计） | Rollout 权重占用（bf16 ≈ `61.1 GiB` 总计） | 关键显存风险点 |
-| --- | --- | --- | --- |
-| **首轮 `4 Trainer + 4 Rollout`** | **`122.1 GiB / GPU`**（未含 10,240 token 激活、FSDP unshard 峰值、NCCL 同步 buffer） | **`15.3 GiB / GPU`**（剩余 `>155 GiB / GPU` 给 KV cache，极度宽裕） | 若 `actor_rollout_ref.ref` 在 4 张 Trainer 卡上额外实例化（`+15.3~30.5 GiB / GPU`）或未开 `activation_checkpoint`，Trainer 易顶满 `186 GiB` |
-| **同 8 卡备选 `6 Trainer + 2 Rollout`** | **`81.4 GiB / GPU`**（静态余量扩大 `40.7 GiB / GPU`） | **`30.5 GiB / GPU`**（2 卡合计仍留 `>270 GiB` KV cache） | 不增加总 GPU 卡数即可显著缓解 Trainer HBM 压力 |
-
-容量不足时先核查 `activation_checkpoint`、是否加载了冗余 `ref` 副本、per-device microbatch 及 rollout 并发，并保持全局训练语义不变，不悄悄缩短上下文；若 `4+4` Trainer 仍吃紧，优先在同 8 卡预算内切换 `6+2` 并单独标注配置与资源，不与 `4+4` 结果混写。
+- **硬件标称容量**：NVIDIA GB200 单卡标称 HBM3e 为 **`186 GB`（约 `173.2 GiB`）**。
+- **Trainer 侧（`4 × GB200`，`FSDP=4`）**：`Qwen3-30B-A3B` 约 `30.53B`（`30.53 × 10^9`）参数；按 fp32 master params + fp32 grads + fp32 Adam `m, v`（`16 bytes/param`）计，纯静态状态总计约 **`488.5 GB`（`454.9 GiB`）**，4 卡均分约 **`122.1 GB / 卡`（`113.7 GiB / 卡`）**。该数字尚未计入 `10,240` token 序列激活、FSDP unshard 临时峰值、NCCL 同步 buffer，以及潜在的 `actor_rollout_ref.ref` 副本（若为记录 `actor/ppo_kl` 在 4 张 Trainer 卡上额外加载 `ref`，会再增加约 `14.2~28.4 GiB / 卡`，使总占用逼近 `173.2 GiB` 上限）。
+- **Rollout 侧（`4 × GB200`，`TP=4`）**：bf16 模型权重总计约 **`61.1 GB`（`56.9 GiB`）**，4 卡均分约 **`15.3 GB / 卡`（`14.2 GiB / 卡`）**；实际可用 KV cache 还须扣除 vLLM `gpu_memory_utilization` 上限、PyTorch/CUDA 分配器保留内存、运行时 workspace buffer、CUDA graph 捕获内存池及多会话并发开销，**一切以目标 GB200 节点实测峰值显存（`nvidia-smi` 与 `torch.cuda.max_memory_allocated`）为准，不预先断言宽裕度**。
+- **为什么 `6 Trainer + 2 Rollout` 不能直接作为 `FSDP=6` 的 OOM 备选**：候选 `verl`（[`trainer_base.py:1830-1833`](https://github.com/verl-project/verl/blob/3fdf2b548882a8aeccf0842c2150d9c9f1790a55/verl/trainer/ppo/v1/trainer_base.py#L1830-L1833)、[`engine_workers.py:296-305`](https://github.com/verl-project/verl/blob/3fdf2b548882a8aeccf0842c2150d9c9f1790a55/verl/workers/engine_workers.py#L296-L305)）会将 actor mini-batch 展开为 `64 × 8 = 512` 条 trajectories（`G1` smoke 为 `8 × 4 = 32` 条），并断言其必须被 `data_parallel_size` 整除；直接设 `FSDP=6` 会因 `512 % 6 = 2`（及 `32 % 6 = 2`）触发断言失败。
+- **OOM 处置顺序**：优先在 **`4+4`** 主方案上核查 `activation_checkpoint`、确认未实例化冗余 `ref` 副本、调整 per-device microbatch / token packing 及 vLLM 并发与 `gpu_memory_utilization`（保持全局 batch 和 `8,192` 最大响应长度不变，绝不静默缩短上下文）；若仍需非 4 卡 Trainer 规模，必须单独设计并验证满足 DP 整除约束的并行 mesh（例如引入 CP/TP 组合使 `DP` 仍整除 `512`/`32`，或使用 2 的幂次卡数）、跨机 placement 与权重同步映射，并单列报告，不混入 `4+4` 主表。
 
 ### 主线和可选扩展
 
@@ -33,7 +32,7 @@
 
 ## 0. 冻结输入和实现
 
-- 记录 TPU 及 GPU 的 git SHA、实际 resolved Hydra config、环境镜像 digest、Python/PyTorch/CUDA/NCCL/Ray/vLLM/verl/TorchTitan 版本、模型和 tokenizer revision、精度、attention/MoE kernel、所有随机种子、启动命令及 host/GPU 分配。记录 TPU 的实际运行日志，不仅是计划默认值；如 P1a/P1c 或 P3 最终配置变化，同步更新对照表。
+- 记录 TPU 及 GPU 的 git SHA、实际 resolved Hydra config、环境镜像 digest、Python/PyTorch/CUDA/NCCL/Ray/vLLM/verl/TorchTitan/TransferQueue 版本、模型和 tokenizer revision、精度、attention/MoE kernel、所有随机种子、启动命令及 host/GPU 分配。记录 TPU 的实际运行日志，不仅是计划默认值；如 P1a/P1c 或 P3 最终配置变化，同步更新对照表。
 - Base model revision 为 `ad44e777bcd18fa416d9da3bd8f70d33ebb85d39`。ReTool SFT parquet 2,000 行，SHA256 `92a29cea03f72dc79066e1697f4d7423d91bd6a02bd1aac50f5c9dfd89b27faa`；train 和 validation 使用同一文件，故 validation 是 **in-sample**。复制 P2 checkpoint 所有 safetensors（16 shards，共 `61,064,245,248` 字节）、index、config、tokenizer 和 chat template，逐文件生成 SHA256 清单，并在两平台重新校验。
 - RL DAPO parquet 为 1,791,700 行（17,917 prompts × 100），SHA256 `22e266f54502ce271ee08713feb8b30caf97a4ea948aca0e0506f58c4cdd0545`。保持原顺序/重复、预处理和 shuffle 逻辑，不做去重。保存输入样本 ID、截断、token IDs 和 loss mask；同一 seed 也要实测数据顺序。
 - 固定 sandbox 服务源码/版本、镜像、执行超时、资源限制、并发、网络和工具返回格式；固定 tokenizer、prompt、tool schema、parser、reward 和 AIME 题目。复用 [`retool_tpu.py`](https://github.com/syangx39/verl-upstream/blob/6fa65e49094c04a9b10cb766ecb1ba7c0976cc5a/examples/tpu/retool/retool_tpu.py) 与其 tool 配置前，先在 GPU worker 实际导入和执行。配置中的 `127.0.0.1` 是**各执行节点自己的** loopback，须证明调用进程能访问对应 sandbox，不能只在 head 上验证。
@@ -41,18 +40,29 @@
 
 ## 1. 先准备 GPU launcher 与派生镜像，再做预检
 
-这是计划，不声称现有 TPU 脚本能在 GPU 原样运行。本 PR 已随附可直接用于 GB200 构建与环境锁校验的 [`gb200/Dockerfile.gb200.torchtitan`](./gb200/Dockerfile.gb200.torchtitan) 与 [`gb200/verify_venv_lock.py`](./gb200/verify_venv_lock.py)；在此基础上新增并版本化 GPU RL launcher（GPU SFT launcher 仅为可选实验准备）：
+这是计划，不声称现有 TPU 脚本能在 GPU 原样运行。本 PR 已随附用于 GB200 派生镜像构建与两级环境校验的 [`gb200/Dockerfile.gb200.torchtitan`](./gb200/Dockerfile.gb200.torchtitan) 与 [`gb200/verify_venv_lock.py`](./gb200/verify_venv_lock.py)；在此基础上新增并版本化 GPU RL launcher（GPU SFT launcher 仅为可选实验准备）：
 
 - 可选 SFT 同时参考 [TPU ReTool TorchTitan SFT 脚本](https://github.com/syangx39/verl-upstream/blob/6fa65e49094c04a9b10cb766ecb1ba7c0976cc5a/examples/tpu/retool/run_qwen3_30b_a3b_sft_torchtitan.sh)（`engine=torchtitan` 字段语义）与 [多轮 SFT 示例](https://github.com/syangx39/verl-upstream/blob/6fa65e49094c04a9b10cb766ecb1ba7c0976cc5a/examples/sft/multiturn/run_qwen2_5_0_5b_fsdp.sh)（统一 `-m verl.trainer.sft_trainer` 入口），将 `trainer.device=cuda` 并对齐 Qwen3-30B-A3B 与 ReTool P2 数据/模板，避免误搬 `engine=fsdp` 专属字段（如 `ulysses_sequence_parallel_size` vs `engine.context_parallel_size`）。
 - RL 参考 [v1 separate-async GPU 测试](https://github.com/syangx39/verl-upstream/blob/6fa65e49094c04a9b10cb766ecb1ba7c0976cc5a/tests/special_e2e/run_v1_separate_async.sh) 的独立资源池、vLLM 和 NCCL 权重同步，结合 [GPU TorchTitan 小模型测试](https://github.com/syangx39/verl-upstream/blob/6fa65e49094c04a9b10cb766ecb1ba7c0976cc5a/tests/special_e2e/run_ppo_trainer_torchtitan.sh) 的 engine 选择，以及 [Qwen3-30B-A3B GPU 示例](https://github.com/syangx39/verl-upstream/blob/6fa65e49094c04a9b10cb766ecb1ba7c0976cc5a/examples/grpo_trainer/run_qwen3_30b_a3b_fsdp.sh) 的模型支持，以及 [TPU ReTool recipe](https://github.com/syangx39/verl-upstream/blob/6fa65e49094c04a9b10cb766ecb1ba7c0976cc5a/examples/tpu/retool/run_qwen3_30b_a3b_dapo_torchtitan.sh) 的数据和语义。这些例子各自只覆盖部分路径；原 separate-async 测试没有 TorchTitan actor 分支，需新写 launcher 并验证组合，不能直接宣称已验证 30B + 多轮工具 + 长上下文。
 - RL 使用 `trainer.use_v1=True`、`trainer.v1.trainer_mode=separate_async`、`actor_rollout_ref.hybrid_engine=False`，使用 `model_engine=torchtitan` 和 `actor_rollout_ref.actor.strategy=torchtitan`，初始 TorchTitan trainer 4 GPU、vLLM rollout TP=4 / 4 GPU、NCCL 同步。TorchTitan 内部可以用 FSDP2 做分片，这和选择 veRL 原生 FSDP2 engine 不同。确认实际 Ray placement 和版本兼容；不要把另一套 fully-async trainer 或 colocated 运行当作同一模式。
-- 先运行 `verify_venv_lock.py <repo_dir> --extras fsdp,vllm,torchtitan --require-async --require-torchtitan --require-gpu`，并采集 `nvidia-smi -L`、`nvidia-smi topo -m`、显存、主机 CPU/内存、节点角色与网络。确认每个 worker 看到正确设备，actor 和 rollout 不重叠，跨节点通信及 NCCL 正常。
+- 在目标 GB200 节点上先执行严格宿主机预检：
+  ```bash
+  .venv/bin/python /workspace/verify_venv_lock.py /workspace/verl-pin \
+    --extras fsdp,vllm,torchtitan \
+    --check-all-locked \
+    --require-async \
+    --require-torchtitan \
+    --require-rl-moe-helper \
+    --require-gb200 \
+    --min-gpus 4
+  ```
+  `--require-gb200` 会强制校验 `aarch64` 架构、Blackwell SM `>= 10.0`、单卡 HBM `>= 165.0 GiB`、设备名匹配 `GB200|B200` 以及可用 `torch.cuda.nccl.version()`（非目标 GPU 或缺失 NCCL 将直接非零退出），同时采集 `nvidia-smi -L`、`nvidia-smi topo -m`、主机 CPU/内存、节点角色与网络。明确区分“构建期包锁通过”与“GB200 parity 运行条件就绪”：即使宿主机预检通过，仍必须继续完成下方模型加载、MoE 路由一致性与 actor → NCCL → vLLM 权重同步实测。
 - 加载 base 和共享 HF checkpoint，验证 tokenizer、参数 key/shape、文件哈希、权重分片和 MoE expert 映射；分别试短样本和接近长度上限（10,240 tokens）的样本，记录 HBM 峰值。先小并发后扩大；发生 OOM 就记录实际配置及失败点，不悄悄缩短上下文。
-- 测一次 actor → rollout 完整同步：固定输入比较同步前后权重映射与输出，至少检查初始权重和一次更新后权重，尤其 MoE expert。NCCL 调用成功不等于权重被正确加载。
+- 测一次 actor → rollout 完整同步：固定输入比较同步前后权重映射、top-k expert routing 与输出，至少检查初始权重和一次更新后权重，尤其 MoE expert。NCCL 调用成功不等于权重被正确加载。
 
 ### 镜像与 veRL 版本：推荐方案
 
-**结论：不需要从裸 CUDA 重建，但必须换掉旧 `2026-08-17` 基础镜像；直接基于上游 `2026-10-23` 发布的原生 `linux/arm64` 预缓存基础镜像 `verlai/verl:uv.cu130.dev5` 做轻量派生镜像（见 [`gb200/Dockerfile.gb200.torchtitan`](./gb200/Dockerfile.gb200.torchtitan)），构建耗时可从 ~45 分钟降至 ~3 分钟。**
+**结论：不需要从裸 CUDA 重建，但必须换掉旧 `2026-08-17` 基础镜像；建议基于上游 `2026-10-23` 发布的原生 `linux/arm64` 预缓存基础镜像 `verlai/verl:uv.cu130.dev5` 做轻量派生镜像（见 [`gb200/Dockerfile.gb200.torchtitan`](./gb200/Dockerfile.gb200.torchtitan)，实际构建耗时待在原生 `arm64` 构建机实测归档）。**
 
 新旧 GPU 基础镜像与 TPU P0.2 环境逐项对照如下：
 
@@ -62,32 +72,37 @@
 | **PyTorch** | `2.11.x+cu130` | **`2.13.0+cu130`** (`manylinux_2_28_aarch64` 原生 wheel) | **`2.13.0+cpu`**（主次版本一致） |
 | **TorchTitan** | 无（未锁入 `uv.lock`） | **`torchtitan==0.3.0`** + `torch-checkpointing==0.1.0` | `0.1.0 @ f880cc73` |
 | **vLLM** | `0.24.x` | **`vllm==0.32.0`** (`cp38-abi3` `aarch64` wheel，`VLLM_USE_V1=1`) | `0.29.0` (TPU，`VLLM_USE_V1=0`) |
-| **TransferQueue** | 旧版 | **`TransferQueue==0.1.11`**（已满足 `>= 0.1.9`） | `0.1.6.dev38` |
+| **TransferQueue** | 旧版 | **`TransferQueue==0.1.11`** | **`0.1.8`**（冻结 P0.2 两镜像实测均为 `0.1.8`） |
 
 不要在旧环境中直接 `pip install -U torchtitan`（会导致 torch、vLLM 与 CUDA 扩展 ABI 失配），也不要混拼 TPU lock、nightly wheel 和新 lock。
 
-**建立 `<GPU_CODE_SHA>` 工作分支时的必移植与跨版本核对清单（关键！）：**
+**建立 `<GPU_CODE_SHA>` 工作分支时的必适配与跨版本核对清单（关键！）：**
 
-对比上游候选 [`verl@3fdf2b548882a8aeccf0842c2150d9c9f1790a55`](https://github.com/verl-project/verl/blob/3fdf2b548882a8aeccf0842c2150d9c9f1790a55/pyproject.toml) 与 `tpu-main`（`6fa65e49`）源码，以下差异必须在 GPU 工作分支中显式移植或验证，否则会导致静默 parity 分叉或导出瓶颈：
+对比上游候选 [`verl@3fdf2b548882a8aeccf0842c2150d9c9f1790a55`](https://github.com/verl-project/verl/blob/3fdf2b548882a8aeccf0842c2150d9c9f1790a55/pyproject.toml)、[`torchtitan v0.3.0`](https://github.com/pytorch/torchtitan/blob/v0.3.0/torchtitan/models/common/moe.py#L364-L370) 与 `tpu-main`（`6fa65e49`）源码，以下差异必须针对 **TorchTitan `0.3.0` 原生 API** 实现并验证，不能原样 cherry-pick 旧函数：
 
-1. **[必移植 · 防止 Router 静默分叉] `configure_qwen3_moe_for_rl(..., use_pallas_grouped_mm=False)`**：上游 `3fdf2b54` 的 `verl/workers/engine/torchtitan/utils.py` 缺失 [`tpu-main` `utils.py:156-207`](https://github.com/syangx39/verl-upstream/blob/6fa65e49094c04a9b10cb766ecb1ba7c0976cc5a/verl/workers/engine/torchtitan/utils.py#L156-L207) 的 `configure_qwen3_moe_for_rl`。TorchTitan 默认 Qwen3 MoE 配置开启 `moe.load_balance_coeff = 1e-3`，每步 optimizer 更新后通过 hook 更新 `expert_bias_E` 改变 top-8 路由；**但 `Qwen3StateDictAdapter.to_hf` 同步权重到 vLLM 或导出 HF 时会丢弃 `expert_bias_E`**。必须移植该配置清理函数（清空 `moe.load_balance_coeff = None` 与 `moe.aux_loss = None`，同时在 GPU 上保持 `use_pallas_grouped_mm=False` 走 CUDA grouped_mm）。
-2. **[必移植 · 128-Expert HF Checkpoint 导出加速] 3D MoE Expert 批量 Gather**：同步移植 [`tpu-main` `transformer_impl.py:734-820`](https://github.com/syangx39/verl-upstream/blob/6fa65e49094c04a9b10cb766ecb1ba7c0976cc5a/verl/workers/engine/torchtitan/transformer_impl.py#L734-L820) 的 3D expert stack 批量 gather 导出逻辑，避免保存 61 GB HF checkpoint 时对 128 experts 逐个 unbind 18,432 次 DTensor。
-3. **[必移植 · ReTool 观测与审计]**：移植 `examples/tpu/retool/`（`retool_tpu.py`、tool schema、rollout audit / validation dump 与 `training.max_norm` 实效日志），升级仅作用于 GPU 分支，不影响正在运行的 TPU 负载。
-4. **[必核对 · `torchtitan 0.1.0` → `0.3.0` 两个具体接口点]**：(a) `LRSchedulersContainer` 模块路径（`torchtitan.components.lr_scheduler` vs `torchtitan.components.optimizer`，已内置于 `verify_venv_lock.py` 自动校验）；(b) `Qwen3StateDictAdapter` 的 3D grouped expert 权重（`w1/w2/w3`）shape/transpose 与 `vllm==0.32.0` NCCL 权重接收端的精确匹配。
+1. **[必适配 · 针对 TorchTitan `0.3.0` 关闭会导致 Router 分叉的 Load Balancing]**：
+   - 目标：TorchTitan 默认 Qwen3 MoE 配置开启 `moe.load_balance_coeff = 1e-3`，每步 optimizer 更新后通过 hook 更新 `expert_bias_E` 改变 top-8 路由；**但 `Qwen3StateDictAdapter.to_hf` 同步权重到 vLLM 或导出 HF 时会丢弃 `expert_bias_E`**，导致第 2 步起 actor 与 vLLM expert 路由静默分叉。
+   - **API 适配要求**：在 TorchTitan `0.3.0` 中，`torchtitan.models.common.moe.MoE.Config` 是 `@dataclass(slots=True)`（slotted dataclass），**已移除 `aux_loss` 字段**；若原样照搬 `tpu-main`（基于 `0.1.0`）的 `moe.aux_loss = None` 会直接触发 `AttributeError`。GPU 分支必须按 `0.3.0` `MoE.Config` schema 编写并单测适配函数（显式将 `moe.load_balance_coeff = None`，且不访问不存在的 `aux_loss` 字段，同时保持 GPU 原生 grouped_mm 而非 Pallas）。
+   - **必测门槛**：单测和 `G0` 必须同时验证 (a) 构造出的 Qwen3 MoE model config 实际 `load_balance_coeff is None` 且无 hook 注册；(b) 完成 1 次 optimizer 更新并经 NCCL 同步至 vLLM 后，固定输入在 actor 与 vLLM 两侧的 top-k expert routing 及输出对齐。
+2. **[先核对再决定 · 在线 NCCL 权重同步 vs 离线 HF Checkpoint 导出路径]**：
+   - 候选上游 `3fdf2b54` 已包含部分 expert stack 批量处理逻辑。不要盲目整段搬运 `tpu-main` 的导出改动，而是将**在线 `actor → NCCL → vLLM` 权重流式同步**与**离线 `61 GB` HF checkpoint 导出**两条路径分开核对与计时：先验证 `3fdf2b54` 现有实现下 `Qwen3StateDictAdapter` 3D expert 权重（`w1/w2/w3`）shape/transpose 在两条路径上的正确性与耗时，仅在实测存在缺失或性能瓶颈时做最小补丁。
+3. **[必移植 · ReTool 任务与审计脚本]**：移植 `examples/tpu/retool/`（`retool_tpu.py`、tool schema、rollout audit / validation dump 与 `training.max_norm` 实效日志），升级仅作用于 GPU 分支，不影响正在运行的 TPU 负载。
+4. **[必核对 · `torchtitan 0.1.0` → `0.3.0` 调度器与导入路径]**：核对 `LRSchedulersContainer` 模块路径（`torchtitan.components.lr_scheduler` vs `torchtitan.components.optimizer`）及 `torchtitan.__file__` 实际导入位置（已内置于 `verify_venv_lock.py` 自动校验）。
 
 **标准构建与校验命令：**
 
 ```bash
 cd examples/tpu/retool/gb200
-docker buildx build --platform linux/arm64 \
+docker buildx build --platform linux/arm64 --progress=plain \
   --build-arg VERL_REPO=https://github.com/syangx39/verl-upstream.git \
   --build-arg VERL_PIN=<GPU_CODE_SHA> \
+  --build-arg EXPECT_LOCK_SHA256=<UV_LOCK_SHA256> \
   --build-arg FLASH_ATTN_FROM_SOURCE=0 \
   -f Dockerfile.gb200.torchtitan \
-  -t retool-gb200-torchtitan:<GPU_CODE_SHA> --load .
+  -t retool-gb200-torchtitan:<GPU_CODE_SHA> --load . 2>&1 | tee build_arm64.log
 ```
 
-- `Dockerfile.gb200.torchtitan` 在 `uv sync --frozen --all-packages --extra fsdp --extra vllm --extra torchtitan` 前后自动比对 `uv.lock` 的 SHA256，并在构建期执行 `verify_venv_lock.py /workspace/verl-pin --extras fsdp,vllm,torchtitan --require-async --require-torchtitan`；若 `flash-attn` wheel 在 `aarch64` 上缺失，传 `--build-arg FLASH_ATTN_FROM_SOURCE=1` 即可自动回退源码编译。
+- `Dockerfile.gb200.torchtitan` 在 `uv sync --frozen --all-packages --extra fsdp --extra vllm --extra torchtitan` 前后强校验 `uv.lock` 的 SHA256 与 `VERL_PIN`；若 `flash-attn` 在 `aarch64` 上需源码构建，传 `--build-arg FLASH_ATTN_FROM_SOURCE=1` 会同时启用 `FLASH_ATTENTION_FORCE_BUILD=TRUE` 与 `--no-binary flash-attn`（防止 `pip`/`uv` 或 `setup.py` 静默回退预编译 wheel），并须归档 `build_arm64.log` 与 `flash_attn` 扩展 import 结果。
 - `--extra fsdp` 仅提供依赖组合，**不表示选择 veRL FSDP2 actor engine**。统一设置 `VIRTUAL_ENV=/workspace/verl-pin/.venv` 与 `PYTHONPATH=/workspace/verl-pin`，确保 Ray head 与所有 worker 使用同一 checkout 与 `.venv`，严禁运行时挂载另一份源码覆盖。
 - Sandbox 是独立进程/服务，**不必单独构建镜像**。复用并固定 TPU 的 server 和工具调用语义，核实 GPU 各请求节点可访问服务、运行依赖和实际生效的资源/超时限制；若另行容器化，作为显式差异记录。
 
@@ -129,8 +144,8 @@ docker buildx build --platform linux/arm64 \
 
 ### 4.2 分阶段执行与门槛
 
-1. **G0，基础 smoke**：4+4 启动（若 Trainer 显存超限则按第 1 节账本切至 6+2 并记录），先用少量固定请求检查 sandbox、工具循环、权重同步、打分及日志，含接近最大长度的案例。确认无死锁、OOM，角色位置正确；保存峰值显存和 trace。
-2. **G1，短 RL smoke**：共享 P2 checkpoint，按 TPU P1c 的诊断缩小 workload：train batch 8、mini-batch 8、每题 4 条、2 steps，关闭训练前验证。确认梯度、optimizer、同步、策略版本以及 HF checkpoint 可导出并重新加载；这是诊断，不与全规模性能直接比较。HF 权重重载不等于完整断点续训：如需续训，另行验证 optimizer、scheduler 和异步队列状态；主对照优先连续从头运行。
+1. **G0，基础 smoke**：首选 `4+4` 启动，先用少量固定请求检查 sandbox、工具循环、权重同步（含更新后 actor vs vLLM top-k expert routing 对齐）、打分及日志，含接近最大长度的案例。确认无死锁、OOM，角色位置正确；保存峰值显存和 trace。
+2. **G1，短 RL smoke**：共享 P2 checkpoint，按 TPU P1c 的诊断缩小 workload：train batch 8、mini-batch 8、每题 4 条（32 trajectories，`32 % 4 == 0`）、2 steps，关闭训练前验证。确认梯度、optimizer、同步、策略版本以及 HF checkpoint 可导出并重新加载；这是诊断，不与全规模性能直接比较。HF 权重重载不等于完整断点续训：如需续训，另行验证 optimizer、scheduler 和异步队列状态；主对照优先连续从头运行。
 3. **G2，主对照**：共享 P2 checkpoint，采用上表 workload 运行至 step 25，训练前与 step 25 均做完整 AIME24/25。保留所有 25 步训练指标，确认 step 25 的最终或显式 checkpoint 已保存；逐步对照同配置 TPU P3。固定并对账两边的 scheduler horizon 和前 25 步逐步 LR：若把 total steps 改为 25 会改变调度，就保持双方相同的完整 horizon 并在 step 25 评估、有序停止；不要把不同 schedule 混为一谈。两次评估合计 `2 × 2 × 30 × 30 = 3,600` 条样本，提前计入时间和 sandbox 压力。若 TPU P3 尚无可用结果，先保存 GPU 数据并将跨平台结论标为待对照。
 4. **G3，可选端到端轨**：GPU 自己的 SFT step-372 checkpoint，以 G2 相同配置跑 RL；与 TPU 自身 SFT → RL 对照。算力允许时增加独立训练 seed；不要将重复 rollout 采样误认为独立训练重复。
 
@@ -143,7 +158,7 @@ docker buildx build --platform linux/arm64 \
 - SFT（仅开展可选实验时）：相同样本和有效 tokens 的训练 loss、grad norm、LR、末尾 loss 分布、相同 in-sample validation；比较各自的 step-372 checkpoint，并保留前述固定输入数值对账。
 - RL：按 step 和实际 consumed trajectories 对比 correctness、原始 reward/组件、format/tool failures、timeout、turn 数、response 长度、截断率、entropy、actor KL、clip fraction、grad norm、importance weights 和策略滞后。保存对应的逐样本数据，允许异步执行顺序和随机轨迹不同。
 - AIME：对比 step 0/25 的每题正确率及总体 pass@1 估计，并核对计算口径；按题做配对 bootstrap 区间，保留每题 30 条原始样本；另评估每题 rollout 抽样的不确定性（例如按题、再按样本分层重采样），区分题目与采样波动。多训练 seed 时另报告 seed 间变化；若缺少原始轨迹、基线或事前约定容差，结论写 evidence insufficient，不以单次分数相近就断言 parity。
-- 汇总显式差异：平台、物理拓扑、parallelism、precision/kernel、`VLLM_USE_V1`（`0` vs `1`）、TorchTitan 版本（`0.1.0` vs `0.3.0`）、实际 optimizer、数据顺序、工具运行环境和异步版本。出现轨迹分叉时，先用固定输入测试定位，再分析自由运行统计。
+- 汇总显式差异：平台、物理拓扑、parallelism、precision/kernel、`VLLM_USE_V1`（`0` vs `1`）、TorchTitan 版本（`0.1.0` vs `0.3.0`）、TransferQueue 版本（`0.1.8` vs `0.1.11`）、实际 optimizer、数据顺序、工具运行环境和异步版本。出现轨迹分叉时，先用固定输入测试定位，再分析自由运行统计。
 
 ### 性能
 
@@ -151,7 +166,7 @@ docker buildx build --platform linux/arm64 \
 
 - 端到端 wall time（含启动、加载、编译/预热、验证、存储）以及排除这些开销的稳态 step 中位数/P90；逐项写明时间边界，尤其 P2 的整作业时间与训练 step 时间不能直接比较。
 - rollout 完成轨迹数/秒、输入/输出及有效训练 tokens/秒、每 step 实际 token 数；训练、生成、工具、同步、checkpoint 和 eval 的可观测耗时。异步阶段会重叠，不将各阶段耗时简单相加为总时间。
-- trainer、rollout 分别及合计的物理设备数、利用率、HBM 峰值、accelerator-seconds/完成轨迹及 accelerator-seconds/有效训练 token。TPU 记录物理 chip 和逻辑设备；GPU 记录卡数。可额外记录实际价格/能耗，缺数据不估算。
+- trainer、rollout 分别及合计的物理设备数、利用率、HBM 峰值（统一标注 `GB` 与 `GiB`）、accelerator-seconds/完成轨迹及 accelerator-seconds/有效训练 token。TPU 记录物理 chip 和逻辑设备；GPU 记录卡数。可额外记录实际价格/能耗，缺数据不估算。
 - 单独展示固定工作量绝对用时和设备资源消耗；只有学习曲线及目标指标可比时才报告 time-to-target。不要用 `32/8` 直接推断理论或实际性能倍数，也不把不同长度分布和不同成功率的吞吐当等价。
 
 ## 6. 交付清单

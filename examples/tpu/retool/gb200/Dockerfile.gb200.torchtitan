@@ -6,18 +6,22 @@
 #   - Stack: Ubuntu 24.04 (aarch64), CUDA 13.0 devel, NCCL, gdrcopy, uv cache prefetched for
 #     torch==2.13.0+cu130, vllm==0.32.0, torchtitan==0.3.0, torch-checkpointing==0.1.0, TransferQueue==0.1.11.
 #
-# Build on a native linux/arm64 builder from examples/tpu/retool/gb200/:
-#   docker buildx build --platform linux/arm64 \
+# Build on a native linux/arm64 builder from examples/tpu/retool/gb200/ and archive the full build log:
+#   docker buildx build --platform linux/arm64 --progress=plain \
 #     --build-arg VERL_REPO=https://github.com/syangx39/verl-upstream.git \
 #     --build-arg VERL_PIN=<GPU_CODE_SHA> \
-#     -f Dockerfile.gb200.torchtitan -t retool-gb200-torchtitan:latest --load .
+#     -f Dockerfile.gb200.torchtitan -t retool-gb200-torchtitan:latest --load . 2>&1 | tee build_arm64.log
 FROM verlai/verl@sha256:6d7c328b1e7aedd2dece2f939a827704295b13f4bb75f2f17a962a91a19376b9
 
 ARG VERL_REPO=https://github.com/syangx39/verl-upstream.git
 ARG VERL_PIN=3fdf2b548882a8aeccf0842c2150d9c9f1790a55
+# Optional expected SHA256 of uv.lock; if provided, build fails immediately if uv.lock differs.
+ARG EXPECT_LOCK_SHA256=""
 # Set to 1 if the lock's flash-attn wheel URL is x86_64-only and 404s on aarch64:
-# sync without flash-attn first, then build the exact locked version from source against +cu130 torch.
+# sync without flash-attn first, then force a true source build (--no-binary flash-attn +
+# FLASH_ATTENTION_FORCE_BUILD=TRUE so setup.py cannot silently fetch a prebuilt wheel) against +cu130 torch.
 ARG FLASH_ATTN_FROM_SOURCE=0
+ARG MAX_JOBS=32
 
 ENV UV_HTTP_TIMEOUT=500 \
     UV_LINK_MODE=copy \
@@ -31,14 +35,22 @@ RUN rm -rf /workspace/verl-pin \
  && git checkout --detach "${VERL_PIN}" \
  && test -z "$(git status --porcelain --untracked-files=no)" \
  && git rev-parse HEAD > /workspace/VERL_PIN \
- && sha256sum uv.lock | awk '{print $1}' > /workspace/UV_LOCK_SHA256
+ && sha256sum uv.lock | awk '{print $1}' > /workspace/UV_LOCK_SHA256 \
+ && if [ -n "${EXPECT_LOCK_SHA256}" ]; then \
+      test "$(cat /workspace/UV_LOCK_SHA256)" = "${EXPECT_LOCK_SHA256}"; \
+    fi
 
 WORKDIR /workspace/verl-pin
 RUN LOCK_BEFORE="$(cat /workspace/UV_LOCK_SHA256)" \
  && if [ "${FLASH_ATTN_FROM_SOURCE}" = "1" ]; then \
       uv sync --frozen --all-packages --extra fsdp --extra vllm --extra torchtitan --no-install-package flash-attn \
       && FA="$(grep -A2 '^name = "flash-attn"' uv.lock | grep '^version' | head -1 | cut -d'"' -f2)" \
-      && MAX_JOBS=32 uv pip install --python .venv/bin/python --no-build-isolation "flash-attn==${FA}"; \
+      && test -n "${FA}" \
+      && FLASH_ATTENTION_FORCE_BUILD=TRUE MAX_JOBS="${MAX_JOBS}" \
+         uv pip install --python .venv/bin/python \
+           --no-build-isolation \
+           --no-binary flash-attn \
+           "flash-attn==${FA}"; \
     else \
       uv sync --frozen --all-packages --extra fsdp --extra vllm --extra torchtitan; \
     fi \
@@ -55,6 +67,9 @@ ENV VIRTUAL_ENV=/workspace/verl-pin/.venv \
 COPY verify_venv_lock.py /workspace/verify_venv_lock.py
 RUN .venv/bin/python /workspace/verify_venv_lock.py /workspace/verl-pin \
       --extras fsdp,vllm,torchtitan \
+      --check-all-locked \
+      --expect-git-sha "$(cat /workspace/VERL_PIN)" \
+      --expect-lock-sha256 "$(cat /workspace/UV_LOCK_SHA256)" \
       --require-async \
       --require-torchtitan
 

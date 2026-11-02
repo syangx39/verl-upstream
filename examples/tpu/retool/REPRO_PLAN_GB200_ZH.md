@@ -57,7 +57,7 @@
 
 ```bash
 git checkout --detach <GPU_CODE_SHA>   # 包含 ReTool 移植与该 commit 的 uv.lock
-docker buildx build --platform linux/arm64 \\
+docker buildx build --platform linux/arm64 \
   -f docker/Dockerfile.uv.cu130 -t retool-gb200:build --load .
 # 在基于该镜像的派生层/容器中，在同一 checkout 的 .venv 内执行：
 uv sync --frozen --all-packages --extra fsdp --extra vllm --extra torchtitan

@@ -14,9 +14,10 @@
 | **Stage 0.1** | 上游依赖环境验证镜像构建 | `verl@3fdf2b548` + `uv.lock` (`df508db0...`) | 原生 `linux/arm64` 构建节点 | 基于 `verlai/verl:uv.cu130.dev5` (`sha256:6d7c328b...`) 构建 `--extra fsdp --extra vllm --extra torchtitan` 锁定环境 | `uv sync` 12 s（热）/ 103 s（冷）；完整构建+快照 202 s | **DONE**（`sha256:ec7c9274...`） |
 | **Stage 0.2** | 4×GB200 目标节点硬件与包锁预检 | `verify_venv_lock.py --require-gb200 --min-gpus 4` | 1 节点 × 4 张 NVIDIA GB200 (`aarch64`) | 校验 264 个锁包、CUDA 13.0、NCCL 2.29.7、SM 10.0、单卡 184.31 GiB HBM、NVLink 拓扑及 `torchtitan 0.3.0` slotted `MoE.Config` | 28 s | **PASS** |
 | **Stage 0.3** | ReTool + TorchTitan `0.3.0` MoE 适配镜像构建 | `gb200-retool-runtime` (`23113cb2`, 基于 `3fdf2b548`) | 原生 `linux/arm64` 构建节点 | 适配 TorchTitan `0.3.0` `MoE.Config`（`load_balance_coeff = None`，消除 `expert_bias_E` 缓冲）、移植 `examples/tpu/retool/` 与 `rollout_audit`、构建正式运行镜像 | 80 s | **DONE**（`sha256:a139e2b4...`） |
-| **Stage G0** | 共享 P2 Checkpoint 跨节点加载 + 1 步 MoE 路由正负对照 + Sandbox 四用例预检 | [`verify_g0_gb200.py`](./gb200/verify_g0_gb200.py) (`23113cb2`) | 2 节点 × 4 张 GB200（`4 trainer + 4 rollout`） | 跨双节点 `/dev/shm` 缓存并校验 25 文件 / 16 分片组合 SHA-256、正负对照 1 步 `expert_bias_E` 与 `Qwen3StateDictAdapter.to_hf()->from_hf()` 往返路由一致性、验证 Sandbox 四用例 | Head 61 s / Worker 81 s | **PASS** |
-| **Stage G1** | GB200 ReTool 多轮工具调用 2 步 RL Smoke（对照 TPU `P1c`） | `g1-retool-rl-smoke-01` (`23113cb2`) | 2 节点 × 4 张 GB200（`4 trainer + 4 rollout`） | `train_batch_size=8, ppo_mini_batch_size=8, n=4, steps=2`，验证 Sandbox 四项测试、`rollout_audit` 掩码、NCCL 同步耗时与 HBM 峰值 | 运行中 | **RUNNING** |
-| **Stage G2** | GB200 ReTool 25 步 RL Pilot + Step 0/25 AIME 2024/2025 评估（对照 TPU `P3`） | `g2-retool-rl-pilot-01` (`23113cb2`) | 2 节点 × 4 张 GB200（`4 trainer + 4 rollout`） | 从同一 TPU P2 `global_step_372/huggingface` 出发跑 25 步 RL（`64×8=512` rollouts/step），对比 Step 0/25 AIME `30×30` 准确率与单步耗时分解 | 待启动 | **QUEUED** |
+| **Stage G0** | 共享 P2 Checkpoint 跨节点缓存 + 20 核心文件 SHA-256 清单 + `debugmodel_moe` 1 步 `to_hf()->from_hf()` 路由单测 + Sandbox 四用例 | [`verify_g0_gb200.py`](./gb200/verify_g0_gb200.py) (`bace5a04`) | 2 节点 × 4 张 GB200（`4 trainer + 4 rollout`） | 跨双节点 `/dev/shm` 拷贝全部 25 文件并对 20 个核心文件（16 分片 + 4 元数据）计算组合 SHA-256、校验 48 层 `30B-A3B` 配置并基于 8 层 `debugmodel_moe` 单测 1 步 `expert_bias_E` 与 `to_hf()->from_hf()` 路由一致性（注：**完整 30B 权重加载与真实 `actor -> NCCL -> vLLM` 同步由 `Stage G1` 验证**） | Head 59.2 s / Worker 72.2 s | **PASS（单元预检）** |
+| **Stage G1 (Attempt 1)** | GB200 ReTool 多轮工具调用 2 步 RL Smoke（初次尝试） | `g1-retool-rl-smoke-01` (`bace5a04`) | 2 节点 × 4 张 GB200（`NV16/NV17` 降级链路节点，未挂载 `ComputeDomain`） | 进入 `actor_init_model()`（已打印 `disabled expert-bias load balancing on 48 layers`），在 `torch.distributed.broadcast` 报 `ncclUnhandledCudaError: P2P is disabled between NVLINK connected GPUs 1 and 0` | 110 s | **FAIL（缺 `ComputeDomain` IMEX 通道 + `NV16/NV17` 节点）** |
+| **Stage G1 (Attempt 2)** | GB200 ReTool 多轮工具调用 2 步 RL Smoke（对照 TPU `P1c`） | `g1-retool-rl-smoke-02` (`bb704378`) | 2 节点 × 4 张 GB200（健康 `NV18` 全互联节点 + `ComputeDomain` IMEX 通道） | 挂载 `ComputeDomain` + `privileged: true` 并強制校验 `can_device_access_peer`，验证完整 30B 加载、真实 `actor -> NCCL -> vLLM` 同步、2 次真实更新、工具调用与 `response_mask` | 运行中 | **RUNNING** |
+| **Stage G2** | GB200 ReTool 25 步 RL Pilot + Step 0/25 AIME 2024/2025 评估（对照 TPU `P3`） | `g2-retool-rl-pilot-01` (`bb704378`) | 2 节点 × 4 张 GB200（`4 trainer + 4 rollout`） | **严格前置条件：需 `Stage G1` 与 TPU `Stage P1c` 均完成 2 次真实更新、工具调用与掩码核验后方可启动** | 待 `G1` 通过后启动 | **BLOCKED on G1** |
 
 ---
 
@@ -93,11 +94,20 @@ GB200 TARGET-HOST PRECHECK OK (hardware/NCCL/venv verified; run G0 1-step MoE ro
 
 ---
 
-## 4. Stage 0.3 & Stage G0：共享 TPU P2 SFT Checkpoint 跨节点核验、TorchTitan `0.3.0` MoE 路由正负对照与 Sandbox 四用例实测（PASS）
+## 4. Stage 0.3 & Stage G0：共享 TPU P2 SFT Checkpoint 跨节点清单核验、`debugmodel_moe` 路由单测与 Sandbox 四用例实测
+
+> **验证边界说明（针对代码 `bace5a04` 与原始 JSON 产物核实）**：
+> [`verify_g0_gb200.py`](./gb200/verify_g0_gb200.py) 是启动 Ray 训练前的**节点级单卡/文件预检脚本**，其验证范围严格限定为以下三项，**不包含**完整 30B 权重的分布式加载或真实 `actor -> NCCL -> vLLM` 跨进程权重同步（后两者在 `Stage G1` 中验证）：
+> 1. **`g0_stage_local`**：将共享 TPU `Stage P2` SFT 导出的全部 **25 个文件**（`61,084,185,820 bytes`）并行拷贝到各节点本地 `/dev/shm/models/multiturn-sft-qwen3-30b-a3b-gb200`；
+> 2. **`g0_checkpoint_manifest`**：对 `all_names = required_meta + shards` 定义的 **20 个核心文件**（`16` 个 `.safetensors` 权重分片 + `config.json`、`model.safetensors.index.json`、`tokenizer.json`、`tokenizer_config.json`，合计 **`61,079,708,754 bytes`**；其余 5 个辅助文件 `added_tokens.json`、`chat_template.jinja`、`generation_config.json`、`merges.txt`、`special_tokens_map.json`、`vocab.json` 占 `4,477,066 bytes`）逐一计算 SHA-256 并生成组合摘要 `composite_sha256`；
+> 3. **`g0_moe_torchtitan_0_3`**：
+>    - 在 **48 层 `Qwen3-30B-A3B` 模型配置（`num_layers_30b_a3b = 48`）** 上验证 `configure_qwen3_moe_for_rl` 将全部 48 层 `MoE.Config.load_balance_coeff` 从 `0.001` 设为 `None`；
+>    - 在单张 GPU (`cuda:0`) 上实例化 TorchTitan 内置的小型 **8 层 `debugmodel_moe`（`dim=256, n_layers=8, num_experts=8, top_k=2`）**，执行 1 步 `forward/backward/AdamW` 并通过 `Qwen3StateDictAdapter.to_hf() -> from_hf()` 在两个进程内 TorchTitan 模型之间模拟 HF state_dict 往返，验证 `expert_bias_E` 是否被丢弃及引起的路由/logits 偏差。
 
 ### 4.1 Stage 0.3：ReTool + TorchTitan `0.3.0` MoE 适配正式运行镜像
 
 - **正式运行镜像 Digest**：`verl-torchtitan-cu130-arm64@sha256:a139e2b491ac23f06f790fe4277afb9bd543a94bc740c92173e5fdb13ddaba40`
+- **运行代码 SHA**：`bace5a04`（`G1 Attempt 1`）/ `bb704378`（`G1 Attempt 2`，新增 `ComputeDomain` IMEX 通道与 `can_device_access_peer` 预检）
 - **双节点启动时 `--require-rl-moe-helper --require-gb200` 校验输出**：
 
 ```text
@@ -105,36 +115,44 @@ platform=Linux/aarch64 python=3.12.3
 uv.lock SHA256 verified: df508db0b957fa181c229fb75885cd3863cb651fd5233d0fa5af95e990bda0be
 full uv.lock check: verified 264 packages (mismatches=0)
 torchtitan MoE.Config (torchtitan.models.common.moe): slotted=True required_fields=['routed_experts', 'router'] has_load_balance_coeff=True has_aux_loss=False default_load_balance_coeff=0.001
-verl.workers.engine.torchtitan.utils:found-configure_qwen3_moe_for_rl
+verl.workers.engine.torchtitan.utils.configure_qwen3_moe_for_rl: present
 ```
 
-### 4.2 Stage G0.1：共享 TPU `Stage P2` SFT Checkpoint（`global_step_372/huggingface`）双节点 `/dev/shm` 缓存与逐文件 SHA-256 对齐
+### 4.2 Stage G0.1：`g0_stage_local`（25 文件拷贝）与 `g0_checkpoint_manifest`（20 核心文件 SHA-256）双节点实测数据
 
-为严格控制变量（区分训练/推理栈与硬件差异，排除 SFT 起点差异），GB200 线直接从 TPU v7x `Stage P2` 产出的同一份 SFT checkpoint（`global_step_372/huggingface`，共 25 个文件 / 16 个 `.safetensors` 分片，`61,084,185,820 bytes`）启动，并在两个 `4 × GB200` 节点上分别拷入本地 `/dev/shm` 后执行逐文件 SHA-256 与参照源比对：
+以下数据直接提取自双节点原始 JSON 产物（`g1-retool-rl-smoke-01-head-g0-verify.json` 与 `g1-retool-rl-smoke-01-worker-0-g0-verify.json`，代码 SHA `bace5a04`）：
 
-| 校验项 | Trainer / Head 节点 (`4 × GB200`) | Rollout / Worker-0 节点 (`4 × GB200`) | TPU v7x `Stage P2` SFT 参照源 | 对齐结论 |
+| JSON 字段 | Trainer / Head 节点 (`4 × GB200`) | Rollout / Worker-0 节点 (`4 × GB200`) | TPU v7x `Stage P2` SFT 参照源 | 核验结论 |
 | --- | --- | --- | --- | --- |
-| 文件总数 / `.safetensors` 分片数 | `25` / `16` | `25` / `16` | `25` / `16` | **100% 一致** |
-| 总字节数 (`total_bytes`) | `61,084,185,820` (`56.89 GiB`) | `61,084,185,820` (`56.89 GiB`) | `61,084,185,820` (`56.89 GiB`) | **100% 一致** |
-| `/dev/shm` 缓存耗时与吞吐 | `46.16 s` (`1.323 GB/s`) | `66.27 s` (`0.922 GB/s`) | `55.66 s` (`1.097 GB/s`, 8 切片均值) | **正常** |
-| 25 文件组合 SHA-256 (`composite_sha256`) | `59247a00c13f2364a12aab5ab6b88b6d971d59ff643c57aad8ac4e55a71231b0` | `59247a00c13f2364a12aab5ab6b88b6d971d59ff643c57aad8ac4e55a71231b0` | `59247a00c13f2364a12aab5ab6b88b6d971d59ff643c57aad8ac4e55a71231b0` | **逐字节 100% 匹配 (`matches_reference=true`)** |
+| `g0_stage_local.total_files` / `copied_files` | `25` / `25` | `25` / `25` | `25` | 完整目录共 25 个文件全部拷入 `/dev/shm` |
+| `g0_stage_local.copied_bytes` | `61,084,185,820` (`56.89 GiB`) | `61,084,185,820` (`56.89 GiB`) | `61,084,185,820` (`56.89 GiB`) | 100% 一致 |
+| `g0_stage_local.elapsed_s` (`throughput_gb_s`) | `49.091 s` (`1.244 GB/s`) | `62.158 s` (`0.983 GB/s`) | `55.66 s` (`1.097 GB/s`, 8 切片均值) | 正常 |
+| `g0_checkpoint_manifest.num_files_hashed` / `num_safetensors_shards` | **`20` / `16`** | **`20` / `16`** | **`20` / `16`** | 校验 16 个 `.safetensors` 分片 + 4 个核心 JSON（`config.json`、`model.safetensors.index.json`、`tokenizer.json`、`tokenizer_config.json`） |
+| `g0_checkpoint_manifest.total_bytes`（20 个被哈希文件） | **`61,079,708,754`** (`56.88 GiB`) | **`61,079,708,754`** (`56.88 GiB`) | **`61,079,708,754`** (`56.88 GiB`) | 100% 一致 |
+| `g0_checkpoint_manifest.elapsed_s` | `10.099 s` | `10.047 s` | - | 正常 |
+| `g0_checkpoint_manifest.composite_sha256` | `59247a00c13f2364a12aab5ab6b88b6d971d59ff643c57aad8ac4e55a71231b0` | `59247a00c13f2364a12aab5ab6b88b6d971d59ff643c57aad8ac4e55a71231b0` | `59247a00c13f2364a12aab5ab6b88b6d971d59ff643c57aad8ac4e55a71231b0` | **`ref_match = true`, `mismatches = []`** |
 
-### 4.3 Stage G0.2：TorchTitan `0.3.0` MoE `expert_bias_E` 1 步更新 + `Qwen3StateDictAdapter` 往返同步正负对照实验
+### 4.3 Stage G0.2：`g0_moe_torchtitan_0_3`（48 层 `30B-A3B` 配置检查 + 8 层小型 `debugmodel_moe` `to_hf()->from_hf()` 往返单测）
 
-在 GB200 (`cuda:0`, `bfloat16`) 上运行 [`verify_g0_gb200.py`](./gb200/verify_g0_gb200.py)，构建 8 层 Qwen3-30B-A3B MoE 模型（`128` 专家，`top_k=8`），执行 1 次真实 forward/backward + AdamW step，随后通过 `Qwen3StateDictAdapter.to_hf()` 与 `from_hf()` 模拟 Trainer → vLLM 的 HF 权重导出与加载（因为 HF `Qwen3MoeForCausalLM` 与 vLLM 均无 `expert_bias_E` 缓冲），对比 Actor 与同步后模型在同一批输入 token 上的每层 top-k 专家路由与输出 logits：
+1. **48 层 `Qwen3-30B-A3B` 配置级检查（不加载 30B 权重）**：
+   - `torchtitan_name = "qwen3"`, `torchtitan_flavor = "30B-A3B"`, `num_layers_30b_a3b = 48`
+   - `moe_config_fields = ["param_init", "sharding_config", "num_experts", "routed_experts", "router", "load_balance_coeff", "shared_experts"]`
+   - `before_load_balance_coeff_sample = [0.001, 0.001, 0.001]`（全 48 层均为 `0.001`）
+   - 调用 `configure_qwen3_moe_for_rl(model_spec.model)` 后：`after_load_balance_coeff_sample = [null, null, null]`（全 48 层均为 `None`）
+2. **8 层小型 `debugmodel_moe`（`dim=256, n_layers=8, num_experts=8, top_k=2`）单卡 1 步更新 + `Qwen3StateDictAdapter.to_hf() -> from_hf()` 模拟往返单测**：
 
-| 检查维度 | 正向实验（`apply_rl_fix=True`，调用 `configure_qwen3_moe_for_rl`） | 负向对照（`apply_rl_fix=False`，保持 TorchTitan `0.3.0` 默认） | 根因说明 |
+| JSON 字段 (`g0_moe_torchtitan_0_3`) | `positive_rl_fix_check` (`apply_rl_fix=true`) | `negative_control_unfixed_check` (`apply_rl_fix=false`) | 物理含义与局限说明 |
 | --- | --- | --- | --- |
-| 各层 `moe.load_balance_coeff` | `[None, None, ..., None]`（全部 8 层为 `None`） | `[0.001, 0.001, ..., 0.001]` | TorchTitan `0.3.0` 默认开启 auxiliary-loss-free load balancing (`1e-3`) |
-| 模型是否注册 `expert_bias_E` buffer | `False` | `True`（`layers.{0..7}.moe.expert_bias_E`） | 当 `load_balance_coeff is not None` 时，TorchTitan 在每次 step 中原地更新 `expert_bias_E` |
-| 1 步训练后 `\|expert_bias_E\|_max` | `0.0` | `0.001453125` | 仅 1 步训练后，`expert_bias_E` 即发生非零偏移 |
-| `Qwen3StateDictAdapter.to_hf()` 丢弃的键 (`dropped_state_keys`) | `[]`（**0 个键被丢弃**） | `['layers.0.moe.expert_bias_E', ..., 'layers.7.moe.expert_bias_E']`（**8 层 `expert_bias_E` 全部在同步时丢失**） | HF `Qwen3Moe` 架构不存在 `expert_bias_E`，导致同步到 vLLM 时被静默丢弃 |
-| 1 步同步后 Actor vs Rollout **Top-8 专家路由一致率 (`router_topk_match_rate`)** | **`1.0000` (`100.00%`)** | **`0.6623` (`66.23%`，仅 1 步即出现 `33.77%` 专家路由分叉！)** | Actor 用含偏移的 `gate + expert_bias_E` 选专家，而 vLLM 用纯 `gate` 选专家 |
-| 1 步同步后 Actor vs Rollout **输出 Logits 最大绝对误差 (`logits_max_abs_diff`)** | **`0.0`** | **`0.056640625`**（平均误差 `0.005310`） | 路由分叉直接导致 Actor 与 Rollout 的前向概率分布失配（破坏 PPO/GRPO importance ratio） |
+| 测试模型规格 (`num_moe_layers`) | `8` 层 `debugmodel_moe` (`8` 专家, `top_k=2`) | `8` 层 `debugmodel_moe` (`8` 专家, `top_k=2`) | 进程内小型 MoE 单测；**非**完整 30B-A3B（48 层 128 专家）或真实 NCCL→vLLM 同步 |
+| `has_expert_bias_buffer` | `false` | `true` (`layers.{0..7}.moe.expert_bias_E`) | `load_balance_coeff=0.001` 时注册 `expert_bias_E` 缓冲并在 `opt.step()` 后原地更新 |
+| `expert_bias_abs_max_after_step1` | `0.0` | `0.0014531250344589353` | 1 步 AdamW 更新后 `expert_bias_E` 即偏离 `0` |
+| `dropped_state_keys` (`to_hf() -> from_hf()`) | `[]` | `["layers.0.moe.expert_bias_E", ..., "layers.7.moe.expert_bias_E"]` | `Qwen3StateDictAdapter.to_hf()` 不导出 `expert_bias_E`，导致接收端丢失该 buffer |
+| `router_topk_match_rate` | **`1.0`** (`100.0%`) | **`0.66229248046875`** (`66.23%`) | 接收端缺失 `expert_bias_E` 时，仅 1 步即有 `33.77%` top-k 专家选择不一致 |
+| `logits_max_abs_diff` | **`0.0`** | **`0.056640625`** | 路由分叉导致前向 logits 不一致 |
 
 ### 4.4 Stage G0.3：SandboxFusion 本地 Loopback 服务四用例功能核验
 
-在 Trainer Head 节点启动 `sandbox_fusion_server.py --host 127.0.0.1 --port 18080 --workers 4` 后，执行四项实测均 100% 通过：
+在 Trainer Head 节点启动 `sandbox_fusion_server.py --host 127.0.0.1 --port 18080 --workers 4` 后，执行四项实测（原始产物 `g1-retool-rl-smoke-01-head-sandbox-4case.json`）均通过：
 
 | 用例 | 输入代码摘要 | 期望行为 | 实测输出 (`status` / `stdout` / `stderr`) | 端到端耗时 | 结果 |
 | --- | --- | --- | --- | --- | --- |
@@ -142,4 +160,31 @@ verl.workers.engine.torchtitan.utils:found-configure_qwen3_moe_for_rl
 | **Case 2：Python 异常与 `stderr`** | `print(1 / 0)` | `status=Failed`, `stderr` 含 `ZeroDivisionError` | `status="Failed"`, `stderr="...ZeroDivisionError: division by zero\n"` | `0.0155 s` | **PASS** |
 | **Case 3：死循环超时与进程清理** | `while True: time.sleep(0.1)` (`run_timeout=1.5`) | 1.5 s 超时返回 `TimeLimitExceeded` 且无残留子进程 | `run_result.status="TimeLimitExceeded"`, `execution_time=1.5015 s` | `1.5051 s` | **PASS** |
 | **Case 4：8 路并发请求** | `ThreadPoolExecutor(8)` 并发计算 `1²..8²` | 8 路全部 `Success` 且输出 `['1','4',...,'64']` | `all_succeeded=True`, `outputs=['1','4','9','16','25','36','49','64']` | 最大 `0.0256 s` | **PASS** |
+
+---
+
+## 5. Stage G1：GB200 ReTool 多轮工具调用 2 步 RL Smoke 执行记录
+
+### 5.1 Attempt 1（`g1-retool-rl-smoke-01`，代码 SHA `bace5a04`）—— 失败根因与修复
+
+- **运行进展**：
+  1. 双节点（Head + Worker-0）完成 `verify_venv_lock.py`、`verify_g0_gb200.py` 与 `sandbox_fusion_server.py` 四用例检查，成功组建 `2 × 4 = 8 GPU` Ray 集群；
+  2. `verl.trainer.main_ppo` 通过配置校验，启动 `WorkerDict`（4 个 Trainer GPU 进程，`FSDP2=4`），日志确认两项关键运行期行为：
+     - `WARNING:2026-11-02 21:45:22,098:MoE: disabled expert-bias load balancing on 48 layers [repeated 3x across cluster]`
+     - `WARNING:2026-11-02 21:45:22,099:TorchTitan grad clipping uses training.max_norm=1.0; optim.clip_grad=0.088 is not passed to TorchTitan [repeated 3x across cluster]`
+  3. 随后在 `torchtitan/trainer.py:337 -> torchtitan/distributed/utils.py:262` 执行首次集合通信 `torch.distributed.broadcast(seed_tensor, src=0)` 时异常退出：
+     ```text
+     torch.distributed.DistBackendError: NCCL error in: /__w/pytorch/pytorch/torch/csrc/distributed/c10d/NCCLUtils.cpp:92, unhandled cuda error (run with NCCL_DEBUG=INFO for details), NCCL version 2.29.7
+     ncclUnhandledCudaError: Call to CUDA function failed.
+     Last error:
+     P2P is disabled between NVLINK connected GPUs 1 and 0. This should not be the case given their connectivity, and is probably due to a hardware issue. If you still want to proceed, you can set NCCL_IGNORE_DISABLED_P2P=1.
+     ```
+- **根因定位**：
+  1. **缺少 `ComputeDomain` DRA IMEX 通道**：在 GB200（NVLink5 / MNNVL 架构）K8s 节点上，跨 GPU NVLink P2P 访问依赖 `nvidia-dra-driver-gpu` 通过 `ComputeDomain`（`resource.nvidia.com/v1beta1`）向容器注入 `/dev/nvidia-caps-imex-channels` 设备及 `securityContext.privileged: true`；未声明 `ComputeDomain` resourceClaim 时，驱动层禁用 NVLink P2P；
+  2. **初始节点池 NVLink5 链路降级**：Attempt 1 所在节点池的 `nvidia-smi topo -m` 显示为 `NV16` / `NV17`（部分 NVLink5 通道降级，而非满规格 18 通道 `NV18`）。
+- **修复措施（已提交至 `bb704378`）**：
+  1. [`run_ray_jobset_gb200.sh`](./gb200/run_ray_jobset_gb200.sh)：自动创建 `ComputeDomain`（`${RUN_NAME}-cd`，`numNodes: 2`），并为 Head 与 Worker-0 Pod 挂载 `resourceClaims: [{name: compute-domain-channel, resourceClaimTemplateName: ${RUN_NAME}-cd-channel}]` 与 `securityContext: {privileged: true}`；
+  2. [`verify_venv_lock.py`](./gb200/verify_venv_lock.py)：在 `--require-gb200` 预检中新增全对（`4 × 3 = 12` 对）`torch.cuda.can_device_access_peer(i, j)` 强制检查，任何一对 GPU P2P 不可达立即在预检阶段 fail-fast 退出；
+  3. 切换至全 18 通道健康 `NV18` 节点池启动 Attempt 2（`g1-retool-rl-smoke-02`）。
+
 

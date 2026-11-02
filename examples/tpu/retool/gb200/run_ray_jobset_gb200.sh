@@ -46,15 +46,17 @@ done < <(env | sort)
 
 cleanup() {
     if [[ "${KEEP_PODS}" != "1" ]]; then
-        echo "[gb200-launcher $(date -u +%H:%M:%S)] cleaning up pods and service for ${RUN_NAME}"
+        echo "[gb200-launcher $(date -u +%H:%M:%S)] cleaning up pods, service, and ComputeDomain for ${RUN_NAME}"
         kubectl --context="${KUBE_CONTEXT}" -n "${K8S_NAMESPACE}" delete pod "${RUN_NAME}-head" "${RUN_NAME}-worker-0" --ignore-not-found=true --wait=false >/dev/null 2>&1 || true
         kubectl --context="${KUBE_CONTEXT}" -n "${K8S_NAMESPACE}" delete svc "${RUN_NAME}-head" --ignore-not-found=true >/dev/null 2>&1 || true
+        kubectl --context="${KUBE_CONTEXT}" -n "${K8S_NAMESPACE}" delete computedomain.resource.nvidia.com "${RUN_NAME}-cd" --ignore-not-found=true --wait=false >/dev/null 2>&1 || true
     fi
 }
 trap cleanup EXIT
 
 kubectl --context="${KUBE_CONTEXT}" -n "${K8S_NAMESPACE}" delete pod "${RUN_NAME}-head" "${RUN_NAME}-worker-0" --ignore-not-found=true --wait=true >/dev/null 2>&1 || true
 kubectl --context="${KUBE_CONTEXT}" -n "${K8S_NAMESPACE}" delete svc "${RUN_NAME}-head" --ignore-not-found=true >/dev/null 2>&1 || true
+kubectl --context="${KUBE_CONTEXT}" -n "${K8S_NAMESPACE}" delete computedomain.resource.nvidia.com "${RUN_NAME}-cd" --ignore-not-found=true --wait=true >/dev/null 2>&1 || true
 gsutil rm -f "gs://${GCS_BUCKET}/${RUN_ROOT}/${RUN_NAME}/exit_code.txt" >/dev/null 2>&1 || true
 
 EXTRA_ARGS_STR=""
@@ -63,6 +65,17 @@ for a in "${EXTRA_ARGS[@]}"; do
 done
 
 cat <<EOF | kubectl --context="${KUBE_CONTEXT}" -n "${K8S_NAMESPACE}" apply -f -
+apiVersion: resource.nvidia.com/v1beta1
+kind: ComputeDomain
+metadata:
+  name: ${RUN_NAME}-cd
+spec:
+  numNodes: 2
+  channel:
+    allocationMode: Single
+    resourceClaimTemplate:
+      name: ${RUN_NAME}-cd-channel
+---
 apiVersion: v1
 kind: Service
 metadata:
@@ -92,6 +105,9 @@ metadata:
 spec:
   restartPolicy: Never
   serviceAccountName: ${K8S_SA}
+  resourceClaims:
+  - name: compute-domain-channel
+    resourceClaimTemplateName: ${RUN_NAME}-cd-channel
   nodeSelector:
     cloud.google.com/gke-nodepool: ${NODEPOOL}
   affinity:
@@ -127,6 +143,8 @@ spec:
   - name: ray-worker
     image: ${IMAGE}
     workingDir: /workspace/verl-pin
+    securityContext:
+      privileged: true
     env:
     - name: RUN_NAME
       value: "${RUN_NAME}"
@@ -135,6 +153,8 @@ spec:
     - name: DATA_ROOT
       value: "${INPUTS_DIR}"
 ${JOBENV_YAML}    resources:
+      claims:
+      - name: compute-domain-channel
       requests:
         cpu: "64"
         memory: 500Gi
@@ -222,6 +242,9 @@ metadata:
 spec:
   restartPolicy: Never
   serviceAccountName: ${K8S_SA}
+  resourceClaims:
+  - name: compute-domain-channel
+    resourceClaimTemplateName: ${RUN_NAME}-cd-channel
   nodeSelector:
     cloud.google.com/gke-nodepool: ${NODEPOOL}
   affinity:
@@ -257,6 +280,8 @@ spec:
   - name: ray-head
     image: ${IMAGE}
     workingDir: /workspace/verl-pin
+    securityContext:
+      privileged: true
     env:
     - name: RUN_NAME
       value: "${RUN_NAME}"
@@ -265,6 +290,8 @@ spec:
     - name: DATA_ROOT
       value: "${INPUTS_DIR}"
 ${JOBENV_YAML}    resources:
+      claims:
+      - name: compute-domain-channel
       requests:
         cpu: "64"
         memory: 500Gi

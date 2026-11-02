@@ -156,7 +156,12 @@ ${JOBENV_YAML}    resources:
       nvidia-smi -L > "${RUN_DIR}/env/\${HOST_TAG}-nvidia-smi-L.txt"
       nvidia-smi topo -m > "${RUN_DIR}/env/\${HOST_TAG}-topo.txt" || true
       python3 examples/tpu/retool/gb200/verify_venv_lock.py \
-        --lock-file /workspace/verl-pin/uv.cu130.dev5.lock \
+        /workspace/verl-pin \
+        --check-all-locked \
+        --expect-lock-sha256 df508db0b957fa181c229fb75885cd3863cb651fd5233d0fa5af95e990bda0be \
+        --require-async \
+        --require-torchtitan \
+        --require-rl-moe-helper \
         --require-gpu \
         --require-gb200 > "${RUN_DIR}/env/\${HOST_TAG}-precheck.json"
 
@@ -276,7 +281,12 @@ ${JOBENV_YAML}    resources:
       nvidia-smi -L > "${RUN_DIR}/env/\${HOST_TAG}-nvidia-smi-L.txt"
       nvidia-smi topo -m > "${RUN_DIR}/env/\${HOST_TAG}-topo.txt" || true
       python3 examples/tpu/retool/gb200/verify_venv_lock.py \
-        --lock-file /workspace/verl-pin/uv.cu130.dev5.lock \
+        /workspace/verl-pin \
+        --check-all-locked \
+        --expect-lock-sha256 df508db0b957fa181c229fb75885cd3863cb651fd5233d0fa5af95e990bda0be \
+        --require-async \
+        --require-torchtitan \
+        --require-rl-moe-helper \
         --require-gpu \
         --require-gb200 > "${RUN_DIR}/env/\${HOST_TAG}-precheck.json"
 

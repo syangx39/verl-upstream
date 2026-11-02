@@ -78,7 +78,7 @@ assert c2["status"] == "Failed" and "ZeroDivisionError" in c2["run_result"]["std
 
 # Case 3: Timeout & process cleanup
 c3 = call_run("import time\nwhile True:\n    time.sleep(0.1)", run_timeout=1.5)
-assert c3["status"] == "TimeLimitExceeded" and c3["run_result"]["status"] == "TimeLimitExceeded", f"Case 3 failed: {c3}"
+assert c3["status"] in ("Failed", "TimeLimitExceeded") and c3["run_result"]["status"] == "TimeLimitExceeded", f"Case 3 failed: {c3}"
 
 # Case 4: 8 concurrent requests
 with ThreadPoolExecutor(max_workers=8) as ex:

@@ -253,11 +253,11 @@ def verify_moe_config_and_step(model_dir: Path) -> dict[str, Any]:
 
         from verl.workers.engine.torchtitan.utils import get_attention_masks
 
-        tokens = torch.randint(0, spec.model.vocab_size, (2, 32), device=device)
-        positions = torch.arange(32, device=device).unsqueeze(0).expand(2, -1)
+        tokens = torch.randint(0, spec.model.vocab_size, (2, 128), device=device)
+        positions = torch.arange(128, device=device).unsqueeze(0).expand(2, -1)
         attn_masks = get_attention_masks(tokens, positions, "flex")
 
-        out = model(tokens, attn_masks=attn_masks, positions=positions)
+        out = model(tokens, attention_masks=attn_masks, positions=positions)
         loss = out.float().pow(2).mean()
         loss.backward()
         opt.step()
@@ -289,8 +289,8 @@ def verify_moe_config_and_step(model_dir: Path) -> dict[str, Any]:
             raise AssertionError(f"Unexpected keys restoring from HF state dict: {unexpected}")
 
         # Capture router top-k indices on both actor and receiver on an evaluation batch
-        eval_tokens = torch.randint(0, spec.model.vocab_size, (2, 32), device=device)
-        eval_positions = torch.arange(32, device=device).unsqueeze(0).expand(2, -1)
+        eval_tokens = torch.randint(0, spec.model.vocab_size, (2, 128), device=device)
+        eval_positions = torch.arange(128, device=device).unsqueeze(0).expand(2, -1)
         eval_masks = get_attention_masks(eval_tokens, eval_positions, "flex")
 
         actor_topk: list[torch.Tensor] = []
@@ -312,8 +312,8 @@ def verify_moe_config_and_step(model_dir: Path) -> dict[str, Any]:
                 handles.append(m.router.register_forward_hook(_hook_router(recv_topk)))
 
         with torch.no_grad():
-            actor_logits = model(eval_tokens, attn_masks=eval_masks, positions=eval_positions)
-            recv_logits = recv_model(eval_tokens, attn_masks=eval_masks, positions=eval_positions)
+            actor_logits = model(eval_tokens, attention_masks=eval_masks, positions=eval_positions)
+            recv_logits = recv_model(eval_tokens, attention_masks=eval_masks, positions=eval_positions)
 
         for h in handles:
             h.remove()

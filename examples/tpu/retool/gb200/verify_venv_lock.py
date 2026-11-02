@@ -296,6 +296,23 @@ def check_gpu_runtime(args: argparse.Namespace, bad: list[str]) -> None:
         if name_pat is not None and not name_pat.search(str(props.name)):
             bad.append(f"cuda:{idx}:name={props.name!r}!~{args.expect_gpu_regex!r}")
 
+    if args.require_gb200 and count >= 2 and callable(getattr(torch.cuda, "can_device_access_peer", None)):
+        disabled_pairs: list[str] = []
+        for i in range(count):
+            for j in range(count):
+                if i == j:
+                    continue
+                try:
+                    ok = bool(torch.cuda.can_device_access_peer(i, j))
+                except Exception:
+                    ok = False
+                if not ok:
+                    disabled_pairs.append(f"{i}->{j}")
+        if disabled_pairs:
+            bad.append(f"cuda:p2p-disabled:{','.join(disabled_pairs)}")
+        else:
+            print(f"  NVLink P2P peer access verified across all {count}x{count - 1} GPU pairs")
+
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)

@@ -218,11 +218,22 @@ TOTAL_TRAINING_STEPS="${TOTAL_TRAINING_STEPS:-25}"
 TRUNCATION="${TRUNCATION:-left}"
 LOGGER_LIST="${LOGGER_LIST:-['console','tensorboard']}"
 
+DUMP_ARGS=()
+if [[ -n "${RUN_DIR:-}" ]]; then
+    DUMP_ARGS+=(
+        "trainer.rollout_data_dir=${RUN_DIR}/rollout"
+        "trainer.validation_data_dir=${RUN_DIR}/validation"
+        "+trainer.rollout_audit_dir=${RUN_DIR}/rollout_audit"
+        "+trainer.rollout_audit_sessions=${ROLLOUT_AUDIT_SESSIONS:-8}"
+    )
+fi
+
 python3 -m verl.trainer.main_ppo \
     "ray_kwargs.ray_init.runtime_env.py_executable=null" \
     "+ray_kwargs.ray_init.runtime_env.env_vars.PYTHONPATH=${PYTHONPATH}" \
     "+ray_kwargs.ray_init.runtime_env.env_vars.SANDBOX_FUSION_PORT='${SANDBOX_FUSION_PORT}'" \
     "+ray_kwargs.ray_init.runtime_env.env_vars.VLLM_USE_V1='${VLLM_USE_V1}'" \
+    "${DUMP_ARGS[@]}" \
     trainer.use_v1=True \
     trainer.v1.trainer_mode=separate_async \
     trainer.v1.separate_async.num_warmup_batches="${NUM_WARMUP_BATCHES}" \

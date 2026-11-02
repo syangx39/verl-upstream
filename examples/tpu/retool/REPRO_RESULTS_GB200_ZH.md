@@ -16,8 +16,9 @@
 | **Stage 0.3** | ReTool + TorchTitan `0.3.0` MoE 适配镜像构建 | `gb200-retool-runtime` (`23113cb2`, 基于 `3fdf2b548`) | 原生 `linux/arm64` 构建节点 | 适配 TorchTitan `0.3.0` `MoE.Config`（`load_balance_coeff = None`，消除 `expert_bias_E` 缓冲）、移植 `examples/tpu/retool/` 与 `rollout_audit`、构建正式运行镜像 | 80 s | **DONE**（`sha256:a139e2b4...`） |
 | **Stage G0** | 共享 P2 Checkpoint 跨节点缓存 + 20 核心文件 SHA-256 清单 + `debugmodel_moe` 1 步 `to_hf()->from_hf()` 路由单测 + Sandbox 四用例 | [`verify_g0_gb200.py`](./gb200/verify_g0_gb200.py) (`bace5a04`) | 2 节点 × 4 张 GB200（`4 trainer + 4 rollout`） | 跨双节点 `/dev/shm` 拷贝全部 25 文件并对 20 个核心文件（16 分片 + 4 元数据）计算组合 SHA-256、校验 48 层 `30B-A3B` 配置并基于 8 层 `debugmodel_moe` 单测 1 步 `expert_bias_E` 与 `to_hf()->from_hf()` 路由一致性（注：**完整 30B 权重加载与真实 `actor -> NCCL -> vLLM` 同步由 `Stage G1` 验证**） | Head 59.2 s / Worker 72.2 s | **PASS（单元预检）** |
 | **Stage G1 (Attempt 1)** | GB200 ReTool 多轮工具调用 2 步 RL Smoke（初次尝试） | `g1-retool-rl-smoke-01` (`bace5a04`) | 2 节点 × 4 张 GB200（`NV16/NV17` 降级链路节点，未挂载 `ComputeDomain`） | 进入 `actor_init_model()`（已打印 `disabled expert-bias load balancing on 48 layers`），在 `torch.distributed.broadcast` 报 `ncclUnhandledCudaError: P2P is disabled between NVLINK connected GPUs 1 and 0` | 110 s | **FAIL（缺 `ComputeDomain` IMEX 通道 + `NV16/NV17` 节点）** |
-| **Stage G1 (Attempt 2)** | GB200 ReTool 多轮工具调用 2 步 RL Smoke（对照 TPU `P1c`） | `g1-retool-rl-smoke-02` (`bb704378`) | 2 节点 × 4 张 GB200（健康 `NV18` 全互联节点 + `ComputeDomain` IMEX 通道） | 挂载 `ComputeDomain` + `privileged: true` 并強制校验 `can_device_access_peer`，验证完整 30B 加载、真实 `actor -> NCCL -> vLLM` 同步、2 次真实更新、工具调用与 `response_mask` | 运行中 | **RUNNING** |
-| **Stage G2** | GB200 ReTool 25 步 RL Pilot + Step 0/25 AIME 2024/2025 评估（对照 TPU `P3`） | `g2-retool-rl-pilot-01` (`bb704378`) | 2 节点 × 4 张 GB200（`4 trainer + 4 rollout`） | **严格前置条件：需 `Stage G1` 与 TPU `Stage P1c` 均完成 2 次真实更新、工具调用与掩码核验后方可启动** | 待 `G1` 通过后启动 | **BLOCKED on G1** |
+| **Stage G1 (Attempt 2)** | GB200 ReTool 多轮工具调用 3 步 RL Smoke（对照 TPU `P1c`） | `g1-retool-rl-smoke-02` (`bb704378`) | 2 节点 × 4 张 GB200（健康 `NV18` 全互联节点 + `ComputeDomain` IMEX 通道） | 挂载 `ComputeDomain` + `privileged: true` 并校验 `can_device_access_peer`，完成完整 30B 加载、真实 `actor -> NCCL -> vLLM` 同步（`4.42s / 3.07s / 3.02s / 3.89s`）及 3 步真实更新（`grad_norm: 0.637 -> 0.593 -> 0.864`，`score/mean: -0.625 -> -0.1875 -> +0.3125`，`num_turns/mean: 5.875 / 6.0 / 5.625`） | 冷启动含 SM100 JIT 44 m（其中 3 步训练仅 `108 s`） | **PASS（训练与多轮工具调用通过）** |
+| **Stage G1 (Attempt 3)** | GB200 ReTool 多轮工具调用 3 步 RL Smoke + Token 级 `rollout_audit` 落盘 | `g1-retool-rl-smoke-03` (`64ef634b`) | 2 节点 × 4 张 GB200（复用热 SM100 FlashInfer/vLLM 缓存） | 默认开启 `trainer.rollout_data_dir` 与 `+trainer.rollout_audit_dir`，落盘 `rollout_audit/{1,2,3}.jsonl` 以执行逐 token `response_mask` 离线审计 | 运行中（预计 ~5 m） | **RUNNING** |
+| **Stage G2** | GB200 ReTool 25 步 RL Pilot + Step 0/25 AIME 2024/2025 评估（对照 TPU `P3`） | `g2-retool-rl-pilot-01` (`64ef634b`) | 2 节点 × 4 张 GB200（`4 trainer + 4 rollout`） | **严格前置条件：需 `Stage G1` 落盘 `rollout_audit` 掩码核验与 TPU `Stage P1c` 均通过后方可启动** | 待 `G1` 审计与 `P1c` 通过后启动 | **BLOCKED on G1 audit & P1c** |
 
 ---
 
@@ -186,5 +187,40 @@ verl.workers.engine.torchtitan.utils.configure_qwen3_moe_for_rl: present
   1. [`run_ray_jobset_gb200.sh`](./gb200/run_ray_jobset_gb200.sh)：自动创建 `ComputeDomain`（`${RUN_NAME}-cd`，`numNodes: 2`），并为 Head 与 Worker-0 Pod 挂载 `resourceClaims: [{name: compute-domain-channel, resourceClaimTemplateName: ${RUN_NAME}-cd-channel}]` 与 `securityContext: {privileged: true}`；
   2. [`verify_venv_lock.py`](./gb200/verify_venv_lock.py)：在 `--require-gb200` 预检中新增全对（`4 × 3 = 12` 对）`torch.cuda.can_device_access_peer(i, j)` 强制检查，任何一对 GPU P2P 不可达立即在预检阶段 fail-fast 退出；
   3. 切换至全 18 通道健康 `NV18` 节点池启动 Attempt 2（`g1-retool-rl-smoke-02`）。
+
+### 5.2 Attempt 2（`g1-retool-rl-smoke-02`，代码 SHA `bb704378`）—— 完整 30B 加载、真实 `actor -> NCCL -> vLLM` 同步与 3 步多轮 RL 全量实测指标
+
+- **硬件与拓扑核验**：
+  - 双节点 `nvidia-smi topo -m` 均为满规格 **`NV18`** 全互联；
+  - `verify_venv_lock.py --require-gb200` 输出：`NVLink P2P peer access verified across all 4x3 GPU pairs`；
+  - 双节点 `verify_g0_gb200.py` 跨节点清单比对：`composite_sha256 = 59247a00c13f2364a12aab5ab6b88b6d971d59ff643c57aad8ac4e55a71231b0`（100% 匹配）。
+- **完整 30B-A3B（48 层 128 专家）模型加载与真实 `actor -> NCCL -> vLLM` 权重同步**：
+  - **TorchTitan Actor & Ref（`FSDP2=4`, Head 节点）**：`MoE: disabled expert-bias load balancing on 48 layers`，`Actor use_remove_padding=True`，完成完整 30B-A3B 权重加载与进程组初始化；
+  - **vLLM Rollout Server（`TP=4`, Worker-0 节点）**：`Loading safetensors checkpoint shards: 100% (16/16) [00:10<00:00, 1.54it/s]`，单卡静态权重占用 `14.32 GiB`，KV Cache 分配 `114.61 GiB`（`751,104 tokens`，最大并发 `110.02x`）；
+  - **首次冷启动 SM100 (`sm_100a`) JIT 编译与 AutoTuner**：首次运行触发 FlashInfer `0.7.0.post1` SM100 MoE/FMHA CUTLASS 内核编译（约 31 分钟）及 `[Autotuner]: Tuning flashinfer::trtllm_bf16_moe (21/21)`（约 2 分钟），编译产物与调优配置已持久化至共享缓存（后续运行免除 34 分钟冷编译）；
+  - **4 次真实 `actor -> NCCL -> vLLM` 跨节点权重同步耗时**：
+    - Step 0 初始同步：`update_weights done, time cost: 4.42s`
+    - Step 1 更新后同步：`update_weights done, time cost: 3.07s`（Trainer 端含汇总统计 `timing_s/update_weights: 3.909s`）
+    - Step 2 更新后同步：`update_weights done, time cost: 3.02s`（Trainer 端 `timing_s/update_weights: 3.927s`）
+    - Step 3 更新后同步：`update_weights done, time cost: 3.89s`（Trainer 端 `timing_s/update_weights: 4.785s`）
+- **3 步多轮 RL 训练逐 Step 实测指标（`train_batch_size=8, ppo_mini_batch_size=8, n=4`，每步 32 条多轮轨迹，3 步训练总耗时 `108 s`）**：
+
+| 指标 | Step 1 | Step 2 | Step 3 | 门槛要求与物理含义 |
+| --- | --- | --- | --- | --- |
+| `actor/grad_norm` | **`0.6371`** | **`0.5927`** | **`0.8636`** | 3 步均 `> 0`，证明真实反向传播与梯度更新生效 |
+| `actor/pg_loss` | `0.014055` | `-0.054975` | `0.067018` | 正常无 NaN/Inf |
+| `actor/ppo_kl` (`actor/rollout_corr/kl`) | `0.013654` | `0.006984` | `0.009124` | 正常 |
+| `actor/rollout_corr/training_ppl` | `1.1546` | `1.1211` | `1.1366` | TorchTitan `FSDP2=4` 训练端困惑度正常（对比 TPU `p1c-retool-rl-03` 正常值 `1.14`） |
+| `actor/rollout_corr/rollout_ppl` | **`1.1350`** | **`1.1107`** | **`1.1248`** | vLLM `TP=4` 推理端困惑度与训练端高度一致（无 TPU `p1c-retool-rl-03` Step-0 权重损坏的 `249.33` 异常） |
+| `actor/rollout_corr/ppl_ratio` | **`1.0168`** | **`1.0093`** | **`1.0103`** | **训练/推理 PPL 比值全程稳定在 `1.009 ~ 1.017`**，证明 `configure_qwen3_moe_for_rl` + `NCCL` 30B 权重同步无路由/数值分叉 |
+| `critic/score/mean` (`min` / `max`) | **`-0.6250`** (`-1.0` / `+1.0`) | **`-0.1875`** (`-1.0` / `+1.0`) | **`+0.3125`** (`-1.0` / `+1.0`) | 随训练步推进平均得分由 `-0.625` 稳步提升至 **`+0.3125`**（超半数样本答对得 `+1.0`） |
+| `num_turns/mean` (`min` / `max`) | **`5.875`** (`2` / `16`) | **`6.000`** (`2` / `16`) | **`5.625`** (`4` / `14`) | 平均每条轨迹约 5.6 ~ 6.0 轮对话（对应每条轨迹约 2 ~ 7 次 SandboxFusion `code_interpreter` 工具调用） |
+| `response_length/mean` (`min` / `max`) | `753.09` (`258` / `1502`) | `1083.31` (`166` / `8192`) | `563.00` (`166` / `971`) | `response/aborted_ratio = 0.0` |
+| `actor/perf/max_memory_allocated_gb` / `reserved_gb` | `116.95 GB` / `124.12 GB` | `127.20 GB` / `161.86 GB` | `127.20 GB` / `161.86 GB` | 单卡峰值分配约 `118.5 GiB`、峰值预留约 `150.7 GiB`（均低于单卡实测 `184.31 GiB` HBM 上限） |
+| `timing_s/gen` / `update_actor` / `update_weights` / `step` | `8.02s` / `28.42s` / `3.91s` / **`43.23s`** | `0.01s` / `45.61s` / `3.93s` / **`49.67s`** | `0.01s` / `1.50s` / `4.79s` / **`6.42s`** | Step 1/2 含首次动态序列长度 `flex_attention` Triton autotune（各约 25~40s）；Step 3 热核下 `update_actor` 仅 **`1.50 s`**，单步仅 **`6.42 s`**（吞吐 `538.0 tok/s/GPU`） |
+
+- **补充落盘运行（`g1-retool-rl-smoke-03`，代码 SHA `64ef634b`）**：
+  - `g1-retool-rl-smoke-02` 启动命令未显式传入 `trainer.rollout_data_dir` 与 `+trainer.rollout_audit_dir`；已在 `64ef634b` 中将上述落盘参数及 SM100 缓存自动恢复设为默认并启动 `g1-retool-rl-smoke-03`，用于归档 `rollout_audit/{1,2,3}.jsonl` 逐 token 掩码审计文件。
+
 
 

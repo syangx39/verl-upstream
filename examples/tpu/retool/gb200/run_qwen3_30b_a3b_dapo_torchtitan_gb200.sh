@@ -105,9 +105,9 @@ PY
 
 # ================= data/model/tool =================
 DATA_ROOT="${DATA_ROOT:-/data/inputs}"
-dapo_math_17k="${DAPO_MATH_17K:-${DATA_ROOT}/dataset/DAPO-Math-17k-Processed}"
-aime_2024="${AIME_2024:-${DATA_ROOT}/dataset/aime-2024}"
-aime_2025="${AIME_2025:-${DATA_ROOT}/dataset/aime-2025}"
+dapo_math_17k="${DAPO_MATH_17K:-${DATA_ROOT}/dataset/BytedTsinghua-SIA/DAPO-Math-17k}"
+aime_2024="${AIME_2024:-${DATA_ROOT}/dataset/Maxwell-Jia/AIME_2024}"
+aime_2025="${AIME_2025:-${DATA_ROOT}/dataset/yentinglin/aime_2025}"
 
 MODEL_SRC_PATH="${MODEL_SRC_PATH:-/data/runs/p2-retool-sft-01/checkpoint/global_step_372/huggingface}"
 model_path="${MODEL_PATH:-/dev/shm/models/multiturn-sft-qwen3-30b-a3b-tpu7x}"

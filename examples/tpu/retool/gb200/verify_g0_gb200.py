@@ -263,15 +263,17 @@ def verify_moe_config_and_step(model_dir: Path) -> dict[str, Any]:
         opt.step()
         opt.zero_grad()
 
-        # Inspect expert_bias and tokens_per_expert across MoE modules
+        # Inspect expert_bias and tokens_per_expert across MoE modules and all model buffers
         moe_modules = [m for m in model.modules() if isinstance(m, MoE)]
         expert_bias_max = 0.0
         has_expert_bias_buf = False
-        for m in moe_modules:
-            eb = getattr(m, "expert_bias", None)
-            if eb is not None:
+        buffer_max_by_name: dict[str, float] = {}
+        for buf_name, buf in model.named_buffers():
+            val = float(buf.detach().float().abs().max().item()) if buf.numel() > 0 else 0.0
+            buffer_max_by_name[buf_name] = val
+            if "expert_bias" in buf_name:
                 has_expert_bias_buf = True
-                expert_bias_max = max(expert_bias_max, float(eb.detach().float().abs().max().item()))
+                expert_bias_max = max(expert_bias_max, val)
 
         # Convert actor state_dict to HF via Qwen3StateDictAdapter.to_hf and reload into a fresh HF-equivalent model
         adapter = Qwen3StateDictAdapter(spec.model, None)
@@ -284,6 +286,7 @@ def verify_moe_config_and_step(model_dir: Path) -> dict[str, Any]:
         recv_model = recv_spec.model.build().to(device=device, dtype=torch.bfloat16)
         recv_model.init_weights(buffer_device=device)
         restored_sd = adapter.from_hf(hf_sd)
+        dropped_state_keys = sorted(set(raw_sd.keys()) - set(restored_sd.keys()))
         missing, unexpected = recv_model.load_state_dict(restored_sd, strict=False)
         if unexpected:
             raise AssertionError(f"Unexpected keys restoring from HF state dict: {unexpected}")
@@ -329,6 +332,8 @@ def verify_moe_config_and_step(model_dir: Path) -> dict[str, Any]:
             "num_moe_layers": len(moe_modules),
             "has_expert_bias_buffer": has_expert_bias_buf,
             "expert_bias_abs_max_after_step1": expert_bias_max,
+            "buffer_max_by_name": buffer_max_by_name,
+            "dropped_state_keys": dropped_state_keys,
             "has_expert_bias_in_to_hf": has_expert_bias_in_hf,
             "missing_keys_on_from_hf": list(missing),
             "router_topk_match_rate": sum(topk_matches) / max(len(topk_matches), 1),
@@ -342,9 +347,9 @@ def verify_moe_config_and_step(model_dir: Path) -> dict[str, Any]:
         raise AssertionError(f"Expected no expert_bias update with RL fix, got {positive}")
     if positive["router_topk_match_rate"] != 1.0 or positive["logits_max_abs_diff"] != 0.0:
         raise AssertionError(f"Expected 100% router top-k and 0.0 logit diff after to_hf round-trip, got {positive}")
-    if not negative["has_expert_bias_buffer"] or negative["expert_bias_abs_max_after_step1"] <= 0.0:
+    if negative["router_topk_match_rate"] >= 1.0 or negative["logits_max_abs_diff"] <= 0.0:
         raise AssertionError(
-            f"Negative control expected expert_bias > 0 without RL fix, got {negative}"
+            f"Negative control expected router/logit divergence without RL fix, got {negative}"
         )
 
     return {

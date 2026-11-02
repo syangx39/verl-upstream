@@ -200,6 +200,15 @@ ${JOBENV_YAML}    resources:
         --ref-dir "\${MODEL_SRC}" \
         --output-json "${RUN_DIR}/env/\${HOST_TAG}-g0-verify.json"
 
+      CACHE_DIR="/data/\$(dirname "${RUN_ROOT}")/cache"
+      mkdir -p /root/.cache
+      if [[ -f "\${CACHE_DIR}/flashinfer_cache_sm100a.tar.gz" ]]; then
+        tar -xzf "\${CACHE_DIR}/flashinfer_cache_sm100a.tar.gz" -C /root/.cache || true
+      fi
+      if [[ -f "\${CACHE_DIR}/vllm_cache_sm100a.tar.gz" ]]; then
+        tar -xzf "\${CACHE_DIR}/vllm_cache_sm100a.tar.gz" -C /root/.cache || true
+      fi
+
       SANDBOX_FUSION_HOST=127.0.0.1
       SANDBOX_FUSION_PORT=18080
       nohup python3 examples/tpu/retool/sandbox_fusion_server.py \
@@ -338,6 +347,15 @@ ${JOBENV_YAML}    resources:
         --model-dir "\${MODEL_DST}" \
         --ref-dir "\${MODEL_SRC}" \
         --output-json "${RUN_DIR}/env/\${HOST_TAG}-g0-verify.json"
+
+      CACHE_DIR="/data/\$(dirname "${RUN_ROOT}")/cache"
+      mkdir -p /root/.cache
+      if [[ -f "\${CACHE_DIR}/flashinfer_cache_sm100a.tar.gz" ]]; then
+        tar -xzf "\${CACHE_DIR}/flashinfer_cache_sm100a.tar.gz" -C /root/.cache || true
+      fi
+      if [[ -f "\${CACHE_DIR}/vllm_cache_sm100a.tar.gz" ]]; then
+        tar -xzf "\${CACHE_DIR}/vllm_cache_sm100a.tar.gz" -C /root/.cache || true
+      fi
 
       # Wait for 2 nodes (8 GPUs) and both nodes' G0 manifest files
       for _ in \$(seq 1 200); do

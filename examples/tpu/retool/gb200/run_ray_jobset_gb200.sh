@@ -283,8 +283,7 @@ ${JOBENV_YAML}    resources:
     - |
       set -xeuo pipefail
       HOST_TAG="\$(hostname)"
-      mkdir -p "${RUN_DIR}/env"
-      rm -f "${RUN_DIR}/exit_code.txt" "${RUN_DIR}/rollout" "${RUN_DIR}/validation" "${RUN_DIR}/rollout_audit"
+      mkdir -p "${RUN_DIR}/env" "${RUN_DIR}/rollout" "${RUN_DIR}/validation" "${RUN_DIR}/rollout_audit"
       rm -f "${RUN_DIR}/exit_code.txt"
       if [[ -n "\${EXPECT_GIT_SHA:-}" && "\$(git rev-parse HEAD)" != "\${EXPECT_GIT_SHA}" ]]; then
         git fetch --depth=1 https://github.com/syangx39/verl-upstream.git "\${EXPECT_GIT_SHA}"

@@ -17,7 +17,7 @@
 
 **统一单位（严格区分十进制 `GB = 10^9 B` 与二进制 `GiB = 2^30 B`）的 `4 Trainer + 4 Rollout` 静态显存估算：**
 
-- **硬件标称容量**：NVIDIA GB200 单卡标称 HBM3e 为 **`186 GB`（约 `173.2 GiB`）**。
+- **硬件容量（官网标称 vs 实测 CUDA 可见容量）**：NVIDIA GB200 开发者文档标称单卡 HBM3e 为 `186 GB`（约 `173.2 GiB`）；在目标 `aarch64` 4×GB200 节点上实测 `torch.cuda.get_device_properties(i).total_memory` 为 **`197.90 GB`（`184.31 GiB` / 卡，SM `10.0`，NCCL `2.29.7`）**。下文保守按 `173.2~184.3 GiB` 区间核算。
 - **Trainer 侧（`4 × GB200`，`FSDP=4`）**：`Qwen3-30B-A3B` 约 `30.53B`（`30.53 × 10^9`）参数；按 fp32 master params + fp32 grads + fp32 Adam `m, v`（`16 bytes/param`）计，纯静态状态总计约 **`488.5 GB`（`454.9 GiB`）**，4 卡均分约 **`122.1 GB / 卡`（`113.7 GiB / 卡`）**。该数字尚未计入 `10,240` token 序列激活、FSDP unshard 临时峰值、NCCL 同步 buffer，以及潜在的 `actor_rollout_ref.ref` 副本（若为记录 `actor/ppo_kl` 在 4 张 Trainer 卡上额外加载 `ref`，会再增加约 `14.2~28.4 GiB / 卡`，使总占用逼近 `173.2 GiB` 上限）。
 - **Rollout 侧（`4 × GB200`，`TP=4`）**：bf16 模型权重总计约 **`61.1 GB`（`56.9 GiB`）**，4 卡均分约 **`15.3 GB / 卡`（`14.2 GiB / 卡`）**；实际可用 KV cache 还须扣除 vLLM `gpu_memory_utilization` 上限、PyTorch/CUDA 分配器保留内存、运行时 workspace buffer、CUDA graph 捕获内存池及多会话并发开销，**一切以目标 GB200 节点实测峰值显存（`nvidia-smi` 与 `torch.cuda.max_memory_allocated`）为准，不预先断言宽裕度**。
 - **为什么 `6 Trainer + 2 Rollout` 不能直接作为 `FSDP=6` 的 OOM 备选**：候选 `verl`（[`trainer_base.py:1830-1833`](https://github.com/verl-project/verl/blob/3fdf2b548882a8aeccf0842c2150d9c9f1790a55/verl/trainer/ppo/v1/trainer_base.py#L1830-L1833)、[`engine_workers.py:296-305`](https://github.com/verl-project/verl/blob/3fdf2b548882a8aeccf0842c2150d9c9f1790a55/verl/workers/engine_workers.py#L296-L305)）会将 actor mini-batch 展开为 `64 × 8 = 512` 条 trajectories（`G1` smoke 为 `8 × 4 = 32` 条），并断言其必须被 `data_parallel_size` 整除；直接设 `FSDP=6` 会因 `512 % 6 = 2`（及 `32 % 6 = 2`）触发断言失败。
@@ -62,7 +62,7 @@
 
 ### 镜像与 veRL 版本：推荐方案
 
-**结论：不需要从裸 CUDA 重建，但必须换掉旧 `2026-08-17` 基础镜像；建议基于上游 `2026-10-23` 发布的原生 `linux/arm64` 预缓存基础镜像 `verlai/verl:uv.cu130.dev5` 做轻量派生镜像（见 [`gb200/Dockerfile.gb200.torchtitan`](./gb200/Dockerfile.gb200.torchtitan)，实际构建耗时待在原生 `arm64` 构建机实测归档）。**
+**结论：不需要从裸 CUDA 重建，但必须换掉旧 `2026-08-17` 基础镜像；基于上游 `2026-10-23` 发布的原生 `linux/arm64` 预缓存基础镜像 `verlai/verl:uv.cu130.dev5` 做轻量派生镜像（见 [`gb200/Dockerfile.gb200.torchtitan`](./gb200/Dockerfile.gb200.torchtitan)）。上游依赖环境验证镜像（`VERL_PIN=3fdf2b548882a8aeccf0842c2150d9c9f1790a55`，`uv.lock` SHA256 `df508db0b957fa181c229fb75885cd3863cb651fd5233d0fa5af95e990bda0be`）已在原生 `aarch64` 构建完成并通过 4×GB200 节点 `--require-gb200 --min-gpus 4` 预检（镜像 digest `sha256:ec7c927495a06279b128b47424ecd7f84eb70434848e82e46ba26747b5b805f1`；实测 `uv sync` 热缓存耗时 `12 s` / 冷缓存 `103 s`，完整构建+快照 `202 s`；全部 264 个锁包版本、`flash_attn 2.8.3`、`PPOTrainerSeparateAsync`、TorchTitan `0.3.0` slotted `MoE.Config`、4×GB200 SM `10.0` `184.31 GiB/卡` 及 NCCL `2.29.7` 校验通过）；待 `<GPU_CODE_SHA>` 分支完成 ReTool 代码与 TorchTitan `0.3.0` MoE 修复移植后，再按同一流程固化正式运行镜像。**
 
 新旧 GPU 基础镜像与 TPU P0.2 环境逐项对照如下：
 

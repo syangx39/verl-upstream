@@ -458,7 +458,8 @@ if [[ "${PREWARM}" == "1" ]]; then
   log "pre-warm: all ${TOTAL_HOSTS} hosts held; swapping the placeholders for the run"
   owned_delete_all
   (( ${#OWNED_OBJECTS[@]} + ${#OWNED_UNCONFIRMED[@]} == 0 )) || die "could not delete the pre-warm placeholders"
-  sleep 2  # let Kueue release the placeholders' quota before the run asks for it
+  k wait --for=delete pod -l "verl-nap/run=${RUN_NAME},verl-nap/prewarm=true" --timeout=45s >/dev/null 2>&1 || true
+  sleep 2  # let Kueue release the placeholders' quota and kubelet free all 32 chips before the run asks for it
 fi
 
 # --- 6. Create and watch ---

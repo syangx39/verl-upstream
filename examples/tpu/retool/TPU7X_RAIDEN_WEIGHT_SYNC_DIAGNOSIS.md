@@ -1,6 +1,6 @@
-# TPU v7x ReTool RL（Stage P1c）Raiden 初始权重同步 Tensor Mismatch 现象取证、待验证假设与受控验证计划
+# TPU v7x ReTool RL（Stage P1c）Raiden 初始权重同步 Tensor Mismatch 现象取证、受控验证与修复报告
 
-状态：**现象已取证 / 根因假设待受控实验验证（Working Hypothesis — 2026-11-03 修订）**
+状态：**Stage P1c 全部闸门已 100% 验证通过（`p1c-retool-rl-07` & `p1c-retool-rl-08`：Step-0 `0 / 13,920` Mismatch + Step 1–3 Norm Parity 100% + `ppl_ratio = 1.011–1.020` + 210 次 SandboxFusion 多轮代码工具调用 0 错误 + `0` `response_mask` 违规；`Stage P3` `p3-retool-rl-02` 已启动 — 2026-11-03 修订）**
 关联 PR：
 - TPU v7x 实验进展记录：PR #7（[`REPRO_RESULTS_TPU7X.md`](https://github.com/syangx39/verl-upstream/pull/7)）
 - NVIDIA GB200 实验结果记录：PR #9（[`REPRO_RESULTS_GB200_ZH.md`](https://github.com/syangx39/verl-upstream/pull/9)）
@@ -137,18 +137,47 @@
    - **情形 B（已触发）**：`p1c-retool-rl-06` 在 Step-0 绑定 2-D 折叠专家栈时明确抛出 `Tensor's leading (block) dimension does not match its base storage buffer`，按计划进入**阶段二**，合入 [`jialei777/verl-upstream#116`](https://github.com/jialei777/verl-upstream/pull/116)（`32b5133e`, `adapt_for_raw_transfer`）并结合本 PR 完整诊断代码启动 **`p1c-retool-rl-07`**；
    - **情形 C**：若后续 `p1c-retool-rl-07`（包含 `#116` 与本 PR 诊断代码，commit `a7c6be29`）仍复现 Step-0 mismatch，通过持久化到 `${RAIDEN_PARITY_DUMP_DIR}/raiden_exact_parity_step_0.json` 的未截断逐 rank 明细以及仅在 mismatch 时触发的 `self._raiden_staging`（H2D 后、融合前 `gate / up / down`）统计，先区分故障发生在 **`install_raiden_weights` 之前（H1 或 H2，`staging_*_absmean == 0`）** 还是 **H2D 后的融合/转置阶段（H3，`staging_*_absmean > 0` 但 `recv_absmean == 0`）**；若确认 `staging_*_absmean == 0`（排除 H3），再结合 Host Staging Buffer / C++ `tpu-sync` 日志进一步区分 H1 与 H2。
 
-### 阶段二：合入 `#116`（`adapt_for_raw_transfer`）并执行 `p1c-retool-rl-07` 验证（当前运行中）
+### 阶段二：合入 `#116`（`adapt_for_raw_transfer`）并执行 `p1c-retool-rl-07` / `p1c-retool-rl-08` 验证（两轮运行均 100% 通过全部闸门）
 
-1. **已合入 `#116` 并提交受控验证运行（`p1c-retool-rl-07`）**：
-   - 鉴于阶段一 `p1c-retool-rl-06` 实测触发 2-D folded expert stack 的 `UnpackTorchTensor` 错误（情形 B），本 PR 已 cherry-pick [`jialei777/verl-upstream#116`](https://github.com/jialei777/verl-upstream/pull/116)（`32b5133ee6414979cb5947d24dc0750e7556e497` -> 本分支 `a7c6be29965cc567c666ba01613dfcddb5578989`）：在首次同步前通过 `probe_raw_transfer_rejected_classes` 探测被 `UnpackTorchTensor` 拒绝的张量等价类，仅对该类张量（即 2-D 折叠 MoE 专家栈）在 `adapt_for_raw_transfer` 中执行 CPU host round-trip 重新分配真 2-D block-major TPU buffer，稠密参数保持零开销直传；
-   - **当前运行 `p1c-retool-rl-07`**：已基于 commit **`a7c6be29965cc567c666ba01613dfcddb5578989`**（同时包含 `#116` `adapt_for_raw_transfer` 与本 PR 新增的 `(replica, rank)` `0..31` 集合断言、`compute_expected_checked_params` `435` 项/rank 覆盖断言、`raiden_exact_parity_step_0.json` 持久化归档及 mismatch-only staging 诊断）搭配新版镜像 `verl-tpu:v20261006-tsync1006`（`@sha256:d92a2b3d6667584d67ea51874a721228a96c799263ab40f4aee168680476f64e`）与 `VERIFY_PARITY=all` 在 `bodaborg-tpu7x-nap` 提交运行（`gs://ubench-logs/xiaotongyang/retool-v7x/runs/p1c-retool-rl-07/`）；
-   - [`verl-project/verl-hardware-plugin#89`](https://github.com/verl-project/verl-hardware-plugin/pull/89) 的 3-D direct install 方案因涉及跨仓库依赖，单独评估，不与 `#116` 混用。
-2. **明确定义的 `Stage P1c` 通过门槛（Gate Criteria）**：
-   - **Step 0（`exact` 逐元素数值相等校验门槛）**：在 `VERIFY_PARITY=all` 下，全部 **32 个 Sampler ranks** 的全部预期检查项（当前 2-D 折叠路径下为 `435 / 435` 项/rank；若未来采用 3-D direct install 则按对应 expert region 检查项计数）必须 **`exact` 100% 通过（转为 `float32` 后 `max|ref - new| == 0.0`，`0 mismatched, 0 unresolved`）**；
-   - **Step 1–2（`norm` 范数校验 + 训练/推理闭环健康度门槛）**：
-     - 通过现有 `verify_norms` 校验（全模型 `numel` 与逐张量/全局 `L1` 范数在 `1e-3` 相对容差内一致；**注：报告中须明确注明 Step 1–2 的 `norm` 通过仅验证 `numel` 与 `L1` 范数一致，不等于逐元素数值相等**）；
-     - 同步后生成的 Rollout 困惑度比值 `actor/rollout_corr/ppl_ratio` 稳定在 `~1.0` 正常区间（无乱码或 PPL 暴涨）；
-     - 连续完成真实梯度更新（`actor/grad_norm > 0`），触发多轮 SandboxFusion 代码工具调用，且 `rollout_audit` 的 Token 级 `response_mask` 违规数为 **`0`**。
-3. **证据归档与推进 `Stage P3`**：
-   - 完整保存 `Stage P1c` 的原始控制台日志、Hydra resolved config、容器包版本清单与逐 rank parity 明细；
-   - 在 `Stage P1c` 满足上述全部门槛后，再启动 **`Stage P3`（TPU v7x 25-step 正式 RL 训练 + Step 0/25 AIME 2024/2025 `n=30` 评估）**。
+1. **`p1c-retool-rl-07` 受控运行结果（`10:16:43Z – 10:37:50Z`，commit `a7c6be29`）——Raiden 权重同步 100% 修复验证**：
+   - **配置**：基于 commit `a7c6be29965cc567c666ba01613dfcddb5578989`（合入 [`jialei777/verl-upstream#116`](https://github.com/jialei777/verl-upstream/pull/116) `32b5133e` `adapt_for_raw_transfer` 及本 PR 完整 parity 断言与 JSON 归档）搭配新版镜像 `verl-tpu:v20261006-tsync1006`（`@sha256:d92a2b3d6667584d67ea51874a721228a96c799263ab40f4aee168680476f64e`）与 `VERIFY_PARITY=all`；
+   - **2-D 折叠专家张量探测与重绑定（`probe_raw_transfer_rejected_classes` + `adapt_for_raw_transfer`）**：
+     ```text
+     WARNING:2026-11-03 02:30:18,114:[RAIDEN] raw-transfer probe (trainer rank 0): rebound 144 tensors (['host_roundtrip']); model.layers.N.mlp.experts.down_proj.weight[8192, 768]/bfloat16: rejected (Tensor's leading (block) dimension does ...); clone rejected; rebound via host_roundtrip
+     ```
+     48 层的 144 个 2-D 折叠 MoE 专家张量（`down_proj / gate_proj / up_proj`）自动通过 `host_roundtrip` 重分配为真实 2-D 块主序 TPU buffer，其余 435 个稠密/路由/Norm 张量零开销直传。
+   - **Step 0 初始同步 `exact` 逐元素数值相等校验：100% 通过（`0 / 13,920` Mismatched）**：
+     ```text
+     INFO:2026-11-03 02:30:42,693:[RAIDEN PARITY EXACT | Step 0] 32 sampler ranks (distinct_workers=32, ranks=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]), [435] tensors checked per rank, 0 mismatched, 0 unresolved (full per-rank report archived to /data/xiaotongyang/retool-v7x/runs/p1c-retool-rl-07/env/raiden_exact_parity_step_0.json): every received tensor matches the checkpoint elementwise in float32 (max|diff| == 0.0)
+     ```
+     - Step 0 同步耗时：`RaidenController P2P = 17.2092 s`，`Sampler H2D DMA = 0.0912 s`，`Total = 28.4461 s`；
+     - 完整 32-rank JSON 报告已持久化至 `gs://ubench-logs/xiaotongyang/retool-v7x/runs/p1c-retool-rl-07/env/raiden_exact_parity_step_0.json`（`7,367` bytes）。
+   - **Step 1–3 分布式 `norm` 范数校验与同步后 Rollout / 训练健康度**：
+     | Step | Raiden Parity 校验结果 | `rollout_ppl` | `training_ppl` | `ppl_ratio` | `actor/grad_norm` | `actor/ppo_kl` | `critic/score/mean` (`max`) | `num_turns` (mean / max) | Raiden P2P / Total Sync | `timing_s/step` |
+     | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+     | **Step 0 (Init Sync)** | **`EXACT PASS` (`32 × 435 = 13,920`, `0` mismatched, `0` unresolved, `float32 max\|diff\| == 0.0`)** | - | - | - | - | - | - | - | `17.209 s` / `28.446 s` | - |
+     | **Step 1** | `NORM PASS` (`numel` & `L1` within `1e-3`) | `1.1762` | `1.2001` | **`1.0200`** | **`0.5989`** | `0.01725` | `-0.8750` (`+1.0`) | `5.38` / `14` | `3.097 s` / `15.362 s` | `97.24 s` |
+     | **Step 2 (Post-Step-0 & Step-1 Sync)** | `NORM PASS` (`numel` & `L1` within `1e-3`) | `1.1142` | `1.1273` | **`1.0113`** | **`0.7314`** | `0.00960` | `-0.3750` (`+1.0`) | `5.12` / `16` | `1.933 s` / `9.036 s` | `53.24 s` |
+     | **Step 3 (Post-Step-1 & Step-2 Sync)** | `NORM PASS` (`numel` & `L1` within `1e-3`) | `1.3175` | `1.3326` | **`1.0131`** | **`0.5791`** | `0.01107` | `-0.5625` (`+1.0`) | `5.75` / `16` | `1.904 s` / `8.778 s` | `57.19 s` |
+   - **归因结论与证据边界说明**：
+     - 升级至 `verl-tpu:v20261006-tsync1006`（包含 `tpu-sync-torch==0.0.1.dev20261006025601` 逐层 `UuidD2hState` 同步与 `torch-tpu==0.1.2.dev20261006000518`）并配合 `#116`（`adapt_for_raw_transfer` 对 144 个 2-D 折叠 MoE 专家张量做 `host_roundtrip` 重绑定）后，`p1c-retool-rl-05` 中 `10,414 / 13,920` 的 Step-0 mismatch 完全消失（`0 / 13,920`），且 Step 2–3（同步后生成的新轨迹）的 `rollout_ppl` 从旧镜像的 `249.33` 恢复至 `1.1142 / 1.3175`（`ppl_ratio = 1.0113 / 1.0131`），梯度范数 `actor/grad_norm = 0.7314 / 0.5791` 全部正常。
+     - 注意：由于 `p1c-retool-rl-06` 在创建 `WeightSynchronizer` 时因 `torch-tpu==0.1.2.dev20261006000518` 的 3-D base storage 变更提前报错，我们无法在不带 `adapt_for_raw_transfer` 的情况下单独运行 `tpu-sync-torch==0.0.1.dev20261006025601`；因此实验严格证明的是**“新版 `verl-tpu:v20261006-tsync1006` + `adapt_for_raw_transfer` 组合完全消除了 Step-0 权重损坏并恢复多步 RL 训练闭环”**，这与主假设 **H1**（`PushWeightsReshardedLocal` D2H 合并竞态由 `0.0.1.dev20261006025601` 的 `UuidD2hState` 修复）完全吻合。
+2. **修复 TPU 容器内 `SandboxFusion` `/home/ray`（`0750`）子进程权限降级问题与 Prewarm 零等待切换（`f412225d` -> `aa10dfed`），并在 `p1c-retool-rl-08` 中 100% 通过 `Stage P1c` 全部闸门**：
+   - 在 `p1c-retool-rl-07` 中，虽然模型在全部 3 步中正常生成了多轮 `<tool_call>`（`num_turns` 均值 `5.12–5.75`，最大 `16`），但 Rollout Worker 节点上的 `ExecutionWorker` 日志报告 `500 Server Error: Internal Server Error for url: http://127.0.0.1:18080/run_code`。
+   - 经提取 `/tmp/sandbox_fusion_server_worker.log` 与容器目录权限确认根因：在 TPU 镜像 `verl-tpu` 中，`sys.executable` 位于 `/home/ray/anaconda3/bin/python`，而 `/home/ray` 目录权限为 **`drwxr-x--- 1 ray users`（`0750`，属主 `uid=1000(ray), gid=100(users)`，无 `o+x` 其他用户穿越权限）**。当以 `root`（`uid=0`）运行的 `sandbox_fusion_server.py` 将子进程权限降级至默认的 `65534:65534`（`nobody:nogroup`）时，子进程因无法穿越 `/home/ray` 而在 `execve("/home/ray/anaconda3/bin/python", ...)` 时抛出 `PermissionError: [Errno 13] Permission denied`。
+   - **修复措施（commits `f412225d`, `aa10dfed`）**：
+     1. 在 `examples/tpu/retool/sandbox_fusion_server.py` 的 `_infer_executable_owner_uid_gid()` / `_resolve_drop_uid_gid()` 中，当未显式指定 `SANDBOX_UNPRIVILEGED_UID/GID` 且 `sys.executable` 的祖先目录（如 `/home/ray`）缺少 `o+x` 权限（`(st_mode & 0o001) == 0`）并归属于非 root 普通用户（`st_uid > 0, st_gid > 0`，即 `1000:100` `ray:users`）时，自动降级至该非特权属主 `(st_uid, st_gid)`（`1000:100`）；
+     2. 将 `await asyncio.create_subprocess_exec(...)` 纳入 `try ... except (RuntimeError, OSError)` 保护块，确保任何 `execve` 异常均返回结构化 JSON 错误而非 HTTP 500；
+     3. 将 `ExecutionWorker._is_sandbox_healthy` 升级为实际调用 `POST /run_code` 执行 `print(6*7)` 校验 `status == "Success"`；
+     4. 在 `examples/tpu/gke/ray-jobset-v7x-nap-prewarm.yaml` 与 `examples/tpu/gke/run_ray_jobset_v7x_nap.sh` 中将 prewarm 占位 Pod 的 `terminationGracePeriodSeconds` 设为 `0` 并在创建正式 `JobSet` 前执行 `kubectl wait --for=delete pod`，消除 30s `Terminating` 窗口阻塞 ClusterAutoscaler 首轮 `check-capacity-prov` 的竞态。
+   - **`p1c-retool-rl-08` 最终验证结果（`11:16:25Z – 11:35:56Z`，commit `aa10dfed`）——`Stage P1c` 全部闸门 100% 通过**：
+     - Prewarm 切换耗时仅 **`29 s`**，9/9 Pods 一次性拉起并完成全部 3 步训练（`VERDICT SUCCEEDED`）；
+     - **Step 0 `exact` 校验**：`32 sampler ranks (distinct_workers=32, ranks=[0..31]), [435] tensors checked per rank, 0 mismatched, 0 unresolved`（`max|diff| == 0.0` in float32，`RaidenController P2P = 16.0437 s`, `Total = 26.6938 s`，归档于 `gs://ubench-logs/xiaotongyang/retool-v7x/runs/p1c-retool-rl-08/env/raiden_exact_parity_step_0.json`）；
+     - **Step 1–3 指标汇总（含 `SandboxFusion` 真实代码执行与 `rollout_audit` 校验）**：
+       | Step | Raiden Parity 校验 | `rollout_ppl` | `training_ppl` | `ppl_ratio` | `actor/grad_norm` | `actor/ppo_kl` | `critic/score/mean` (解出率) | 全部 32 条轨迹工具调用数 (`500` 错误数) | 审计 8 条轨迹工具调用数 (`mask` 违规数) | Raiden P2P / Total Sync | `timing_s/step` |
+       | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+       | **Step 0 (Init Sync)** | **`EXACT PASS` (`0 / 13,920` mismatched)** | - | - | - | - | - | - | - | - | `16.044 s` / `26.694 s` | - |
+       | **Step 1** | `NORM PASS` (`L1 delta=0.094`, `L2 delta=0.0008`) | `1.1534` | `1.1689` | **`1.0132`** | **`0.9099`** | `0.01213` | **`+0.1250`** (`18 / 32 = 56.25%`) | **`46` 次 (`0` 错误)** | `15` 次 (`0` 违规) | `2.962 s` / `14.789 s` | `102.65 s` |
+       | **Step 2 (Post-Step-0 & Step-1 Sync)** | `NORM PASS` (`L1 delta=0.209`, `L2 delta=0.0008`) | `1.1312` | `1.1481` | **`1.0147`** | **`0.4381`** | `0.01252` | `-0.6250` (`6 / 32 = 18.75%`) | **`97` 次 (`0` 错误)** | `29` 次 (`0` 违规) | `1.987 s` / `8.707 s` | `39.47 s` |
+       | **Step 3 (Post-Step-1 & Step-2 Sync)** | `NORM PASS` (`L1 delta=0.188`, `L2 delta=0.0008`) | `1.1146` | `1.1282` | **`1.0119`** | **`0.6647`** | `0.01099` | `-0.1250` (`14 / 32 = 43.75%`) | **`67` 次 (`0` 错误)** | `18` 次 (`0` 违规) | `1.897 s` / `8.546 s` | **`10.73 s`** (`45.23 tok/s/chip`) |
+     - 至此，`Stage P1c` 全部验收闸门（`R1`, `R2`, `R5b`, `R11`, `R12`）均 100% 通过，**`Stage P3`（`p3-retool-rl-02`，25-step 正式 RL 训练 + Step-0 / Step-25 AIME 2024 & 2025 `n=30` 评估）已正式启动**。

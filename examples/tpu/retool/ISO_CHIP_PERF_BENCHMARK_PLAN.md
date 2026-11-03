@@ -36,7 +36,7 @@
 1. **答案提取规则不同**：`strict_box_verify=True` 仅提取 `\boxed{...}`；`strict_box_verify=False` 先匹配 Minerva `Answer:` 正则再回退 `\boxed{...}`；
 2. **错误样本的工具调用奖励塑形（Tool-Use Reward Shaping）不同**：
    - `default_compute_score`（`strict_box_verify=False`）返回**纯二值结果奖励 `{-1.0, +1.0}`**；
-   - `retool_tpu.compute_score` 在答案错误（`answer_score == -1.0`）且工具调用次数 `tool_call_count > 1` 时，会将训练奖励塑形为 `min(-0.6, -1.0 + (tool_call_count - 1) / 2.0 * 0.1)`（即 `[-0.95, -0.60]`），直接改变 GRPO 组内优势（Advantage）分布与后续每一步的策略梯度更新。
+   - `retool_tpu.compute_score` 对错误答案（`result["score"] < 0`）读取 `extra_info["num_turns"]`，将奖励设为 `min(-0.6, result["score"] + (num_turns - 2) / 2 * 0.1)`。实现直接使用对话轮数，而非读取工具调用次数；这一塑形会改变 GRPO 组内优势（Advantage）分布与后续策略梯度更新。
 
 由于 PR #9 中已完成的 `G2`（`g2-retool-rl-25step-01`）在运行期实际使用的是 `default_compute_score`（`strict_box_verify=False`，纯 `{-1.0, +1.0}` 奖励），**事后对 `G2` 的评估输出重评分并不能改变 `G2` 在 25 步训练中已经发生的 RL 梯度更新**。因此，本计划严格区分两条对照轨道：
 
@@ -46,7 +46,9 @@
 - **后续扩展轨道（Track 2 — `strict_box_verify=True` + 工具调用 Reward Shaping 双边重跑对照，可选）**：
   - 若需验证 `retool_tpu.compute_score`（`strict_box_verify=True` + 错误样本工具调用塑形奖励），必须通过 `reward.custom_reward_function.path=pkg://examples.tpu.retool.retool_tpu` 与 `reward.custom_reward_function.name=compute_score` **在 GPU 与 TPU 两边都从 SFT 起点重新运行 25 步训练**，不能将现有 `G2` 直接作为 Track 2 的同配方基线。
 
-### 2.2 统一训练与评估超参（与 `G2` [`head.log`](https://github.com/syangx39/verl-upstream/blob/gb200-retool-exp-results/examples/tpu/retool/gb200/evidence/g2-retool-rl-25step-01/head.log) 及 Askhat [`run_qwen3_30b_a3b_dapo_torchtitan.sh`](https://github.com/jialei777/verl-upstream/blob/266e793a20c7baa6f849476ba72c8f8052da1477/examples/tpu/retool/run_qwen3_30b_a3b_dapo_torchtitan.sh) 严格对齐）
+### 2.2 本项目 TPU/GPU 对照的训练与评估配置
+
+以下以 `G2` [`head.log`](https://github.com/syangx39/verl-upstream/blob/gb200-retool-exp-results/examples/tpu/retool/gb200/evidence/g2-retool-rl-25step-01/head.log) 为对照；可核对的共同参数同时参考 Askhat 的 [`run_qwen3_30b_a3b_dapo_torchtitan.sh`](https://github.com/jialei777/verl-upstream/blob/266e793a20c7baa6f849476ba72c8f8052da1477/examples/tpu/retool/run_qwen3_30b_a3b_dapo_torchtitan.sh)。本项目 TPU/GPU 共享本地 P2 checkpoint，尚未证明其与 Askhat 的 checkpoint 一致；本对照运行 25 步，Askhat 的主运行是 400 步，Askhat 实际运行的 scorer 也尚待确认。
 
 - **SFT 起点**：共享 `p2-retool-sft-01/checkpoint/global_step_372/huggingface`（20 核心文件组合 SHA-256 `59247a00c13f2364a12aab5ab6b88b6d971d59ff643c57aad8ac4e55a71231b0`）
 - **批次与采样**：`data.train_batch_size = 64`，`actor_rollout_ref.actor.ppo_mini_batch_size = 64`，`actor_rollout_ref.rollout.n = 8`（每步 `64 × 8 = 512` 条训练轨迹；25 步共 `12,800` 条轨迹）
@@ -61,7 +63,7 @@
 
 ### 2.3 Tier A（主线同卡数对照）：`8 × TPU v7x 物理芯片` vs `8 × NVIDIA GB200 GPU`
 
-> **TPU v7x 拓扑说明（参考 [Google Cloud TPU v7x 文档](https://docs.cloud.google.com/tpu/docs/tpu7x)）**：每个 TPU v7x Host VM（`ct7x-standard-4t`）搭载 **4 颗物理芯片（8 个逻辑 TensorCore 设备）**，对应 **`2×2×1`** 物理拓扑。因此 Tier A 每侧 4 颗物理芯片即为 **`2×2×1`（1 个 TPU Host，8 个逻辑 TensorCore）**，Trainer + Rollout 合计 **2 个 TPU Hosts（8 颗物理芯片 / 16 个逻辑 TensorCore）**。
+> **TPU v7x 拓扑说明（参考 [Google Cloud TPU v7x 文档](https://docs.cloud.google.com/tpu/docs/tpu7x)）**：每个 TPU v7x Host VM（`tpu7x-standard-4t`）搭载 **4 颗物理芯片（8 个逻辑 TensorCore 设备）**，对应 **`2×2×1`** 物理拓扑。因此 Tier A 每侧 4 颗物理芯片即为 **`2×2×1`（1 个 TPU Host，8 个逻辑 TensorCore）**，Trainer + Rollout 合计 **2 个 TPU Hosts（8 颗物理芯片 / 16 个逻辑 TensorCore）**。
 
 | 配置项 | TPU v7x（8 物理芯片档，待运行） | NVIDIA GB200（8 GPU 档，复用 PR #9 `G2` 实测） |
 | --- | --- | --- |
@@ -94,11 +96,11 @@
 ### 3.1 Tier A（8 物理加速器主线对照：`8 × TPU v7x 物理芯片` vs `8 × NVIDIA GB200 GPU`，Track 1 相同 Reward 语义）
 
 > **吞吐量口径与统计窗口定义（重要）**：
-> - **`verl` 日志中的 `perf/throughput`**：在 `verl` 中定义为 $\text{total\_num\_tokens} / (N_{\text{accel}} \times \text{timing\_s/step})$，即**单步每加速器吞吐（`tok/s/accel`）**。例如 `G2` 在第 25 步（最快异步全重叠步，`21.98 s` 处理 `629,878 tokens`）记录的 `3,582.1` 是**单步峰值每 GPU 吞吐（`tok/s/GPU`）**，对应的 8 卡集群总吞吐为 `28,656.9 tok/s`，**不能与 25 步平均吞吐混用**。
+> - **`verl` 日志中的 `perf/throughput`**：在 `verl` 中定义为 $\text{total\_num\_tokens} / (N_{\text{accel}} \times \text{timing\_s/step})$，即**单步每加速器吞吐（`tok/s/accel`）**。例如 `G2` 在第 25 步（吞吐最高的异步重叠步，约 `21.98 s` 处理 `629,878 tokens`）记录的 `3,582.46` 是**单步峰值每 GPU 吞吐（`tok/s/GPU`）**，对应的 8 卡集群总吞吐为 `28,659.7 tok/s`，**不能与 25 步平均吞吐混用**。
 > - 下表将吞吐量拆分为三个明确统计窗口，并同时报告**集群总吞吐（`Cluster Total tok/s`）**与**按物理芯片/GPU 数归一化的单加速器吞吐（`Per-Accelerator tok/s/accel`，Tier A 除以 `8`）**：
->   - **窗口 W1（25 步训练本体墙钟窗口）**：覆盖 Step 1 开始至 Step 25 权重同步完成（**不含容器启动/编译、不含 Step 0 与 Step 25 AIME 评估**；包含 Step 1–2 初始 warmup 与动态形状编译/autotune）；
+>   - **窗口 W1（25 步训练本体墙钟窗口）**：覆盖 Step 1 开始至 Step 25 权重同步完成（**不含容器启动和训练前编译，也不含 Step 0 与 Step 25 AIME 评估**；包含 Step 1–2 warmup 及训练窗口内的动态形状编译/autotune）；
 >   - **窗口 W2（Step 3–25 稳态步耗时窗口）**：覆盖 Step 3 至 Step 25 共 23 个稳态训练步（**不含 Step 1–2 初始编译/autotune、不含 Step 0/25 评估**）；
->   - **窗口 W3（单步最高重叠峰值窗口）**：单步最小 `timing_s/step` 对应的全重叠步峰值吞吐。
+>   - **窗口 W3（单步最高吞吐窗口）**：选择 `perf/throughput` 最高的训练步；它不一定是 `timing_s/step` 最短的步。G2 的最高吞吐为 Step 25，最短步为 Step 10（`18.55 s`）。
 
 | 指标维度 | 统计窗口 / 包含边界 | NVIDIA GB200（`8 × GPU`，`g2-retool-rl-25step-01` 已完成） | TPU v7x（`8 × 物理芯片 / 16 逻辑核 / 2 Hosts`，TODO） | 比值 / 归因说明（TODO） |
 | --- | --- | --- | --- | --- |
@@ -110,9 +112,9 @@
 | **单次权重同步 `timing_s/update_weights`** | Step 1–25 均值 / Step 3–25 稳态均值 | **`4.35 s`** / **`4.38 s`**（范围 `3.87 s – 5.37 s`） | *TODO* | NCCL P2P vs Raiden DCN |
 | **单步 Actor 更新 `timing_s/update_actor`** | Step 1–2 (含 autotune) / Step 3–25 稳态均值 | Step 1–2: `46.32 s, 64.28 s`<br>**Step 3–25 稳态均值: `15.20 s`**（`12.89 s – 18.95 s`） | *TODO* | 对比反向传播+优化器步耗时 |
 | **单步端到端耗时 `timing_s/step`** | Step 1–25 全程 / Step 2–25 / **Step 3–25 稳态** | Step 1–25: **`43.72 s`** \| Step 2–25: **`39.84 s`**<br>**Step 3–25 稳态: `38.59 s`**（全重叠步 `18.55 s – 24.63 s`） | *TODO* | - |
-| **平均总吞吐 & 单卡吞吐（窗口 W1：25 步训练墙钟）** | 仅 25 步训练本体（`1,104.5 s`），**不含编译与 Step 0/25 评估** | 集群总吞吐: **`12,517.4 tok/s`**<br>单物理加速器 (`÷ 8`): **`1,564.7 tok/s/GPU`** | *TODO* | `13,825,419 tok / 1,104.5 s` |
+| **平均总吞吐 & 单卡吞吐（窗口 W1：25 步训练墙钟）** | 仅 25 步训练本体（`1,104.5 s`），**不含训练前编译与 Step 0/25 评估，包含训练期动态编译/autotune** | 集群总吞吐: **`12,517.4 tok/s`**<br>单物理加速器 (`÷ 8`): **`1,564.7 tok/s/GPU`** | *TODO* | `13,825,419 tok / 1,104.5 s` |
 | **稳态总吞吐 & 单卡吞吐（窗口 W2：Step 3–25）** | Step 3–25 共 23 步（`887.58 s`），**不含 Step 1–2 编译与评估** | 集群总吞吐: **`14,362.0 tok/s`**<br>单物理加速器 (`÷ 8`): **`1,795.2 tok/s/GPU`** | *TODO* | `12,747,392 tok / 887.58 s` |
-| **单步峰值总吞吐 & 单卡吞吐（窗口 W3：峰值步）** | Step 25 单步（`629,878 tok` / `21.98 s`），异步全重叠 | 集群总吞吐: **`28,656.9 tok/s`**<br>单物理加速器 (`perf/throughput`): **`3,582.1 tok/s/GPU`** | *TODO* | 单步峰值（非全程均值） |
+| **单步峰值总吞吐 & 单卡吞吐（窗口 W3：峰值步）** | Step 25 单步（`629,878 tok` / `21.98 s`），异步全重叠 | 集群总吞吐: **`28,659.7 tok/s`**<br>单物理加速器 (`perf/throughput`): **`3,582.46 tok/s/GPU`** | *TODO* | 单步峰值（非全程均值） |
 | **墙钟耗时拆解（Wall-Clock Breakdown）** | 1. 启动+模型加载+Step 0 同步<br>2. Step 0 初始评估 (`n=30`)<br>3. **25 步训练本体**<br>4. Step 25 末次评估 (`n=30`)<br>5. **含首尾两次评估 + 25 步总计**<br>6. `main_ppo` 端到端全程 | 1. `2m 58s` (`178.2 s`，复用热编译缓存)<br>2. `3m 00s` (`180.1 s`)<br>3. **`18m 24s` (`1,104.5 s`)**<br>4. `3m 10s` (`190.4 s`)<br>5. **`24m 36s` (`1,476.4 s`)**<br>6. `27m 37s` (`1,657.1 s`) | *TODO* | 明确区分训练本体、评估与编译耗时 |
 | **AIME 2024 `acc/mean@30` (Step 0 $\rightarrow$ Step 25)** | 运行期 `strict=False` / 事后复算 `strict=True` | `strict=False`: **`23.78%` $\rightarrow$ `28.78%` (`+5.00 pp`)**<br>`strict=True`: **`24.22%` $\rightarrow$ `29.67%` (`+5.44 pp`)** | *TODO* | 双口径同时报告 |
 | **AIME 2025 `acc/mean@30` (Step 0 $\rightarrow$ Step 25)** | 运行期 `strict=False` / 事后复算 `strict=True` | `strict=False`: **`17.00%` $\rightarrow$ `17.89%` (`+0.89 pp`)**<br>`strict=True`: **`17.11%` $\rightarrow$ `18.00%` (`+0.89 pp`)** | *TODO* | 双口径同时报告 |
@@ -133,7 +135,7 @@
 | **窗口 W1（25 步训练墙钟）总吞吐 `tok/s` / 单物理加速器 `tok/s/accel`** | - | *TODO*（总 `tok/s` 及 `÷ 32` 芯片 `tok/s/chip`） | *TODO*（总 `tok/s` 及 `÷ 32` 卡 `tok/s/GPU`） |
 | **窗口 W2（Step 3–25 稳态）总吞吐 `tok/s` / 单物理加速器 `tok/s/accel`** | - | *TODO*（总 `tok/s` 及 `÷ 32` 芯片 `tok/s/chip`） | *TODO*（总 `tok/s` 及 `÷ 32` 卡 `tok/s/GPU`） |
 | **Step 0 $\rightarrow$ Step 25 AIME 2024 `acc/mean@30`** | **`22.44%` $\rightarrow$ `30.00%`**（`+7.56 pp`，PR #108 8K/8-turn run；待确认其运行期实际 scorer 口径） | *TODO* | *TODO* |
-| **Step 0 $\rightarrow$ Step 25 AIME 2025 `acc/mean@30`** | 未在 PR #108 正文列出 | *TODO* | *TODO* |
+| **Step 0 $\rightarrow$ Step 25 AIME 2025 `acc/mean@30`** | **`14.17%` $\rightarrow$ `18.33%`**（`+4.16 pp`，PR #108 8K/8-turn run；待确认其运行期实际 scorer 口径） | *TODO* | *TODO* |
 
 ---
 

@@ -57,7 +57,7 @@
 | **`verl-tpu:v20261001-tsync990787257`** (`@sha256:dcece4bc3813359450f48d4523e5bd78e3139dc441a88b5c2e4d638caa054cbe`) | `2.13.0+cpu` | `0.1.1.dev20260912075415` | `0.0.1.dev20261001220631` | `p1a-moe-smoke-12`、`p1c-retool-rl-03` 与 `p1c-retool-rl-05` 实际运行所使用的旧版镜像 |
 | **`verl-tpu:v20261006-tsync1006`** (`@sha256:d92a2b3d6667584d67ea51874a721228a96c799263ab40f4aee168680476f64e`) | `2.13.0+cpu` | **`0.1.2.dev20261006000518`** | **`0.0.1.dev20261006025601`** | 仓库 `tests/special_tpu/gke/tpu-ci-image.env` 固定的新版镜像，**同时升级了 `torch-tpu` 与 `tpu-sync-torch`**（均为 `0.1.x.dev*` 开发构建，并非 `>= 0.2.0`） |
 
-> **关键发现**：`verl-tpu:v20261006-tsync1006`（`@sha256:d92a2b3d...`）同时包含 `torch-tpu==0.1.2.dev20261006000518` 与 `tpu-sync-torch==0.0.1.dev20261006025601`。此外，在当前代码（`c2e17624`）中，Trainer 端在 `export_local_shards` 中对 2-D 折叠专家栈执行了 `local.reshape(local_shape).clone()`，Sampler 端在 `tpu_utils.py` 中直接按 2-D `local_shape`（`[3072, 2048]` / `[24576, 768]`）分配独立的 `torch.empty` staging 张量（并未在 3-D base storage 上创建 2-D 视图），因此直接以 `c2e17624` 搭配 `@sha256:d92a2b3d...` 运行阶段一受控实验即可同时检验新版 `tpu-sync-torch` 与 `torch-tpu`。
+> **关键发现（已由 `p1c-retool-rl-06` 实测确认）**：`verl-tpu:v20261006-tsync1006`（`@sha256:d92a2b3d...`）同时包含 `torch-tpu==0.1.2.dev20261006000518` 与 `tpu-sync-torch==0.0.1.dev20261006025601`。在旧代码 `c2e17624` 中，Trainer 端在 `export_local_shards` 中对 3-D MoE 专家参数执行了 `local.reshape(local_shape).clone()`（2-D 折叠视图 `[E_local * F, D]`）。在 `torch-tpu==0.1.2.dev20261006000518` 上，该 TPU$\rightarrow$TPU `.reshape().clone()` 仍共享源 3-D `[E_local, F, D]` base storage buffer，导致 `p1c-retool-rl-06` 在 Step-0 首次创建 `WeightSynchronizer` 时明确命中**情形 B**：`ValueError: Tensor's leading (block) dimension does not match its base storage buffer; raw transfer requires a layout-preserving full view of the block-major storage`。因此阶段二按计划合入 `#116`（`32b5133e`, `adapt_for_raw_transfer`）并启动 **`p1c-retool-rl-07`**（commit `a7c6be29`）。
 
 ---
 
@@ -122,22 +122,26 @@
 
 遵循“**先固定代码只验证新版运行时镜像，按需再评估补丁，严格定义 Parity Gate**”的原则，分两步推进：
 
-### 阶段一：环境审计与受控 Runtime 镜像验证（已启动 `p1c-retool-rl-06`，未 Cherry-pick `#110` 或 `#116`）
+### 阶段一：环境审计与受控 Runtime 镜像验证（`p1c-retool-rl-06` 已执行完毕，实测命中情形 B）
 
-1. **已固定镜像 Digest 与受控运行配置（`p1c-retool-rl-06`）**：
-   - **Run Name**: `p1c-retool-rl-06`（JobSet 已在 `bodaborg-tpu7x-nap` 创建；实时集群状态：`Workload/jobset-p1c-retool-rl-06-1634e` 在 ClusterQueue `priority-dev` 中已取得配额 `QuotaReserved=True`，当前处于 `check-capacity-prov` 等待 GKE Cluster Autoscaler 扩容分配两个 `2×2×4` TPU v7x Slice；与 `p1c-retool-rl-05` 保持完全相同的代码 commit 与超参，**唯一变量为容器镜像**）：
-     - **代码 Git SHA**: `c2e176240dcff0a25911b0576880e46624f7249b`（未合入 `#110` 或 `#116`；**运行边界说明**：为保留“只换镜像”的严格单变量对照，`p1c-retool-rl-06` 固定在旧 commit `c2e17624`，**不包含**本 PR 新增的 `0..31` rank 集合断言、`expected_checked_per_rank=435` 断言、共享目录 JSON 归档及 mismatch-only staging 诊断；建议保持 `-06` 继续排队运行）；
-     - **容器镜像 Digest**: `us-west2-docker.pkg.dev/tpu-pytorch/raycluster/verl-tpu@sha256:d92a2b3d6667584d67ea51874a721228a96c799263ab40f4aee168680476f64e`（`verl-tpu:v20261006-tsync1006`，含 `torch-tpu==0.1.2.dev20261006000518` 与 `tpu-sync-torch==0.0.1.dev20261006025601`）；
-     - **拓扑与校验开关**: `2 × 2×2×4` Slice（Trainer `16 physical chips / 32 TensorCore devices`, `dp_shard=8, cp=4`；Rollout `16 physical chips / 32 TensorCore devices`, `TP=32, EP=32`），`VERIFY_PARITY=all`，`TOTAL_TRAINING_STEPS=3`，`NUM_WARMUP_BATCHES=1`，`TRAIN_BATCH_SIZE=8`，`PPO_MINI_BATCH_SIZE=8`，`N_RESP_PER_PROMPT=4`。
-2. **受控实验结果判定分支与归因边界**：
-   - **情形 A**：若 `p1c-retool-rl-06` 通过 Step-0 `exact` 校验（因 `-06` 运行在旧 commit `c2e17624`，须人工核实 `head.log` 摘要行确为 `32 sampler ranks, [435] tensors checked per rank, 0 mismatched, 0 unresolved`）并正常完成 Step 1–3 训练（`verify_norms` 通过、同步后 `ppl_ratio ~ 1.0`、`grad_norm > 0`、多轮工具调用与 `rollout_audit` 掩码 0 违规），则证明**切换到新版镜像组合（`torch-tpu==0.1.2.dev20261006000518` + `tpu-sync-torch==0.0.1.dev20261006025601`）已解决本次观察到的 `P1c` 权重损坏问题，结果支持假设 H1**，且当前 `c2e17624` 的 2-D 独立分配路径无需合入 `#116` workaround 即可进入 `Stage P1c` 完整验收与 `Stage P3`。（**归因边界说明**：由于新版镜像同时升级了 `torch-tpu` 与 `tpu-sync-torch`，仅凭 `-06` 通过尚不能在单变量意义上单独证明 D2H 竞态是唯一根因；若需做严格单包归因，还需固定 `torch-tpu` 仅单独升级 `tpu-sync-torch` wheel 或在 C++/Host Buffer 层插桩验证。）
-   - **情形 B**：若新版镜像在 Step-0 绑定 2-D 折叠专家栈时明确抛出 `UnpackTorchTensor: Tensor ... leading (block) dimension ... does not match its base storage buffer`，则进入**阶段二**，仅针对性评估移植 `#116` 的必要部分；
-   - **情形 C**：若 `p1c-retool-rl-06`（固定在旧 commit `c2e17624`）仍复现 Step-0 mismatch（或后续运行需要启用自动化完整覆盖断言与诊断归档），由于 `-06` 本身不包含本 PR 新增代码，**须使用包含本 PR 代码的 commit 单独启动一次新运行（`p1c-retool-rl-07`）**，通过持久化到 `${RAIDEN_PARITY_DUMP_DIR}/raiden_exact_parity_step_0.json` 的未截断逐 rank 明细以及仅在 mismatch 时触发的 `self._raiden_staging`（H2D 后、融合前 `gate / up / down`）统计，先区分故障发生在 **`install_raiden_weights` 之前（H1 或 H2，`staging_*_absmean == 0`）** 还是 **H2D 后的融合/转置阶段（H3，`staging_*_absmean > 0` 但 `recv_absmean == 0`）**；若确认 `staging_*_absmean == 0`（排除 H3），再结合 Host Staging Buffer / C++ `tpu-sync` 日志进一步区分 H1 与 H2。
+1. **受控运行配置与执行结果（`p1c-retool-rl-06`，`09:27:52Z – 09:41:32Z`）**：
+   - **Run Name**: `p1c-retool-rl-06`（与 `p1c-retool-rl-05` 保持完全相同的代码 commit `c2e176240dcff0a25911b0576880e46624f7249b` 与超参，**唯一变量为容器镜像** `verl-tpu:v20261006-tsync1006` `@sha256:d92a2b3d6667584d67ea51874a721228a96c799263ab40f4aee168680476f64e`）；
+   - **实测结果（触发情形 B）**：
+     - `p1c-retool-rl-06` 在两个 `2×2×4` TPU v7x Slice 上正常完成模型加载与 XLA 编译，但在 Step-0 首次执行 `send_weights -> _create_and_register -> create_torch_weight_synchronizer` 时（尚未进入 D2H/P2P 传输与 `check_exact`）即抛出：
+       ```text
+       ValueError: Tensor's leading (block) dimension does not match its base storage buffer; raw transfer requires a layout-preserving full view of the block-major storage.
+       ```
+     - **原因确认**：在 `verl-tpu:v20261006-tsync1006` 所含的 `torch-tpu==0.1.2.dev20261006000518` 中，Trainer 端 `export_local_shards` 对 3-D MoE 专家权重（`[E_local=128, F, D]`）执行的 `local.reshape(local_shape).clone()`（折叠为 2-D `[128 * F, D]`）仍共享底层 3-D TPU storage buffer（其块主序首维仍为 `128` 而非 `128 * F`），被 `tpu-sync` 的 `UnpackTorchTensor` 拒绝注册。
+2. **受控实验结果判定分支回顾与推进**：
+   - **情形 A**：不适用（`-06` 在创建 `WeightSynchronizer` 时即触发情形 B）；
+   - **情形 B（已触发）**：`p1c-retool-rl-06` 在 Step-0 绑定 2-D 折叠专家栈时明确抛出 `Tensor's leading (block) dimension does not match its base storage buffer`，按计划进入**阶段二**，合入 [`jialei777/verl-upstream#116`](https://github.com/jialei777/verl-upstream/pull/116)（`32b5133e`, `adapt_for_raw_transfer`）并结合本 PR 完整诊断代码启动 **`p1c-retool-rl-07`**；
+   - **情形 C**：若后续 `p1c-retool-rl-07`（包含 `#116` 与本 PR 诊断代码，commit `a7c6be29`）仍复现 Step-0 mismatch，通过持久化到 `${RAIDEN_PARITY_DUMP_DIR}/raiden_exact_parity_step_0.json` 的未截断逐 rank 明细以及仅在 mismatch 时触发的 `self._raiden_staging`（H2D 后、融合前 `gate / up / down`）统计，先区分故障发生在 **`install_raiden_weights` 之前（H1 或 H2，`staging_*_absmean == 0`）** 还是 **H2D 后的融合/转置阶段（H3，`staging_*_absmean > 0` 但 `recv_absmean == 0`）**；若确认 `staging_*_absmean == 0`（排除 H3），再结合 Host Staging Buffer / C++ `tpu-sync` 日志进一步区分 H1 与 H2。
 
-### 阶段二：按需评估补丁移植与通过门槛（Gate Criteria）
+### 阶段二：合入 `#116`（`adapt_for_raw_transfer`）并执行 `p1c-retool-rl-07` 验证（当前运行中）
 
-1. **按需补丁评估（Conditional Patch Porting）**：
-   - 仅当阶段一触发 2-D folded expert stack 的 `UnpackTorchTensor` 错误时，才评估从 [`jialei777/verl-upstream#116`](https://github.com/jialei777/verl-upstream/pull/116) 移植最小必要的 host-rebind 处理；
+1. **已合入 `#116` 并提交受控验证运行（`p1c-retool-rl-07`）**：
+   - 鉴于阶段一 `p1c-retool-rl-06` 实测触发 2-D folded expert stack 的 `UnpackTorchTensor` 错误（情形 B），本 PR 已 cherry-pick [`jialei777/verl-upstream#116`](https://github.com/jialei777/verl-upstream/pull/116)（`32b5133ee6414979cb5947d24dc0750e7556e497` -> 本分支 `a7c6be29965cc567c666ba01613dfcddb5578989`）：在首次同步前通过 `probe_raw_transfer_rejected_classes` 探测被 `UnpackTorchTensor` 拒绝的张量等价类，仅对该类张量（即 2-D 折叠 MoE 专家栈）在 `adapt_for_raw_transfer` 中执行 CPU host round-trip 重新分配真 2-D block-major TPU buffer，稠密参数保持零开销直传；
+   - **当前运行 `p1c-retool-rl-07`**：已基于 commit **`a7c6be29965cc567c666ba01613dfcddb5578989`**（同时包含 `#116` `adapt_for_raw_transfer` 与本 PR 新增的 `(replica, rank)` `0..31` 集合断言、`compute_expected_checked_params` `435` 项/rank 覆盖断言、`raiden_exact_parity_step_0.json` 持久化归档及 mismatch-only staging 诊断）搭配新版镜像 `verl-tpu:v20261006-tsync1006`（`@sha256:d92a2b3d6667584d67ea51874a721228a96c799263ab40f4aee168680476f64e`）与 `VERIFY_PARITY=all` 在 `bodaborg-tpu7x-nap` 提交运行（`gs://ubench-logs/xiaotongyang/retool-v7x/runs/p1c-retool-rl-07/`）；
    - [`verl-project/verl-hardware-plugin#89`](https://github.com/verl-project/verl-hardware-plugin/pull/89) 的 3-D direct install 方案因涉及跨仓库依赖，单独评估，不与 `#116` 混用。
 2. **明确定义的 `Stage P1c` 通过门槛（Gate Criteria）**：
    - **Step 0（`exact` 逐元素数值相等校验门槛）**：在 `VERIFY_PARITY=all` 下，全部 **32 个 Sampler ranks** 的全部预期检查项（当前 2-D 折叠路径下为 `435 / 435` 项/rank；若未来采用 3-D direct install 则按对应 expert region 检查项计数）必须 **`exact` 100% 通过（转为 `float32` 后 `max|ref - new| == 0.0`，`0 mismatched, 0 unresolved`）**；

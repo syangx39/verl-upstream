@@ -1,12 +1,25 @@
 #!/usr/bin/env python3
-"""Independently recompute and verify Stage G2 (g2-retool-rl-25step-01) training, timing, and AIME evaluation metrics."""
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+"""Independently recompute Stage G2 training, timing, and AIME evaluation metrics."""
 
-from collections import defaultdict
 import json
 import math
-from pathlib import Path
 import statistics
 import sys
+from collections import defaultdict
+from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[6]
 if str(REPO_ROOT) not in sys.path:
@@ -35,14 +48,15 @@ def verify_validation_samples(path: Path, expected_step: int, metrics_step: dict
     # Verify pred/acc extraction from output_tail_300 using verl/utils/reward_score/math_dapo.py (stdlib-only module).
     # Note on runtime scorer resolution in G2 (verified in head.log lines 765-766 and 899-901):
     # - The launch script passed legacy CLI overrides `custom_reward_function.path=pkg://examples.tpu.retool.retool_tpu`
-    #   and `custom_reward_function.name=compute_score` (inherited from examples/tpu/retool/run_qwen3_32b_dapo_torchtitan.sh).
+    #   and `custom_reward_function.name=compute_score` (inherited from the 32B DAPO launcher).
     # - Under `trainer.use_v1=True` (`TaskRunnerV1` in `verl/trainer/main_ppo.py`), `migrate_legacy_reward_impl` is not
     #   called, so `config.reward.custom_reward_function.path` remained `None` (`head.log#L899-L901`), and
     #   `verl/trainer/ppo/reward.py:get_custom_reward_fn` fell back to `default_compute_score`
-    #   (`verl/utils/reward_score/__init__.py:59-62`), which invokes `math_dapo.compute_score(..., strict_box_verify=False)`.
+    #   (`verl/utils/reward_score/__init__.py:59-62`), which invokes
+    #   `math_dapo.compute_score(..., strict_box_verify=False)`.
     # Below we verify 100% agreement with the runtime scorer (`strict_box_verify=False`) AND also recompute metrics
     # under `strict_box_verify=True` (`retool_tpu.compute_score`) to quantify the exact difference (5 samples at Step 0,
-    # 9 samples at Step 25 where Markdown around `Answer:` caused Minerva regex extraction to return `**45`/`**`/`\(204\)`).
+    # 9 samples at Step 25 where Markdown around `Answer:` changed the Minerva regex extraction).
     import importlib.util
 
     math_dapo_path = REPO_ROOT / "verl" / "utils" / "reward_score" / "math_dapo.py"
@@ -173,7 +187,9 @@ def main() -> None:
     summary = {
         "run_name": "g2-retool-rl-25step-01",
         "code_sha": "64ef634b173c69ea31eff598caeee81d9a9caea1",
-        "image_digest": "verl-torchtitan-cu130-arm64@sha256:a139e2b491ac23f06f790fe4277afb9bd543a94bc740c92173e5fdb13ddaba40",
+        "image_digest": (
+            "verl-torchtitan-cu130-arm64@sha256:a139e2b491ac23f06f790fe4277afb9bd543a94bc740c92173e5fdb13ddaba40"
+        ),
         "hardware": "2 nodes x 4 NVIDIA GB200 GPUs = 8 GPUs (4 trainer FSDP2=4 + 4 rollout vLLM TP=4)",
         "step_25_checkpoint_saved": False,
         "step_25_checkpoint_note": "SAVE_FREQ=-1 (trainer.save_freq=-1); Step 25 evaluation ran in-memory before exit.",
@@ -189,11 +205,18 @@ def main() -> None:
             "training_25_steps_only_wall_s": 1104.5,
             "step25_eval_wall_s": round(metrics["25"]["timing_s/testing"], 2),
             "tqdm_25_steps_plus_step25_eval_wall_s": 1296.0,
-            "tqdm_25_steps_plus_step25_eval_formatted": "21m 36s (21m 35s at step:25 log line, includes 25 training steps + Step 25 eval; excludes Step 0 eval)",
+            "tqdm_25_steps_plus_step25_eval_formatted": (
+                "21m 36s (21m 35s at step:25 log line, includes 25 training steps + Step 25 eval; excludes Step 0 eval)"
+            ),
             "both_evals_plus_25_steps_wall_s": 1476.4,
-            "both_evals_plus_25_steps_formatted": "24m 36s (23:50:05.950 -> 00:14:42.324, includes Step 0 eval + 25 training steps + Step 25 eval)",
+            "both_evals_plus_25_steps_formatted": (
+                "24m 36s (23:50:05.950 -> 00:14:42.324, includes Step 0 eval + 25 training steps + Step 25 eval)"
+            ),
             "full_main_ppo_wall_s": 1657.1,
-            "full_main_ppo_formatted": "27m 37s (23:47:07.289 -> 00:14:44.392, includes Ray init + 30B load + Step 0 sync + both evals + 25 steps)",
+            "full_main_ppo_formatted": (
+                "27m 37s (23:47:07.289 -> 00:14:44.392, includes Ray init + 30B load + "
+                "Step 0 sync + both evals + 25 steps)"
+            ),
         },
         "training_25_steps": {
             "pg_loss_mean_1_25": round(statistics.mean(s["actor/pg_loss"] for s in steps_1_25), 4),
@@ -205,29 +228,17 @@ def main() -> None:
             "training_ppl_mean_1_25": round(
                 statistics.mean(s["actor/rollout_corr/training_ppl"] for s in steps_1_25), 4
             ),
-            "rollout_ppl_mean_1_25": round(
-                statistics.mean(s["actor/rollout_corr/rollout_ppl"] for s in steps_1_25), 4
-            ),
-            "ppl_ratio_mean_1_25": round(
-                statistics.mean(s["actor/rollout_corr/ppl_ratio"] for s in steps_1_25), 4
-            ),
+            "rollout_ppl_mean_1_25": round(statistics.mean(s["actor/rollout_corr/rollout_ppl"] for s in steps_1_25), 4),
+            "ppl_ratio_mean_1_25": round(statistics.mean(s["actor/rollout_corr/ppl_ratio"] for s in steps_1_25), 4),
             "ppl_ratio_min_max_1_25": [
                 round(min(s["actor/rollout_corr/ppl_ratio"] for s in steps_1_25), 4),
                 round(max(s["actor/rollout_corr/ppl_ratio"] for s in steps_1_25), 4),
             ],
-            "response_length_mean_1_25": round(
-                statistics.mean(s["response_length/mean"] for s in steps_1_25), 2
-            ),
+            "response_length_mean_1_25": round(statistics.mean(s["response_length/mean"] for s in steps_1_25), 2),
             "num_turns_mean_1_25": round(statistics.mean(s["num_turns/mean"] for s in steps_1_25), 2),
-            "update_actor_s_mean_3_25": round(
-                statistics.mean(s["timing_s/update_actor"] for s in steps_3_25), 2
-            ),
-            "update_weights_s_mean_1_25": round(
-                statistics.mean(s["timing_s/update_weights"] for s in steps_1_25), 2
-            ),
-            "update_weights_s_mean_3_25": round(
-                statistics.mean(s["timing_s/update_weights"] for s in steps_3_25), 2
-            ),
+            "update_actor_s_mean_3_25": round(statistics.mean(s["timing_s/update_actor"] for s in steps_3_25), 2),
+            "update_weights_s_mean_1_25": round(statistics.mean(s["timing_s/update_weights"] for s in steps_1_25), 2),
+            "update_weights_s_mean_3_25": round(statistics.mean(s["timing_s/update_weights"] for s in steps_3_25), 2),
             "step_time_s_mean_2_25": round(statistics.mean(s["timing_s/step"] for s in steps_2_25), 2),
             "step_time_s_mean_3_25": round(statistics.mean(s["timing_s/step"] for s in steps_3_25), 2),
             "step_time_s_mean_1_25": round(statistics.mean(s["timing_s/step"] for s in steps_1_25), 2),

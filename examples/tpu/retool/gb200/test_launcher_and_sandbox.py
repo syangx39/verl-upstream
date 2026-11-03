@@ -1,18 +1,43 @@
 #!/usr/bin/env python3
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 """Unit tests for GB200 launcher UID-preconditioned cleanup, external sandbox wiring, and fail-closed privilege drop."""
 
 import asyncio
-from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 import os
-from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import threading
 import unittest
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 from unittest import mock
-
-import sys
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 if str(REPO_ROOT) not in sys.path:
@@ -246,7 +271,8 @@ class TestLauncherResourceLifecycle(unittest.TestCase):
             f"""#!/usr/bin/env bash
 set -euo pipefail
 args=("$@")
-if [[ "${{args[*]}}" == *" get "* && "${{args[*]}}" == *"jsonpath={{.metadata.labels.retool-launch-id}}:{{.metadata.uid}}"* ]]; then
+if [[ "${{args[*]}}" == *" get "* &&
+      "${{args[*]}}" == *"jsonpath={{.metadata.labels.retool-launch-id}}:{{.metadata.uid}}"* ]]; then
     echo "{ambiguous_get_response}"
     exit {ambiguous_get_rc}
 fi
@@ -289,11 +315,11 @@ exit 0
             gsutil_lock_body = "cat >/dev/null\nexit 0"
         elif gcs_mode == "lock_race":
             gsutil_body = 'echo "No URLs matched: gs://mock-bucket/mock-runs" >&2\nexit 1'
-            gsutil_lock_body = (
-                'cat >/dev/null\necho "PreconditionException: 412 Precondition Failed" >&2\nexit 1'
-            )
+            gsutil_lock_body = 'cat >/dev/null\necho "PreconditionException: 412 Precondition Failed" >&2\nexit 1'
         else:
-            gsutil_body = 'echo "AccessDeniedException: 403 Caller does not have storage.objects.list access" >&2\nexit 1'
+            gsutil_body = (
+                'echo "AccessDeniedException: 403 Caller does not have storage.objects.list access" >&2\nexit 1'
+            )
             gsutil_lock_body = "exit 1"
         gsutil_script.write_text(
             f"""#!/usr/bin/env bash
@@ -344,7 +370,7 @@ exit 0
             )
 
     def test_ambiguous_create_response_loss_cleans_up_when_launch_id_matches(self):
-        """If kubectl create created the Service on the server but lost the response, cleanup resolves UID via launch-id."""
+        """Cleanup resolves UID by launch-id when Service creation succeeds but the response is lost."""
         launcher = REPO_ROOT / "examples" / "tpu" / "retool" / "gb200" / "run_ray_jobset_gb200.sh"
         with tempfile.TemporaryDirectory() as td:
             # Fail on object 2 (Service), but simulate that the Service WAS created on the server with our launch-id

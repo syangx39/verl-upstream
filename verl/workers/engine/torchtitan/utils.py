@@ -197,6 +197,7 @@ def configure_qwen3_moe_for_rl(
         The edited model config.
     """
     from dataclasses import fields
+
     from torchtitan.models.common.moe import MoE
 
     moe_field_names = {f.name for f in fields(MoE.Config)}

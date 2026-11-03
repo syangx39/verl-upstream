@@ -1,4 +1,17 @@
 #!/usr/bin/env python3
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 """Stage G0 verifier for NVIDIA GB200 ReTool RL reproduction.
 
 Verifies:
@@ -22,16 +35,16 @@ Verifies:
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor
 import copy
-from dataclasses import fields
 import hashlib
 import json
 import os
-from pathlib import Path
 import shutil
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import fields
+from pathlib import Path
 from typing import Any
 
 
@@ -39,9 +52,7 @@ def stage_checkpoint_local(src_dir: Path, dst_dir: Path, workers: int = 8) -> di
     """Copy all checkpoint files from src_dir to dst_dir in parallel (skipping already-matching sizes)."""
     t0 = time.time()
     dst_dir.mkdir(parents=True, exist_ok=True)
-    src_files = sorted(
-        p for p in src_dir.iterdir() if p.is_file() and not p.name.startswith(".")
-    )
+    src_files = sorted(p for p in src_dir.iterdir() if p.is_file() and not p.name.startswith("."))
     if not any(p.name.endswith(".safetensors") for p in src_files):
         raise FileNotFoundError(f"No .safetensors files found in {src_dir}")
 
@@ -111,10 +122,7 @@ def verify_checkpoint_manifest(
     with ThreadPoolExecutor(max_workers=workers) as ex:
         rows = list(ex.map(_sha256_file, paths))
 
-    manifest = {
-        name: {"size_bytes": size_b, "sha256": digest}
-        for name, size_b, digest in rows
-    }
+    manifest = {name: {"size_bytes": size_b, "sha256": digest} for name, size_b, digest in rows}
     manifest_json = json.dumps(manifest, sort_keys=True).encode("utf-8")
     composite_sha256 = hashlib.sha256(manifest_json).hexdigest()
 
@@ -125,13 +133,8 @@ def verify_checkpoint_manifest(
         ref_paths = [ref_dir / name for name in all_names]
         with ThreadPoolExecutor(max_workers=workers) as ex:
             ref_rows = list(ex.map(_sha256_file, ref_paths))
-        ref_manifest = {
-            name: {"size_bytes": size_b, "sha256": digest}
-            for name, size_b, digest in ref_rows
-        }
-        ref_composite_sha256 = hashlib.sha256(
-            json.dumps(ref_manifest, sort_keys=True).encode("utf-8")
-        ).hexdigest()
+        ref_manifest = {name: {"size_bytes": size_b, "sha256": digest} for name, size_b, digest in ref_rows}
+        ref_composite_sha256 = hashlib.sha256(json.dumps(ref_manifest, sort_keys=True).encode("utf-8")).hexdigest()
         for name in all_names:
             if manifest[name] != ref_manifest[name]:
                 mismatches.append(name)
@@ -154,10 +157,11 @@ def verify_checkpoint_manifest(
 
 def verify_moe_config_and_step(model_dir: Path) -> dict[str, Any]:
     import torch
-    from transformers import AutoConfig
-    from torchtitan.models.common.moe import MoE
     import torchtitan.models.qwen3 as tt_qwen3
+    from torchtitan.models.common.moe import MoE
     from torchtitan.models.qwen3.state_dict_adapter import Qwen3StateDictAdapter
+    from transformers import AutoConfig
+
     from verl.workers.engine.torchtitan.utils import (
         configure_qwen3_moe_for_rl,
         derive_torchtitan_name_and_flavor,
@@ -172,28 +176,22 @@ def verify_moe_config_and_step(model_dir: Path) -> dict[str, Any]:
     has_load_balance_coeff = "load_balance_coeff" in moe_field_names
     has_aux_loss = "aux_loss" in moe_field_names
     if not has_load_balance_coeff or has_aux_loss:
-        raise AssertionError(
-            f"Unexpected TorchTitan 0.3 MoE.Config fields: {moe_field_names}"
-        )
+        raise AssertionError(f"Unexpected TorchTitan 0.3 MoE.Config fields: {moe_field_names}")
 
     model_spec = tt_qwen3.model_registry(tt_flavor, attn_backend="flex")
-    before_coeffs = [
-        moe.load_balance_coeff
-        for _, moe, _, _ in model_spec.model.traverse(MoE.Config)
-    ]
+    before_coeffs = [moe.load_balance_coeff for _, moe, _, _ in model_spec.model.traverse(MoE.Config)]
     if len(before_coeffs) != 48 or not all(c == 1e-3 for c in before_coeffs):
         raise AssertionError(
-            f"Expected 48 MoE layers with default load_balance_coeff=1e-3 before fix, got len={len(before_coeffs)}, sample={before_coeffs[:3]}"
+            f"Expected 48 MoE layers with default load_balance_coeff=1e-3 before fix, "
+            f"got len={len(before_coeffs)}, sample={before_coeffs[:3]}"
         )
 
     configure_qwen3_moe_for_rl(model_spec.model)
-    after_coeffs = [
-        moe.load_balance_coeff
-        for _, moe, _, _ in model_spec.model.traverse(MoE.Config)
-    ]
+    after_coeffs = [moe.load_balance_coeff for _, moe, _, _ in model_spec.model.traverse(MoE.Config)]
     if len(after_coeffs) != 48 or not all(c is None for c in after_coeffs):
         raise AssertionError(
-            f"Expected all 48 MoE layers to have load_balance_coeff=None after configure_qwen3_moe_for_rl, got {after_coeffs[:3]}"
+            "Expected all 48 MoE layers to have load_balance_coeff=None after configure_qwen3_moe_for_rl, "
+            f"got {after_coeffs[:3]}"
         )
 
     # Build a 2-layer miniature Qwen3-MoE model on CUDA to test 1 optimizer step + to_hf() round-trip
@@ -321,10 +319,7 @@ def verify_moe_config_and_step(model_dir: Path) -> dict[str, Any]:
         for h in handles:
             h.remove()
 
-        topk_matches = [
-            float((a == b).float().mean().item())
-            for a, b in zip(actor_topk, recv_topk, strict=True)
-        ]
+        topk_matches = [float((a == b).float().mean().item()) for a, b in zip(actor_topk, recv_topk, strict=True)]
         logits_max_abs_diff = float((actor_logits.float() - recv_logits.float()).abs().max().item())
 
         return {
@@ -348,9 +343,7 @@ def verify_moe_config_and_step(model_dir: Path) -> dict[str, Any]:
     if positive["router_topk_match_rate"] != 1.0 or positive["logits_max_abs_diff"] != 0.0:
         raise AssertionError(f"Expected 100% router top-k and 0.0 logit diff after to_hf round-trip, got {positive}")
     if negative["router_topk_match_rate"] >= 1.0 or negative["logits_max_abs_diff"] <= 0.0:
-        raise AssertionError(
-            f"Negative control expected router/logit divergence without RL fix, got {negative}"
-        )
+        raise AssertionError(f"Negative control expected router/logit divergence without RL fix, got {negative}")
 
     return {
         "torchtitan_name": tt_name,
@@ -398,9 +391,7 @@ def main() -> int:
 
     manifest_report = verify_checkpoint_manifest(args.model_dir, args.ref_dir)
     if args.ref_dir is not None and not manifest_report["ref_match"]:
-        raise RuntimeError(
-            f"Checkpoint manifest mismatch against {args.ref_dir}: {manifest_report['mismatches']}"
-        )
+        raise RuntimeError(f"Checkpoint manifest mismatch against {args.ref_dir}: {manifest_report['mismatches']}")
 
     moe_report = verify_moe_config_and_step(args.model_dir)
     report = {

@@ -680,8 +680,16 @@ class vLLMRaidenWorkerExtension(_BaseWorkerExtension):
                     f"vLLM has {tuple(w13.shape)} / {tuple(w2.shape)}"
                 )
             if parity:
-                parity.check_exact(f"{mod_key}.w13_weight", w13, new13)
-                parity.check_exact(f"{mod_key}.w2_weight", w2, new2)
+                gate_f, up_f, down_f = gate.detach().float(), up.detach().float(), down.detach().float()
+                staging_w13_info = (
+                    f"staging_gate_absmean={gate_f.abs().mean().item():.4g}(zero={(gate_f == 0).float().mean().item():.4g}) "
+                    f"staging_up_absmean={up_f.abs().mean().item():.4g}(zero={(up_f == 0).float().mean().item():.4g})"
+                )
+                staging_w2_info = (
+                    f"staging_down_absmean={down_f.abs().mean().item():.4g}(zero={(down_f == 0).float().mean().item():.4g})"
+                )
+                parity.check_exact(f"{mod_key}.w13_weight", w13, new13, extra_info=staging_w13_info)
+                parity.check_exact(f"{mod_key}.w2_weight", w2, new2, extra_info=staging_w2_info)
             w13.copy_(new13)
             w2.copy_(new2)
             written_keys.update((f"{mod_key}.w13_weight", f"{mod_key}.w2_weight"))

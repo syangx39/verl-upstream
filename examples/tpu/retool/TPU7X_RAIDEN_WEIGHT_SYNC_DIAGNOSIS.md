@@ -24,7 +24,7 @@
     verl.checkpoint_engine.raiden_checkpoint_engine.RaidenParityError: [RAIDEN PARITY EXACT | Step 0] 32 sampler ranks, [435] tensors checked per rank, 10414 mismatched, 0 unresolved
     ```
   - 在日志打印出的 `rank 0` 前 60 条 mismatch 明细中（受 `RaidenParityCheck.MAX_DETAIL_LINES = 60` 截断限制）：
-    - `model.layers.3.mlp.experts.routed_experts.w13_weight` 出现半截非零、半截全零（`max|diff|=0.5195, ref_absmean=0.01824, recv_absmean=0.009274`）；
+    - `model.layers.3.mlp.experts.routed_experts.w13_weight` 的接收端平均绝对值约为参照值的一半（实测 `max|diff|=0.5195, ref_absmean=0.01824, recv_absmean=0.009274`，比值约 `0.508x`；**注：该比值与“拼接进 `w13_weight = [gate^T | up^T]` 的 `gate_proj` 或 `up_proj` 之一全零（或半截张量全零）”的方向一致，但仅凭标量均值本身尚不能证明具体哪一半全零，且该检查发生在 `_raiden_ws.h2d()` 与 `_raiden_fused_expert_weights` 融合/转置之后**）；
     - 随后打印的 `layers.30..47, 4..9` 的 MoE `w13_weight / w2_weight` 以及 `layers.0, 1, 10..18` 的 `self_attn.qkv_proj.weight` 全部表现为 **`recv_absmean = 0`**（全零）。
 - **证据边界说明（为什么具体根因仍属于待验证假设 Working Hypothesis）**：
   - 在现有代码 [`verl/workers/rollout/vllm_rollout/tpu_utils.py#L604-L730`](../verl/workers/rollout/vllm_rollout/tpu_utils.py#L604-L730) 中，`parity.check_exact(...)` 发生在 **`self._raiden_ws.h2d()`（`L606`）之后**，以及 **MoE 专家权重拆包/融合（`_raiden_fused_expert_weights`，`L671–L684`）或 Dense 权重拼接/转置（`to_target_layout`，`L707–L728`）过程中**。
@@ -74,15 +74,21 @@
    - 然而，`report_exact` 在构造异常文本时执行了 `detail_text = "\n".join(details[: cls.MAX_DETAIL_LINES])`（其中 `MAX_DETAIL_LINES = 60`），且在 Sampler Worker 侧 `exact_result()`（`L454`）中同样对 `self.mismatched` 做了 `[:60]` 截断。
    - 因为 `rank 0` 自身的 mismatch 数已超过 60 个，日志打印出的 60 行明细全部来自 `rank 0`，**并未打印出全部 32 个 rank 各自的 `r["num_mismatched"]` 数值**。
    - 此前草稿根据 `rank 0` 上首个失败张量 `model.layers.3.mlp.experts.routed_experts.w13_weight` 推算 `435 - 110 = 325` 并假定所有 32 个 rank 均为 `325`，会得出 `32 × 325 = 10,400`，比真实总数 `10,414` 少 **14 个**（说明 32 个 Sampler rank 之间的截断位置存在轻微差异，部分 rank 比 `rank 0` 多出 1 个或数个不匹配张量）。
-   - **修正措施**：在报告中严格使用日志实测总计 **`10,414 / 13,920`**，并在下一次受控运行中将 `[ (r["rank"], r["checked"], r["num_mismatched"], len(r["unresolved"])) for r in results ]` 完整归档后再写逐 rank 精确数字。
+   - **修正措施（文档与代码双侧补齐）**：
+     1. 在报告中严格使用 `p1c-retool-rl-05` 日志实测总计 **`10,414 / 13,920`**；
+     2. 已入队的 `p1c-retool-rl-06` 绑定的是提交前的基线代码 `CODE_REF=c2e17624`（其 `report_exact` 尚未强制断言不重复的 32 个 rank ID 及 `[435]` 检查数，也未将未截断的逐 rank 明细自动落盘），因此对 `-06` 的运行结果**必须人工核对日志摘要行是否精确为 `32 sampler ranks, [435] tensors checked per rank, 0 mismatched, 0 unresolved`**；
+     3. 同时，**本 PR 已在 [`verl/checkpoint_engine/raiden_checkpoint_engine.py`](../verl/checkpoint_engine/raiden_checkpoint_engine.py) 与 [`verl/workers/rollout/vllm_rollout/tpu_utils.py`](../verl/workers/rollout/vllm_rollout/tpu_utils.py) 中补齐三项采集与校验能力**（供后续运行直接使用）：
+        - **强制覆盖率与无重复 Rank 断言**：`report_exact` 校验返回的 `distinct_ranks` 数量无重复、与预期 `expected_ranks`（32 个 Sampler ranks）一致，且所有 rank 的 `checked` 张量数一致且 `> 0`，并在日志摘要中直接打印 `ranks=[0..31]`；
+        - **未截断逐 Rank 全量明细自动落盘**：`exact_result` 保留完整的 `all_mismatched` 列表，`report_exact` 在返回或抛出异常前自动将全部 32 个 rank 的完整结果写入 `${RAIDEN_PARITY_DUMP_DIR:-/tmp}/raiden_exact_parity_step_<step>.json`；
+        - **零值比例（`zero_frac`）与 H2D 后 / 融合前 Staging Buffer 诊断**：`check_exact` 新增记录 `zero_frac`（及 `w13_weight` 前后半段各自的 `absmean`/`zero_frac`），`install_raiden_weights` 在 MoE `w13_weight` / `w2_weight` 出现 mismatch 时同时记录融合前 `self._raiden_staging` 中 `gate_proj`、`up_proj`、`down_proj` 的 `absmean` 与 `zero_frac`，从而直接区分“H2D 后的 staging buffer 本身已为零”还是“后续 `_raiden_fused_expert_weights` 融合/转置阶段引入零值”。
 
 ### 3.2 现有 `VERIFY_PARITY=all` 代码的实际检查能力边界
 
-检视 [`verl/checkpoint_engine/raiden_checkpoint_engine.py#L332-L606`](../verl/checkpoint_engine/raiden_checkpoint_engine.py#L332-L606) 可确认，当前 `VERIFY_PARITY=all` 由两个阶段组成，其覆盖范围和判定条件如下：
+检视 [`verl/checkpoint_engine/raiden_checkpoint_engine.py#L332-L606`](../verl/checkpoint_engine/raiden_checkpoint_engine.py#L332-L606) 可确认，`VERIFY_PARITY=all` 由两个阶段组成，其覆盖范围和判定条件如下：
 
 | 阶段 / 步数 | 触发函数 | 实际比对内容与通过条件 | 局限性与注意事项 |
 | :--- | :--- | :--- | :--- |
-| **Step 0（初始同步）** | `exact_install_kwargs` (`not global_steps`) $\rightarrow$ `check_exact` + `report_exact` | 在 `install_raiden_weights` 中（`_raiden_ws.h2d()` 及拆包/拼接/转置之后、覆盖 vLLM 参数之前），将每个 Sampler rank 收到的张量与 vLLM 从初始 HF checkpoint 加载的对应参数做逐元素 `max\|ref - new\| == 0.0` 比对。在当前 2-D 折叠 MoE 路径下，每 rank 检查 `435` 个 vLLM 参数张量（`48 × 2 = 96` 个 MoE `w13/w2` + `48 × 7 = 336` 个每层稠密/路由/Norm 参数 + `3` 个全局 `embed_tokens / norm / lm_head`）。 | **仅在 Step 0 运行一次**（因为 Step 1 起 Trainer 权重已经过梯度更新，不再等于 vLLM 初始加载的磁盘 checkpoint）。此外，若未来改用 3-D direct install（`verl-hardware-plugin#89`），检查项会按 expert region 计数，不再是固定 `435`。 |
+| **Step 0（初始同步）** | `exact_install_kwargs` (`not global_steps`) $\rightarrow$ `check_exact` + `report_exact` | 在 `install_raiden_weights` 中（`_raiden_ws.h2d()` 及拆包/拼接/转置之后、覆盖 vLLM 参数之前），将每个 Sampler rank 收到的张量与 vLLM 从初始 HF checkpoint 加载的对应参数做逐元素 `max\|ref - new\| == 0.0` 比对。在当前 2-D 折叠 MoE 路径下，每 rank 检查 `435` 个 vLLM 参数张量（`48 × 2 = 96` 个 MoE `w13/w2` + `48 × 7 = 336` 个每层稠密/路由/Norm 参数 + `3` 个全局 `embed_tokens / norm / lm_head`）。 | **仅在 Step 0 运行一次**。注意：在 `p1c-retool-rl-06` 所用的基线代码 `c2e17624` 中，`report_exact` 仅检查 `len(results) > 0` 且 `num_mismatched == 0 and num_unresolved == 0`，未在代码内自动断言 `32` 个不同 rank 与 `[435]` 项/rank，因此审阅 `-06` 日志时须核对完整摘要行；本 PR 代码已新增 `expected_ranks`、无重复 rank ID 与均匀 `checked_per_rank` 强制断言。 |
 | **Step 1 及后续步（`global_steps > 0`）** | `verify_norms` $\rightarrow$ `_compare_replica_norms` (`L520–L605`) | 汇总 Trainer 所有 rank 导出的逐张量 `(numel, l1, l2_sq)` 与每个 Sampler Replica 聚合后的逐张量统计。**实际判定通过的条件（`L579, L588`）仅检查 `numel`（`delta_numel == 0`）与 `L1` 范数（`delta_l1 <= 1e-3 * max(\|t_agg_l1\|, 1.0)`）**；全局 `L2` 范数虽然被计算并打印在日志中（`L593–L594`），但**未参与 `mismatches` 或最终 `if` 通过判定**。 | **Norm 通过 $\neq$ Bit-Exact（逐位一致）**：一方面 Step 1+ 未做 Trainer 与 Sampler 的逐元素比对；另一方面范数检查对张量内部元素顺序错位/切片置换不敏感（见源码注释 `L338–L339`）。若需要证明 Step 1+ 逐元素一致，必须额外实现 Trainer 当前权重与 Sampler 权重的逐元素对照。 |
 
 ---
@@ -95,7 +101,7 @@
    - **C++ 源码级机制佐证（`WeightSynchronizerBase::PushWeightsReshardedLocal`）**：
      - 在 `Qwen3-30B-A3B`（Sampler `TP=32, EP=32`）下，不同参数具有不同的目标等价类（32 路 TP/EP 切分的专家与线性层、`num_kv_heads=4` 在 32 个 TP rank 上 8 路复制的 `k_proj/v_proj`、以及 32 路全复制的 Norm 与路由门控 `mlp.gate`）。因此 `BroadcastEngine` 会对同一个传输 `uuid` 向源端 Trainer Worker 并发发送多个 `StartTransferRequest` RPC。
      - 在旧版 `tpu-sync-torch==0.0.1.dev20261001220631` 的 `WeightSynchronizerBase::PushWeightsReshardedLocal` 中，首个到达的 **Leader RPC 线程**在调用 `D2hLayer(l, uuid)` **之前**即把 `uuid` 插入 `completed_d2h_uuids_` 并释放锁；随后微秒级到达的 **Follower RPC 线程**检查 `completed_d2h_uuids_.insert(uuid).second` 得到 `already_completed = true`（日志分支 `Coalescing D2H copy (already completed for uuid ...)`），从而**完全跳过了 `d2h_layer_futures[l].Await()`**，直接将 Host Staging Buffer（`shard_info.host_ptr`）推送给远端 Sampler。
-     - 在 **Step 0**（`WeightSynchronizer` 首次创建、Host Staging Buffer 由 `memset(0)` 初始化为全零）时，Trainer 与 Sampler 均按 `(-global_numel, name)` 顺序注册 `579` 个传输张量（前 `2` 个为词表嵌入，`idx=2..145` 按字典序排列 `layers.0, 1, 10..19, 2, 20..29, 3, 30..39, 4, 40..47, 5..9` 的 3 个 MoE 专家栈，其中 `idx=71, 72, 73` 恰好对应第 25 层 `layers.3` 的 `down_proj, gate_proj, up_proj`；`idx=146..578` 为 433 个稠密与 Norm 张量）。当 Follower 线程在 `idx=72/73`（`layers.3.mlp.experts.routed_experts.w13_weight`）追上并超越 Leader 线程尚未完成的 `D2hLayer` + `DetileBuffer` 时，`layers.3...w13_weight` 出现半截非零、半截全零（`recv_absmean = 0.009274` vs `ref_absmean = 0.01824`），而排在其后的 `layers.30..39, 4, 40..47, 5..9` 及 `qkv_proj` 因 Leader 尚未完成 D2H，被 Follower 线程直接推送了初始全零的 Host Staging Buffer（`recv_absmean = 0`）。
+     - 在 **Step 0**（`WeightSynchronizer` 首次创建、Host Staging Buffer 由 `memset(0)` 初始化为全零）时，Trainer 与 Sampler 均按 `(-global_numel, name)` 顺序注册 `579` 个传输张量（前 `2` 个为词表嵌入，`idx=2..145` 按字典序排列 `layers.0, 1, 10..19, 2, 20..29, 3, 30..39, 4, 40..47, 5..9` 的 3 个 MoE 专家栈，其中 `idx=71, 72, 73` 恰好对应第 25 层 `layers.3` 的 `down_proj, gate_proj, up_proj`；`idx=146..578` 为 433 个稠密与 Norm 张量）。若 Follower 线程在 `idx=72/73`（对应拼接进 `layers.3.mlp.experts.routed_experts.w13_weight` 的 `gate_proj` / `up_proj`）附近追上并超越 Leader 线程尚未完成的 `D2hLayer` + `DetileBuffer`，就会导致其中一个专家栈（或半数切片）仍为初始全零，从而表现为 `layers.3...w13_weight` 的 `recv_absmean = 0.009274` 约为 `ref_absmean = 0.01824` 的一半（注：“其中一个栈或半个张量全零”是基于该均值比值与字典序位置的推断，而非由标量均值直接证明），而排在其后的 `layers.30..39, 4, 40..47, 5..9` 及 `qkv_proj` 因 Leader 尚未完成 D2H，被 Follower 线程直接推送了初始全零的 Host Staging Buffer（`recv_absmean = 0`）。
    - **来自 `p1a-moe-smoke-12` 的历史日志交叉印证**：
      - 回查同样运行在旧镜像 `@sha256:dcece4bc...` 上但未开启 `VERIFY_PARITY` 的 `p1a-moe-smoke-12`（`p1a_12_driver.log`）可见：**Step 0 初始同步后生成的预热批次（供 `step:1` 和 `step:2` 使用）同样发生了权重损坏**（`training_ppl = 6443.22` / `5379.75`，`rollout_corr/kl = 3.14`，GSM8K `critic/score/mean = 0.0`，生成长度 100% 撞满 `1024`）；因所有回答得分为 `0`，`step:1` 梯度范数 `actor/grad_norm = 0.0`（Trainer 权重未变）。
      - 而在 **`step:1` 结束触发的第二次 Raiden 权重同步（Step 1 Sync）** 中，由于复用了同一个 `self._trainer_raiden_ws`（`bind_weights`），且其持久化 Host Staging Buffer 已在 Step 0 结束前被 Leader 线程完整写入了初始权重，第二次同步后生成的 `step:3` 轨迹立即恢复完全正常（**`training_ppl = 1.0964`, `rollout_ppl = 1.0943`, `rollout_corr/kl = 0.0017`, `critic/score/mean = 0.7578`, GSM8K 验证集准确率 `58.59%`**）。这与“Step 0 首次同步时 Follower 线程读取了尚未完成 D2H 的全零 Host Staging Buffer”完全吻合。
@@ -123,10 +129,10 @@
      - **代码 Git SHA**: `c2e176240dcff0a25911b0576880e46624f7249b`（未合入 `#110` 或 `#116`）；
      - **容器镜像 Digest**: `us-west2-docker.pkg.dev/tpu-pytorch/raycluster/verl-tpu@sha256:d92a2b3d6667584d67ea51874a721228a96c799263ab40f4aee168680476f64e`（`verl-tpu:v20261006-tsync1006`，含 `torch-tpu==0.1.2.dev20261006000518` 与 `tpu-sync-torch==0.0.1.dev20261006025601`）；
      - **拓扑与校验开关**: `2 × 2×2×4` Slice（Trainer `16 physical chips / 32 TensorCore devices`, `dp_shard=8, cp=4`；Rollout `16 physical chips / 32 TensorCore devices`, `TP=32, EP=32`），`VERIFY_PARITY=all`，`TOTAL_TRAINING_STEPS=3`，`NUM_WARMUP_BATCHES=1`，`TRAIN_BATCH_SIZE=8`，`PPO_MINI_BATCH_SIZE=8`，`N_RESP_PER_PROMPT=4`。
-2. **受控实验结果判定分支**：
-   - **情形 A**：若 `p1c-retool-rl-06` 直接通过 Step-0 `exact` 校验（32 个 Sampler ranks 上 `435 / 435` 项 `0 mismatched, 0 unresolved`）并正常完成 Step 1–3 训练，则证实问题确由旧镜像 `tpu-sync-torch==0.0.1.dev20261001220631` 的 `PushWeightsReshardedLocal` 并发 D2H 竞态引起，且当前 `c2e17624` 的 2-D 独立分配路径无需合入 `#116` workaround；
+2. **受控实验结果判定分支与归因边界**：
+   - **情形 A**：若 `p1c-retool-rl-06` 通过 Step-0 `exact` 校验（核实日志摘要行确为 `32 sampler ranks, [435] tensors checked per rank, 0 mismatched, 0 unresolved`）并正常完成 Step 1–3 训练（`verify_norms` 通过、同步后 `ppl_ratio ~ 1.0`、`grad_norm > 0`、多轮工具调用与 `rollout_audit` 掩码 0 违规），则证明**切换到新版镜像组合（`torch-tpu==0.1.2.dev20261006000518` + `tpu-sync-torch==0.0.1.dev20261006025601`）已解决本次观察到的 `P1c` 权重损坏问题，结果支持假设 H1**，且当前 `c2e17624` 的 2-D 独立分配路径无需合入 `#116` workaround 即可进入 `Stage P1c` 完整验收与 `Stage P3`。（**归因边界说明**：由于新版镜像同时升级了 `torch-tpu` 与 `tpu-sync-torch`，仅凭 `-06` 通过尚不能在单变量意义上单独证明 D2H 竞态是唯一根因；若需做严格单包归因，还需固定 `torch-tpu` 仅单独升级 `tpu-sync-torch` wheel 或在 C++/Host Buffer 层插桩验证。）
    - **情形 B**：若新版镜像在 Step-0 绑定 2-D 折叠专家栈时明确抛出 `UnpackTorchTensor: Tensor ... leading (block) dimension ... does not match its base storage buffer`，则进入**阶段二**，仅针对性评估移植 `#116` 的必要部分；
-   - **情形 C**：若仍复现 Step-0 部分全零 mismatch，则采集 H2D 前后的 staging buffer 诊断日志与全 32 ranks 的 `exact_result` 明细，精准区分 H1 / H2 / H3。
+   - **情形 C**：若仍复现 Step-0 部分全零 mismatch，则使用本 PR 新增的未截断逐 rank JSON 落盘与 `self._raiden_staging`（融合前 `gate_proj / up_proj / down_proj`）诊断日志，精准区分零值产生于 H2D 前/中（H1/H2）还是 H2D 后的融合/转置阶段（H3）。
 
 ### 阶段二：按需评估补丁移植与通过门槛（Gate Criteria）
 

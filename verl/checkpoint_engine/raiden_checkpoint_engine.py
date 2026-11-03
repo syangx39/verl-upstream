@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -394,34 +395,100 @@ class RaidenParityCheck:
         return {"exact_parity": True} if self.exact and not global_steps else {}
 
     @classmethod
-    def report_exact(cls, global_steps: Optional[int], install_results: list) -> bool:
+    def report_exact(
+        cls,
+        global_steps: Optional[int],
+        install_results: list,
+        expected_ranks: Optional[int] = None,
+        expected_checked_per_rank: Optional[int] = None,
+        dump_dir: Optional[str] = None,
+    ) -> bool:
         """Log one summary of the per-rank ``exact_result`` dicts that every sampler worker returns under
-        ``install_raiden_weights(...)["exact_parity"]``.
+        ``install_raiden_weights(...)["exact_parity"]``, archive full per-rank results to JSON, and verify
+        full rank/tensor coverage.
 
-        Returns True when every received tensor matches bit for bit. Raises ``RaidenParityError`` on any mismatched
-        or unresolved tensor, or when no sampler returned a result.
+        Returns True when every expected sampler rank returned a unique result with uniform positive tensor
+        coverage and every received tensor matches bit for bit. Raises ``RaidenParityError`` on any mismatched,
+        unresolved, duplicate-rank, or incomplete-coverage result.
         """
-        results = [
-            w["exact_parity"]
-            for res in install_results
-            for w in (res if isinstance(res, list | tuple) else [res])
-            if isinstance(w, dict) and isinstance(w.get("exact_parity"), dict)
-        ]
+        results = []
+        for replica_idx, res in enumerate(install_results):
+            workers = res if isinstance(res, list | tuple) else [res]
+            for w in workers:
+                if isinstance(w, dict) and isinstance(w.get("exact_parity"), dict):
+                    entry = dict(w["exact_parity"])
+                    entry.setdefault("replica", replica_idx)
+                    results.append(entry)
         step = global_steps or 0
         if not results:
             raise RaidenParityError(f"[RAIDEN PARITY EXACT | Step {step}] no sampler returned a result")
-        results.sort(key=lambda r: r["rank"])
+        results.sort(key=lambda r: (int(r.get("replica", 0)), int(r["rank"])))
+        replica_rank_pairs = [(int(r.get("replica", 0)), int(r["rank"])) for r in results]
+        distinct_pairs = sorted(set(replica_rank_pairs))
+        distinct_ranks = sorted({int(r["rank"]) for r in results})
         num_mismatched = sum(r["num_mismatched"] for r in results)
         num_unresolved = sum(len(r["unresolved"]) for r in results)
-        checked_per_rank = sorted({r["checked"] for r in results})
+        checked_per_rank = sorted({int(r["checked"]) for r in results})
+
+        target_dir = dump_dir or os.environ.get("RAIDEN_PARITY_DUMP_DIR") or "/tmp"
+        archive_path = os.path.join(target_dir, f"raiden_exact_parity_step_{step}.json")
+        archived_note = ""
+        try:
+            os.makedirs(target_dir, exist_ok=True)
+            archive_payload = {
+                "step": step,
+                "num_results": len(results),
+                "expected_ranks": expected_ranks,
+                "expected_checked_per_rank": expected_checked_per_rank,
+                "replica_rank_pairs": replica_rank_pairs,
+                "distinct_ranks": distinct_ranks,
+                "checked_per_rank": checked_per_rank,
+                "num_mismatched": num_mismatched,
+                "num_unresolved": num_unresolved,
+                "ranks": [
+                    {
+                        "replica": int(r.get("replica", 0)),
+                        "rank": int(r["rank"]),
+                        "checked": int(r["checked"]),
+                        "num_mismatched": int(r["num_mismatched"]),
+                        "unresolved": list(r.get("unresolved", [])),
+                        "all_mismatched": list(r.get("all_mismatched", r.get("mismatched", []))),
+                    }
+                    for r in results
+                ],
+            }
+            with open(archive_path, "w", encoding="utf-8") as f:
+                json.dump(archive_payload, f, indent=2)
+            archived_note = f" (full per-rank report archived to {archive_path})"
+        except Exception as exc:
+            logger.warning(f"[RAIDEN PARITY EXACT | Step {step}] failed to archive report to {archive_path}: {exc}")
+
+        coverage_errors = []
+        if len(distinct_pairs) != len(results):
+            coverage_errors.append(
+                f"duplicate sampler (replica, rank) IDs in exact_parity results: {replica_rank_pairs}"
+            )
+        if expected_ranks is not None and len(distinct_pairs) != expected_ranks:
+            coverage_errors.append(
+                f"expected {expected_ranks} sampler worker results, got {len(distinct_pairs)} ({replica_rank_pairs})"
+            )
+        if len(checked_per_rank) != 1 or checked_per_rank[0] <= 0:
+            coverage_errors.append(f"non-uniform or zero tensors checked per rank: {checked_per_rank}")
+        if expected_checked_per_rank is not None and checked_per_rank != [expected_checked_per_rank]:
+            coverage_errors.append(
+                f"expected [{expected_checked_per_rank}] tensors checked per rank, got {checked_per_rank}"
+            )
+
         summary = (
-            f"[RAIDEN PARITY EXACT | Step {step}] {len(results)} sampler ranks, {checked_per_rank} tensors checked "
-            f"per rank, {num_mismatched} mismatched, {num_unresolved} unresolved"
+            f"[RAIDEN PARITY EXACT | Step {step}] {len(results)} sampler ranks (distinct_workers={len(distinct_pairs)}, "
+            f"ranks={distinct_ranks}), {checked_per_rank} tensors checked per rank, {num_mismatched} mismatched, "
+            f"{num_unresolved} unresolved{archived_note}"
         )
-        if num_mismatched == 0 and num_unresolved == 0:
+        if num_mismatched == 0 and num_unresolved == 0 and not coverage_errors:
             logger.info(f"{summary}: every received tensor matches the checkpoint bit for bit")
             return True
-        details = [f"  * rank {r['rank']}: {line}" for r in results for line in r["mismatched"]]
+        details = [f"  * coverage: {err}" for err in coverage_errors]
+        details += [f"  * rank {r['rank']}: {line}" for r in results for line in r["mismatched"]]
         details += [f"  * rank {r['rank']}: unresolved {r['unresolved'][:5]}" for r in results if r["unresolved"]]
         detail_text = "\n".join(details[: cls.MAX_DETAIL_LINES])
         raise RaidenParityError(f"{summary}\n{detail_text}")
@@ -429,7 +496,13 @@ class RaidenParityCheck:
     # ---- exact check: sampler worker side ----
 
     @torch.no_grad()
-    def check_exact(self, name: str, target: torch.Tensor, received: torch.Tensor) -> None:
+    def check_exact(
+        self,
+        name: str,
+        target: torch.Tensor,
+        received: torch.Tensor,
+        extra_info: Optional[str] = None,
+    ) -> None:
         """Compare ``received`` with ``target``; call before ``target`` is overwritten."""
         try:
             ref, new = target.detach().float(), received.detach().float()
@@ -439,9 +512,24 @@ class RaidenParityCheck:
             self.checked += 1
             diff = (ref - new).abs().max().item()
             if diff != 0.0:
+                ref_zero_frac = (ref == 0).float().mean().item()
+                recv_zero_frac = (new == 0).float().mean().item()
+                half_note = ""
+                if name.endswith(".w13_weight") and new.ndim == 3 and new.shape[-1] % 2 == 0:
+                    half = new.shape[-1] // 2
+                    h0_absmean = new[..., :half].abs().mean().item()
+                    h0_zero = (new[..., :half] == 0).float().mean().item()
+                    h1_absmean = new[..., half:].abs().mean().item()
+                    h1_zero = (new[..., half:] == 0).float().mean().item()
+                    half_note = (
+                        f" w13_h0(gate)_absmean={h0_absmean:.4g}(zero={h0_zero:.4g})"
+                        f" w13_h1(up)_absmean={h1_absmean:.4g}(zero={h1_zero:.4g})"
+                    )
+                extra_suffix = f" {extra_info}" if extra_info else ""
                 self.mismatched.append(
                     f"{name}: max|diff|={diff:.4g} ref_absmean={ref.abs().mean().item():.4g} "
-                    f"recv_absmean={new.abs().mean().item():.4g}"
+                    f"recv_absmean={new.abs().mean().item():.4g} ref_zero_frac={ref_zero_frac:.4g} "
+                    f"recv_zero_frac={recv_zero_frac:.4g}{half_note}{extra_suffix}"
                 )
         except Exception as e:  # never break the sync because of the check
             self.mismatched.append(f"{name}: parity check failed: {e}")
@@ -452,6 +540,7 @@ class RaidenParityCheck:
             "checked": self.checked,
             "num_mismatched": len(self.mismatched),
             "mismatched": self.mismatched[: self.MAX_DETAIL_LINES],
+            "all_mismatched": list(self.mismatched),
             "unresolved": list(unresolved),
         }
 
@@ -1143,7 +1232,8 @@ async def update_raiden_weights(
     #    resumes generation on wrong weights. Off by default, so it adds nothing to the resume path.
     t_parity_start = time.perf_counter()
     if install_kwargs:
-        parity.report_exact(global_steps, install_results)
+        expected_sampler_ranks = sum(_replica_num_workers(r) for r in manager.replicas)
+        parity.report_exact(global_steps, install_results, expected_ranks=expected_sampler_ranks or None)
     if parity.norm:
         await parity.verify_norms(manager, global_steps)
     t_parity = time.perf_counter() - t_parity_start

@@ -196,9 +196,59 @@ def _exact(rank, mismatched=(), unresolved=(), checked=10):
     }
 
 
-def test_report_exact_passes_when_every_rank_matches():
+def test_report_exact_passes_when_every_rank_matches(tmp_path):
     # One list of worker results per replica, as collective_rpc returns them.
-    assert RaidenParityCheck.report_exact(0, [[_exact(0), _exact(1)], [_exact(0), _exact(1)]]) is True
+    assert (
+        RaidenParityCheck.report_exact(
+            0,
+            [[_exact(0), _exact(1)], [_exact(0), _exact(1)]],
+            expected_ranks=4,
+            expected_checked_per_rank=10,
+            dump_dir=str(tmp_path),
+        )
+        is True
+    )
+    archive = tmp_path / "raiden_exact_parity_step_0.json"
+    assert archive.is_file()
+
+
+def test_report_exact_archives_untruncated_mismatches_and_enforces_coverage(tmp_path):
+    parity = RaidenParityCheck("exact")
+    ref = torch.ones((2, 4, 6), dtype=torch.bfloat16)
+    recv_half_zero = ref.clone()
+    recv_half_zero[..., 3:] = 0.0
+    parity.check_exact(
+        "model.layers.3.mlp.experts.routed_experts.w13_weight",
+        ref,
+        recv_half_zero,
+        extra_info="staging_gate_absmean=1(zero=0) staging_up_absmean=0(zero=1)",
+    )
+    for idx in range(70):
+        parity.check_exact(f"layer.{idx}.weight", torch.ones(2), torch.zeros(2))
+    res0 = parity.exact_result(rank=0, unresolved=[])
+    assert len(res0["mismatched"]) == RaidenParityCheck.MAX_DETAIL_LINES
+    assert len(res0["all_mismatched"]) == 71
+    assert "w13_h0(gate)_absmean=" in res0["all_mismatched"][0]
+    assert "w13_h1(up)_absmean=0(zero=1)" in res0["all_mismatched"][0]
+    assert "staging_up_absmean=0(zero=1)" in res0["all_mismatched"][0]
+
+    with pytest.raises(RaidenParityError, match="71 mismatched"):
+        RaidenParityCheck.report_exact(0, [[{"exact_parity": res0}]], dump_dir=str(tmp_path))
+
+    import json
+
+    archived = json.loads((tmp_path / "raiden_exact_parity_step_0.json").read_text())
+    assert len(archived["ranks"][0]["all_mismatched"]) == 71
+
+    # Duplicate rank within a replica or missing expected ranks must fail closed even with 0 mismatches.
+    with pytest.raises(RaidenParityError, match="duplicate sampler"):
+        RaidenParityCheck.report_exact(0, [[_exact(0), _exact(0)]], dump_dir=str(tmp_path))
+    with pytest.raises(RaidenParityError, match="expected 4 sampler worker results"):
+        RaidenParityCheck.report_exact(0, [[_exact(0), _exact(1)]], expected_ranks=4, dump_dir=str(tmp_path))
+    with pytest.raises(RaidenParityError, match="non-uniform or zero tensors checked"):
+        RaidenParityCheck.report_exact(
+            0, [[_exact(0, checked=10), _exact(1, checked=9)]], dump_dir=str(tmp_path)
+        )
 
 
 @pytest.mark.parametrize(

@@ -63,6 +63,8 @@ All P0 preparation deliverables (`P0.1`–`P0.4`, `P0.6`, `P0.8`–`P0.10`) are 
 | `P3` | `p3-retool-rl-10` (same config as `-02`) | `aa10dfed` | `sha256:d92a2b3d...` | 2 (1 trainer + 1 rollout) | 1->9 of 25 (`num_warmup=2`) | 19:11:51 / 19:24:57 / 19:25:02 / 20:15:07 | - | **STOPPED AT STEP 9 BY A LAUNCHER BUG** (Step-0 `exact` parity `0 / 13,920` mismatched at 19:38:57; Step-0 AIME 2024 / 2025 mean@30 `23.78%` / `16.11%` (maj@30 `41.14%` / `25.65%`, best@30 `62.76%` / `50.28%`), dump complete; steps 1–9 `norm` parity 100%. At 20:15:03 one failed `kubectl get` of the JobSet was read as "deleted", and the launcher's exit cleanup deleted the still-running JobSet; fixed in #14) | `<RUN_DIR>/p3-retool-rl-10` |
 | `P3` | `p3-retool-rl-11` (same config, `KEEP_JOBSET=1`) | `aa10dfed` | `sha256:d92a2b3d...` | 2 (1 trainer + 1 rollout) | 1->25 (`num_warmup=2`) | 20:16:44 / 20:24:44 / 20:25:49 / 22:00:21 | **`86 s`** median wall-clock per step (steps 3–25, between Raiden syncs); `timing_s/step` median `38.44 s` (steps 2–25); step 1 `345.27 s` | **SUCCEEDED** (exit 0; verdict `SUCCEEDED` on attempt 1 of 4, no JobSet restarts or Kueue evictions; Step-0 `exact` parity `0 / 13,920` mismatched; `norm` parity 25 / 25 steps; Step-0 → Step-25 AIME 2024 mean@30 `25.56%` → `26.78%`, AIME 2025 `17.33%` → `17.78%`; section 4.0.2) | `<RUN_DIR>/p3-retool-rl-11` |
 
+Code SHAs `6162456a` and `c2e17624` are commits from #7 (branch `retool-tpu7x-exp-results`). Their tree also contains `3bb3ce84`, an older Raiden workaround for earlier `tpu-sync-torch` builds (it overrides `is_variable_spec_identical`, orders variables by descending size and skips `unbind_weights()` when it is missing). The passing runs (`a7c6be29`, `aa10dfed`, from #10) do not contain this workaround. When `tpu-main` was merged into #7 after #10, the merge kept `tpu-main`'s versions of `raiden_checkpoint_engine.py`, `tpu_utils.py`, `test_raiden_release_on_cpu.py` and `run_qwen3_30b_a3b_dapo_torchtitan.sh`. #7 therefore adds only documentation and result files.
+
 ---
 
 ## 3. Checks (`R1`–`R13`)
@@ -340,4 +342,3 @@ The TPU v7x SFT loss curve closely reproduces the TPU v5p SFT reference (`myaf5p
 | 21 | `+0.2702` | `3,251.5` | `0.006836` | `9.64` | `0.1004` | `0.00796` | `187.5 s` | `0.2 s` | `170.1 s` | `15.8 s` |
 | 22 | `+0.4424` | `2,635.4` | `0.000977` | `9.12` | `0.1004` | `0.00750` | `1,795.3 s` | `1,639.2 s` | `140.4 s` | `14.9 s` |
 | 23 | `+0.6562` | `2,200.7` | `0.000977` | `7.52` | `0.1060` | `0.00833` | `1,430.7 s` | `1,299.6 s` | `114.7 s` | `15.6 s` |
-

@@ -31,9 +31,18 @@ import uvicorn
 from fastapi import FastAPI, Request, Response
 from pydantic import BaseModel, Field
 
-# NOTE / TODO(security): This server executes model-generated Python snippets inside an isolated GKE TPU
-# training pod and binds strictly to loopback (127.0.0.1) so it is unreachable outside the local pod.
-# For multi-tenant or external network exposure, add bearer-token authentication and container/nsjail isolation.
+# SECURITY & ISOLATION BOUNDARY:
+# - This server executes model-generated Python snippets using local Python subprocesses (`create_subprocess_exec`)
+#   bound strictly to loopback (`127.0.0.1`). When started as root (e.g. inside a container), it drops child
+#   process privileges to `nobody:nogroup` (65534:65534), clears supplementary groups, hides GPUs via
+#   `CUDA_VISIBLE_DEVICES=""`, and applies `RLIMIT_AS` + process-group `SIGKILL` timeouts.
+# - HOWEVER, local subprocesses still share the container's filesystem mount table (including any world-writable
+#   mounts such as `/data` with `0777` mode) and kernel namespaces. In particular, when the training pod runs
+#   with `securityContext.privileged: true` (as required by NVIDIA DRA `ComputeDomain` IMEX channel injection on
+#   GB200), in-Pod subprocess execution is NOT a security boundary against untrusted or adversarial code.
+# - Use this loopback helper ONLY in single-tenant, trusted benchmark environments. For untrusted models/prompts
+#   or shared environments, deploy SandboxFusion in a dedicated, non-privileged sandbox container (`nsjail`/`gVisor`)
+#   without shared storage or host device mounts.
 app = FastAPI(title="SandboxFusion Local Server", docs_url=None, redoc_url=None, openapi_url=None)
 
 ALLOWED_LANGUAGES = frozenset({"python", "python3"})
@@ -73,7 +82,57 @@ class RunCodeRequest(BaseModel):
     fetch_files: list[str] = Field(default_factory=list)
 
 
-def _make_preexec_fn(memory_limit_mb: int):
+def _infer_executable_owner_uid_gid(executable_path: Optional[str] = None) -> tuple[int, int]:
+    """Return (65534, 65534) unless an ancestor directory of sys.executable is 0750 owned by an unprivileged user."""
+    target = executable_path or sys.executable
+    candidates = [os.path.abspath(target)]
+    real_target = os.path.realpath(target)
+    if real_target not in candidates:
+        candidates.append(real_target)
+    for path in candidates:
+        curr = os.path.dirname(path)
+        visited: set[str] = set()
+        while curr and curr not in visited:
+            visited.add(curr)
+            try:
+                st = os.stat(curr)
+            except OSError:
+                break
+            if (st.st_mode & 0o001) == 0 and st.st_uid > 0 and st.st_gid > 0 and (st.st_mode & 0o110) != 0:
+                return (st.st_uid, st.st_gid)
+            parent = os.path.dirname(curr)
+            if parent == curr:
+                break
+            curr = parent
+    return (65534, 65534)
+
+
+def _resolve_drop_uid_gid() -> Optional[tuple[int, int]]:
+    """Return unprivileged (uid, gid) to drop to when running as root, or raise if root execution is disallowed."""
+    if os.geteuid() != 0:
+        return None
+    if os.environ.get("SANDBOX_ALLOW_ROOT_EXEC", "0") == "1":
+        return None
+    default_uid, default_gid = _infer_executable_owner_uid_gid()
+    uid = int(os.environ.get("SANDBOX_UNPRIVILEGED_UID", str(default_uid)))
+    gid = int(os.environ.get("SANDBOX_UNPRIVILEGED_GID", str(default_gid)))
+    if uid <= 0 or gid <= 0:
+        raise PermissionError(f"Refusing to drop to privileged uid={uid} gid={gid}")
+    return (uid, gid)
+
+
+def _prepare_exec_dir_permissions(tmp_dir: str, script_path: str, drop_uid_gid: Optional[tuple[int, int]]) -> None:
+    """Chown and chmod the temporary execution directory for the unprivileged target user; fail closed on error."""
+    if drop_uid_gid is None:
+        return
+    uid, gid = drop_uid_gid
+    os.chown(tmp_dir, uid, gid)
+    os.chmod(tmp_dir, 0o700)
+    os.chown(script_path, uid, gid)
+    os.chmod(script_path, 0o600)
+
+
+def _make_preexec_fn(memory_limit_mb: int, drop_uid_gid: Optional[tuple[int, int]] = None):
     def _preexec():
         os.setsid()
         if memory_limit_mb and memory_limit_mb > 0:
@@ -83,6 +142,15 @@ def _make_preexec_fn(memory_limit_mb: int):
                 resource.setrlimit(resource.RLIMIT_AS, (limit_bytes, limit_bytes))
             except (ValueError, OSError):
                 pass
+        if drop_uid_gid is not None:
+            uid, gid = drop_uid_gid
+            if uid <= 0 or gid <= 0:
+                raise PermissionError(f"Refusing to run child with privileged uid={uid} gid={gid}")
+            os.setgroups([])
+            os.setgid(gid)
+            os.setuid(uid)
+            if os.geteuid() == 0 or os.getegid() == 0:
+                raise PermissionError("Failed to drop root privileges in child process")
 
     return _preexec
 
@@ -113,11 +181,23 @@ async def run_code(req: RunCodeRequest) -> dict[str, Any]:
             with open(script_path, "w", encoding="utf-8") as f:
                 f.write(req.code)
 
+            try:
+                drop_uid_gid = _resolve_drop_uid_gid()
+                _prepare_exec_dir_permissions(tmp_dir, script_path, drop_uid_gid)
+            except (PermissionError, OSError, ValueError) as exc:
+                return {
+                    "status": "SandboxError",
+                    "message": f"PrivilegeDropError: {type(exc).__name__}: {exc}",
+                    "compile_result": None,
+                    "run_result": None,
+                }
+
             env = {
                 "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
                 "HOME": tmp_dir,
                 "TMPDIR": tmp_dir,
                 "PYTHONIOENCODING": "utf-8",
+                "CUDA_VISIBLE_DEVICES": "",
                 "OPENBLAS_NUM_THREADS": "1",
                 "OMP_NUM_THREADS": "1",
                 "MKL_NUM_THREADS": "1",
@@ -126,18 +206,19 @@ async def run_code(req: RunCodeRequest) -> dict[str, Any]:
                 env["PYTHONPATH"] = os.environ["PYTHONPATH"]
 
             start_t = time.monotonic()
-            proc = await asyncio.create_subprocess_exec(
-                sys.executable,
-                "-u",
-                script_path,
-                stdin=asyncio.subprocess.PIPE if stdin_bytes else asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=tmp_dir,
-                env=env,
-                preexec_fn=_make_preexec_fn(req.memory_limit_MB),
-            )
+            proc = None
             try:
+                proc = await asyncio.create_subprocess_exec(
+                    sys.executable,
+                    "-u",
+                    script_path,
+                    stdin=asyncio.subprocess.PIPE if stdin_bytes else asyncio.subprocess.DEVNULL,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=tmp_dir,
+                    env=env,
+                    preexec_fn=_make_preexec_fn(req.memory_limit_MB, drop_uid_gid),
+                )
                 stdout_bytes, stderr_bytes = await asyncio.wait_for(
                     proc.communicate(input=stdin_bytes if stdin_bytes else None),
                     timeout=timeout,
@@ -160,11 +241,12 @@ async def run_code(req: RunCodeRequest) -> dict[str, Any]:
                 }
             except asyncio.TimeoutError:
                 elapsed = time.monotonic() - start_t
-                try:
-                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-                except OSError:
-                    proc.kill()
-                await proc.wait()
+                if proc is not None:
+                    try:
+                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    except OSError:
+                        proc.kill()
+                    await proc.wait()
                 return {
                     "status": "Failed",
                     "message": "TimeLimitExceeded",
@@ -179,10 +261,11 @@ async def run_code(req: RunCodeRequest) -> dict[str, Any]:
                 }
             except (RuntimeError, OSError) as exc:
                 elapsed = time.monotonic() - start_t
-                try:
-                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-                except OSError:
-                    pass
+                if proc is not None:
+                    try:
+                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    except OSError:
+                        pass
                 return {
                     "status": "Failed",
                     "message": "ExecutionError",
@@ -192,16 +275,16 @@ async def run_code(req: RunCodeRequest) -> dict[str, Any]:
                         "execution_time": elapsed,
                         "return_code": -1,
                         "stdout": "",
-                        "stderr": f"{type(exc).__name__}\n",
+                        "stderr": f"{type(exc).__name__}: {exc}\n",
                     },
                 }
 
 
-def check_server(host: str = "127.0.0.1", port: int = 18080) -> bool:
-    """Verify the local SandboxFusion HTTP server responds cleanly to a smoke-test evaluation."""
-    url = f"http://{host}:{port}/run_code"
+def check_server(host: str = "127.0.0.1", port: int = 18080, url: Optional[str] = None) -> bool:
+    """Verify the target SandboxFusion HTTP server responds cleanly to a smoke-test evaluation."""
+    target_url = url or f"http://{host}:{port}/run_code"
     payload = json.dumps({"code": "print(6*7)", "run_timeout": 5}).encode("utf-8")
-    req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
+    req = urllib.request.Request(target_url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=5) as resp:
             body = json.loads(resp.read().decode("utf-8"))
@@ -216,11 +299,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="SandboxFusion-compatible loopback HTTP server")
     parser.add_argument("--host", type=str, default="127.0.0.1")
     parser.add_argument("--port", type=int, default=18080)
+    parser.add_argument("--url", type=str, default=None, help="Full /run_code endpoint URL for --check")
     parser.add_argument("--workers", type=int, default=4)
-    parser.add_argument("--check", action="store_true", help="Check if local server is healthy and exit")
+    parser.add_argument("--check", action="store_true", help="Check if target server is healthy and exit")
     args = parser.parse_args()
     if args.check:
-        sys.exit(0 if check_server(args.host, args.port) else 1)
+        sys.exit(0 if check_server(args.host, args.port, args.url) else 1)
     script_dir = os.path.dirname(os.path.abspath(__file__))
     verl_root = os.path.abspath(os.path.join(script_dir, "..", "..", ".."))
     existing_py_path = os.environ.get("PYTHONPATH", "")

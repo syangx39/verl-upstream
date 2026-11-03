@@ -14,6 +14,7 @@
 # limitations under the License.
 """Ray-managed SandboxFusion code execution tool with auto-started loopback server on port 18080."""
 
+import json
 import logging
 import os
 import subprocess
@@ -89,9 +90,19 @@ class ExecutionWorker:
 
     @staticmethod
     def _is_sandbox_healthy(port: int) -> bool:
+        payload = json.dumps({"code": "print(6*7)", "run_timeout": 5}).encode("utf-8")
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/run_code",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
         try:
-            with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=1.0) as resp:
-                return resp.status == 200
+            with urllib.request.urlopen(req, timeout=3.0) as resp:
+                if resp.status != 200:
+                    return False
+                body = json.loads(resp.read().decode("utf-8"))
+                return body.get("status") == "Success"
         except (urllib.error.URLError, OSError, ValueError):
             return False
 
@@ -99,9 +110,13 @@ class ExecutionWorker:
     def _ensure_local_sandbox_server(cls, port: int = 18080, workers: int = 4) -> None:
         if cls._is_sandbox_healthy(port):
             return
+        if os.environ.get("SANDBOX_DISABLE_AUTO_START", "0") == "1":
+            raise RuntimeError(
+                f"Local SandboxFusion server on 127.0.0.1:{port} is not running and SANDBOX_DISABLE_AUTO_START=1"
+            )
         server_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sandbox_fusion_server.py")
         if not os.path.isfile(server_script):
-            return
+            raise FileNotFoundError(f"Local SandboxFusion server script not found: {server_script}")
         with open("/tmp/sandbox_fusion_server_worker.log", "a", encoding="utf-8") as log_file:
             subprocess.Popen(
                 [sys.executable, server_script, "--host", "127.0.0.1", "--port", str(port), "--workers", str(workers)],
@@ -113,6 +128,7 @@ class ExecutionWorker:
             if cls._is_sandbox_healthy(port):
                 return
             time.sleep(0.2)
+        raise RuntimeError(f"Local SandboxFusion server on 127.0.0.1:{port} failed healthcheck after startup")
 
     def _init_rate_limit(self, rate_limit: int):
         for attempt in range(5):
@@ -190,6 +206,40 @@ def init_execution_pool(
     raise NotImplementedError("Process mode is not implemented yet")
 
 
+def resolve_sandbox_fusion_endpoint(config_url: str) -> tuple[str, Optional[int]]:
+    """Resolve the active SandboxFusion endpoint URL and optional loopback auto-start port from env/config.
+
+    Priority:
+    1. ``SANDBOX_FUSION_URL`` environment variable (if non-empty).
+    2. ``SANDBOX_FUSION_HOST`` and/or ``SANDBOX_FUSION_PORT`` overriding the host/port of ``config_url``.
+    3. ``config_url`` from the YAML tool config.
+
+    Returns ``(resolved_url, local_port)`` where ``local_port`` is ``None`` whenever the resolved host
+    is external (non-loopback) or ``SANDBOX_DISABLE_AUTO_START=1``, preventing local server auto-start.
+    """
+    env_url = os.environ.get("SANDBOX_FUSION_URL", "").strip()
+    base_url = env_url if env_url else (config_url or "").strip()
+    if not base_url:
+        raise ValueError("sandbox_fusion_url is not set")
+
+    parsed = urllib.parse.urlparse(base_url)
+    if not env_url:
+        env_host = os.environ.get("SANDBOX_FUSION_HOST", "").strip()
+        env_port = os.environ.get("SANDBOX_FUSION_PORT", "").strip()
+        host = env_host if env_host else (parsed.hostname or "127.0.0.1")
+        port = int(env_port) if env_port else parsed.port
+        if env_host or env_port:
+            host_bracket = f"[{host}]" if ":" in host and not host.startswith("[") else host
+            netloc = f"{host_bracket}:{port}" if port is not None else host_bracket
+            parsed = parsed._replace(netloc=netloc)
+
+    resolved_url = urllib.parse.urlunparse(parsed)
+    is_loopback = parsed.hostname in ("127.0.0.1", "localhost", "::1")
+    disable_auto_start = os.environ.get("SANDBOX_DISABLE_AUTO_START", "0") == "1"
+    local_port = (parsed.port or 18080) if (is_loopback and not disable_auto_start) else None
+    return resolved_url, local_port
+
+
 class SandboxFusionTool(BaseTool):
     """Tool wrapper for executing Python snippets against a SandboxFusion-compatible HTTP endpoint."""
 
@@ -201,16 +251,8 @@ class SandboxFusionTool(BaseTool):
         self.default_timeout = config.get("default_timeout", 8)
         self.default_language = config.get("default_language", "python")
         self.enable_global_rate_limit = config.get("enable_global_rate_limit", False)
-        self.sandbox_fusion_url = config.get("sandbox_fusion_url", "")
         self.memory_limit_mb = config.get("memory_limit_mb", 1024)
-        if self.sandbox_fusion_url == "":
-            raise ValueError("sandbox_fusion_url is not set")
-        parsed_url = urllib.parse.urlparse(self.sandbox_fusion_url)
-        env_port = os.environ.get("SANDBOX_FUSION_PORT")
-        if env_port and parsed_url.hostname in ("127.0.0.1", "localhost"):
-            parsed_url = parsed_url._replace(netloc=f"{parsed_url.hostname}:{int(env_port)}")
-            self.sandbox_fusion_url = urllib.parse.urlunparse(parsed_url)
-        local_port = parsed_url.port if parsed_url.hostname in ("127.0.0.1", "localhost") else None
+        self.sandbox_fusion_url, local_port = resolve_sandbox_fusion_endpoint(config.get("sandbox_fusion_url", ""))
         self.execution_pool = init_execution_pool(
             num_workers=self.num_workers,
             enable_global_rate_limit=self.enable_global_rate_limit,
@@ -218,7 +260,7 @@ class SandboxFusionTool(BaseTool):
             mode=PoolMode.ThreadMode,
             local_port=local_port,
         )
-        logger.info(f"Init SandboxFusionTool with config: {config}")
+        logger.info(f"Init SandboxFusionTool with url={self.sandbox_fusion_url} local_port={local_port}")
 
     def get_openai_tool_schema(self) -> OpenAIFunctionToolSchema:
         """Return the tool schema in OpenAI function-calling format."""

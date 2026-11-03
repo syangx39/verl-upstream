@@ -420,9 +420,7 @@ class vLLMRaidenWorkerExtension(_BaseWorkerExtension):
         valid_params = []
         replicas = {}
 
-        for idx, (name, g_shape) in enumerate(
-            sorted(global_shapes_map.items(), key=lambda x: (-int(np.prod(x[1])), x[0]))
-        ):
+        for idx, (name, g_shape) in enumerate(sorted(global_shapes_map.items(), key=lambda x: x[0])):
             g_shape = list(g_shape)
             spec_axes = [""] * len(g_shape)
             local_shape = list(g_shape)
@@ -491,6 +489,24 @@ class vLLMRaidenWorkerExtension(_BaseWorkerExtension):
             torch_tpu_sync.synchronize(wait=True)
         except Exception as e:
             logging.getLogger(__name__).warning(f"Could not synchronize via torch_tpu: {e}")
+
+        # Rebind the staging tensors tpu-sync's raw transfer rejects (see adapt_for_raw_transfer);
+        # install_raiden_weights keeps reading a logical-shape view of the bound buffer.
+        from verl.checkpoint_engine.raiden_checkpoint_engine import adapt_for_raw_transfer
+
+        valid_params, rebind_methods, raw_report = adapt_for_raw_transfer(
+            valid_params, bind_ip, f"Sampler Rank {rank_val}"
+        )
+        for name, t in valid_params:
+            if name in rebind_methods:
+                staging_tensors[name] = t.view(staging_tensors[name].shape)
+        self._raiden_staging = staging_tensors
+        self._sorted_vllm_params = valid_params
+        if raw_report and rank_val == 0:
+            logging.getLogger(__name__).warning(
+                f"[RAIDEN] raw-transfer probe (sampler rank 0): rebound {len(rebind_methods)} staging tensors "
+                f"({sorted(set(rebind_methods.values()))}); {'; '.join(raw_report)}"
+            )
 
         logging.getLogger(__name__).info(
             f"Raiden Sampler Rank {rank_val}: binding {len(valid_params)} staging tensors to WeightSynchronizer "
@@ -589,8 +605,8 @@ class vLLMRaidenWorkerExtension(_BaseWorkerExtension):
         and fuse/transpose them directly into vLLM model parameters.
 
         Args:
-            exact_parity: Set by RaidenParityCheck on the step-0 sync: compare every received tensor bit for bit
-                with the vLLM parameter it overwrites.
+            exact_parity: Set by RaidenParityCheck on the step-0 sync: compare every received tensor elementwise
+                in float32 (max|ref - new| == 0.0) with the vLLM parameter it overwrites.
 
         Returns:
             Per-worker timings in seconds: ``total`` (whole install), ``h2d`` (pure ``_raiden_ws.h2d()``)
@@ -682,8 +698,18 @@ class vLLMRaidenWorkerExtension(_BaseWorkerExtension):
                     f"vLLM has {tuple(w13.shape)} / {tuple(w2.shape)}"
                 )
             if parity:
-                parity.check_exact(f"{mod_key}.w13_weight", w13, new13)
-                parity.check_exact(f"{mod_key}.w2_weight", w2, new2)
+                parity.check_exact(
+                    f"{mod_key}.w13_weight",
+                    w13,
+                    new13,
+                    staging_tensors={"gate": gate, "up": up},
+                )
+                parity.check_exact(
+                    f"{mod_key}.w2_weight",
+                    w2,
+                    new2,
+                    staging_tensors={"down": down},
+                )
             w13.copy_(new13)
             w2.copy_(new2)
             written_keys.update((f"{mod_key}.w13_weight", f"{mod_key}.w2_weight"))
@@ -785,7 +811,14 @@ class vLLMRaidenWorkerExtension(_BaseWorkerExtension):
         # Returned through collective_rpc so the orchestrator can log them as step metrics.
         result = {"total": t_total, "h2d": t_h2d, "sync": t_sync}
         if parity:
-            result["exact_parity"] = parity.exact_result(getattr(self, "rank", 0), unresolved)
+            from verl.checkpoint_engine.raiden_checkpoint_engine import compute_expected_checked_params
+
+            expected_checked = compute_expected_checked_params(vllm_model, received_lm_head)
+            result["exact_parity"] = parity.exact_result(
+                getattr(self, "rank", 0),
+                unresolved,
+                expected_checked=expected_checked,
+            )
         return result
 
     def get_model_weights_stats(self, include_shards: bool = False) -> dict:
@@ -2070,9 +2103,10 @@ async def launch_tpu_vllm_servers(replica) -> None:
     }
     if "VERL_PLATFORM" in os.environ:
         env_vars["VERL_PLATFORM"] = os.environ["VERL_PLATFORM"]
-    for name in ("VERL_TPU_VLLM_ATTN_FP32_STATS", "VERL_TPU_VLLM_RMSNORM_CUDA_ORDER"):
-        if name in os.environ:
-            env_vars[name] = os.environ[name]
+    # Not `name`: that is the server actor's name, used below (shadowing it gave every replica the same name).
+    for var in ("VERL_TPU_VLLM_ATTN_FP32_STATS", "VERL_TPU_VLLM_RMSNORM_CUDA_ORDER"):
+        if var in os.environ:
+            env_vars[var] = os.environ[var]
     resource_pool = getattr(replica, "resource_pool", None)
     if resource_pool is not None and getattr(resource_pool, "pgs", None):
         try:

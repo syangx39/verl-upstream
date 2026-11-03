@@ -29,25 +29,43 @@ RETOOL_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 VERL_ROOT="$(cd "${RETOOL_DIR}/../../.." && pwd)"
 export PYTHONPATH=".:${VERL_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
 
-# 1. Start loopback SandboxFusion FastAPI code execution server on 127.0.0.1:18080
+# 1. Configure SandboxFusion code execution endpoint (loopback or external)
 SANDBOX_FUSION_HOST="${SANDBOX_FUSION_HOST:-127.0.0.1}"
 SANDBOX_FUSION_PORT="${SANDBOX_FUSION_PORT:-18080}"
 SANDBOX_FUSION_WORKERS="${SANDBOX_FUSION_WORKERS:-4}"
-if ! python3 "${RETOOL_DIR}/sandbox_fusion_server.py" --host "${SANDBOX_FUSION_HOST}" --port "${SANDBOX_FUSION_PORT}" --check >/dev/null 2>&1; then
-    nohup python3 "${RETOOL_DIR}/sandbox_fusion_server.py" \
-        --host "${SANDBOX_FUSION_HOST}" \
-        --port "${SANDBOX_FUSION_PORT}" \
-        --workers "${SANDBOX_FUSION_WORKERS}" > /tmp/sandbox_fusion_server.log 2>&1 &
-    SANDBOX_READY=0
-    for _ in $(seq 1 20); do
-        if python3 "${RETOOL_DIR}/sandbox_fusion_server.py" --host "${SANDBOX_FUSION_HOST}" --port "${SANDBOX_FUSION_PORT}" --check >/dev/null 2>&1; then
-            SANDBOX_READY=1
-            break
+export SANDBOX_FUSION_HOST SANDBOX_FUSION_PORT
+export SANDBOX_FUSION_URL="${SANDBOX_FUSION_URL:-http://${SANDBOX_FUSION_HOST}:${SANDBOX_FUSION_PORT}/run_code}"
+
+SANDBOX_EFFECTIVE_HOST="$(python3 -c 'import sys, urllib.parse; u = urllib.parse.urlparse(sys.argv[1]); print(u.hostname or sys.argv[2])' "${SANDBOX_FUSION_URL}" "${SANDBOX_FUSION_HOST}")"
+if [[ "${SANDBOX_EFFECTIVE_HOST}" == "127.0.0.1" || "${SANDBOX_EFFECTIVE_HOST}" == "localhost" || "${SANDBOX_EFFECTIVE_HOST}" == "::1" ]]; then
+    export SANDBOX_DISABLE_AUTO_START="${SANDBOX_DISABLE_AUTO_START:-0}"
+    if ! python3 "${RETOOL_DIR}/sandbox_fusion_server.py" --check --url "${SANDBOX_FUSION_URL}" >/dev/null 2>&1; then
+        if [[ "${SANDBOX_DISABLE_AUTO_START}" == "1" ]]; then
+            echo "ERROR: loopback sandbox_fusion_server is not running at ${SANDBOX_FUSION_URL} and SANDBOX_DISABLE_AUTO_START=1" >&2
+            exit 1
         fi
-        sleep 0.5
-    done
-    if [[ "${SANDBOX_READY}" != "1" ]]; then
-        echo "ERROR: local sandbox_fusion_server failed healthcheck on ${SANDBOX_FUSION_HOST}:${SANDBOX_FUSION_PORT}" >&2
+        nohup python3 "${RETOOL_DIR}/sandbox_fusion_server.py" \
+            --host "${SANDBOX_EFFECTIVE_HOST}" \
+            --port "${SANDBOX_FUSION_PORT}" \
+            --workers "${SANDBOX_FUSION_WORKERS}" > /tmp/sandbox_fusion_server.log 2>&1 &
+        SANDBOX_READY=0
+        for _ in $(seq 1 20); do
+            if python3 "${RETOOL_DIR}/sandbox_fusion_server.py" --check --url "${SANDBOX_FUSION_URL}" >/dev/null 2>&1; then
+                SANDBOX_READY=1
+                break
+            fi
+            sleep 0.5
+        done
+        if [[ "${SANDBOX_READY}" != "1" ]]; then
+            echo "ERROR: local sandbox_fusion_server failed healthcheck at ${SANDBOX_FUSION_URL}" >&2
+            exit 1
+        fi
+    fi
+else
+    # External sandbox mode: strictly forbid starting a local server and verify the external endpoint is reachable.
+    export SANDBOX_DISABLE_AUTO_START=1
+    if ! python3 "${RETOOL_DIR}/sandbox_fusion_server.py" --check --url "${SANDBOX_FUSION_URL}" >/dev/null 2>&1; then
+        echo "ERROR: external SandboxFusion endpoint ${SANDBOX_FUSION_URL} is unreachable (local server auto-start is disabled in external mode)" >&2
         exit 1
     fi
 fi
@@ -55,7 +73,7 @@ fi
 # 2. Run 4-case SandboxFusion FUNCTIONAL API verification (arithmetic, stderr, timeout+cleanup, concurrency).
 # NOTE: These 4 cases verify HTTP/subprocess functional compatibility only, NOT security or container isolation.
 SANDBOX_CHECK_JSON="${SANDBOX_CHECK_JSON:-/tmp/sandbox_4case_check.json}"
-python3 - <<'PY' "${SANDBOX_FUSION_HOST}" "${SANDBOX_FUSION_PORT}" "${SANDBOX_CHECK_JSON}"
+python3 - <<'PY' "${SANDBOX_FUSION_URL}" "${SANDBOX_CHECK_JSON}"
 from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
@@ -63,8 +81,7 @@ import sys
 import time
 import urllib.request
 
-host, port, out_path = sys.argv[1], int(sys.argv[2]), Path(sys.argv[3])
-url = f"http://{host}:{port}/run_code"
+url, out_path = sys.argv[1], Path(sys.argv[2])
 
 def call_run(code: str, run_timeout: float = 5.0):
     t0 = time.time()
@@ -238,7 +255,10 @@ fi
 python3 -m verl.trainer.main_ppo \
     "ray_kwargs.ray_init.runtime_env.py_executable=null" \
     "+ray_kwargs.ray_init.runtime_env.env_vars.PYTHONPATH=${PYTHONPATH}" \
+    "+ray_kwargs.ray_init.runtime_env.env_vars.SANDBOX_FUSION_URL='${SANDBOX_FUSION_URL}'" \
+    "+ray_kwargs.ray_init.runtime_env.env_vars.SANDBOX_FUSION_HOST='${SANDBOX_FUSION_HOST}'" \
     "+ray_kwargs.ray_init.runtime_env.env_vars.SANDBOX_FUSION_PORT='${SANDBOX_FUSION_PORT}'" \
+    "+ray_kwargs.ray_init.runtime_env.env_vars.SANDBOX_DISABLE_AUTO_START='${SANDBOX_DISABLE_AUTO_START:-0}'" \
     "+ray_kwargs.ray_init.runtime_env.env_vars.VLLM_USE_V1='${VLLM_USE_V1}'" \
     "${DUMP_ARGS[@]}" \
     trainer.use_v1=True \

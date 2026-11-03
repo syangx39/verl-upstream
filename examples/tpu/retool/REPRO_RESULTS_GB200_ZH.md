@@ -18,7 +18,7 @@
 | **Stage G1 (Attempt 1)** | GB200 ReTool 多轮工具调用 2 步 RL Smoke（初次尝试） | `g1-retool-rl-smoke-01` (`bace5a04`) | 2 节点 × 4 张 GB200（`NV16/NV17` 降级链路节点，未挂载 `ComputeDomain`） | 进入 `actor_init_model()`（已打印 `disabled expert-bias load balancing on 48 layers`），在 `torch.distributed.broadcast` 报 `ncclUnhandledCudaError: P2P is disabled between NVLINK connected GPUs 1 and 0` | 110 s | **FAIL（缺 `ComputeDomain` IMEX 通道 + `NV16/NV17` 节点）** |
 | **Stage G1 (Attempt 2)** | GB200 ReTool 多轮工具调用 3 步 RL Smoke（对照 TPU `P1c`） | `g1-retool-rl-smoke-02` (`bb704378`) | 2 节点 × 4 张 GB200（健康 `NV18` 全互联节点 + `ComputeDomain` IMEX 通道） | 挂载 `ComputeDomain` + `privileged: true` 并校验 `can_device_access_peer`，完成完整 30B 加载、真实 `actor -> NCCL -> vLLM` 同步（`4.42s / 3.07s / 3.02s / 3.89s`）及 3 步真实更新（`grad_norm: 0.637 -> 0.593 -> 0.864`，`score/mean: -0.625 -> -0.1875 -> +0.3125`，`num_turns/mean: 5.875 / 6.0 / 5.625`） | 冷启动含 SM100 JIT 44 m（其中 3 步训练仅 `108 s`） | **PASS（训练与多轮工具调用通过）** |
 | **Stage G1 (Attempt 3)** | GB200 ReTool 多轮工具调用 3 步 RL Smoke + Token 级 `rollout_audit` 落盘 | `g1-retool-rl-smoke-03` (`64ef634b`) | 2 节点 × 4 张 GB200（复用热 SM100 FlashInfer/vLLM 缓存） | 默认开启 `trainer.rollout_data_dir` 与 `+trainer.rollout_audit_dir`，落盘 `rollout/{1,2,3}.jsonl`（共 172 次 `<tool_response>`）与 `rollout_audit/{1,2,3}.jsonl`（24 个审计会话，`mask_length_matches=True`，`<tool_response>` 位于 `mask==1` 违规数 **`0`**） | 7 m 15 s（其中 3 步训练 `107.8 s`） | **PASS（全项门槛通过）** |
-| **Stage G2** | GB200 ReTool 25 步正式 RL 对照 + Step 0/25 AIME 2024/2025 (`n=30`) 评估（对照 TPU `P3`） | `g2-retool-rl-25step-01` (`64ef634b`) | 2 节点 × 4 张 GB200（`4 trainer FSDP2=4 + 4 rollout TP=4`） | 完成全部 **25/25 步**训练 + Step 0/25 AIME 2024/2025 (`n=30`) 评估（`rc=0`，`SAVE_FREQ=-1` 未保存 Step-25 权重 checkpoint，所有原始日志与评估样本已归档至 [`gb200/evidence/g2-retool-rl-25step-01/`](./gb200/evidence/g2-retool-rl-25step-01/)）：AIME 2024 `mean@30: 23.78% -> 28.78% (+5.00 pp)`、`maj@30: 40.55% -> 47.13% (+6.58 pp)`、`best@30: 64.29% -> 69.05%`；AIME 2025 `mean@30: 17.00% -> 17.89%`、`best@30: 45.52% -> 57.34% (+11.82 pp)`；25 步共 12,800 条轨迹触发 `24,106` 次 `<tool_response>`，200 个审计会话掩码违规 **`0`**，Step 2–25 均值 **`39.84s/step`**（Step 3–25 稳态均值 **`38.59s/step`**，异步全重叠步 `18.55s–24.63s`） | 21 m 35 s（含两次 `n=30` AIME 评估） | **PASS（25/25 完成）** |
+| **Stage G2** | GB200 ReTool 25 步正式 RL 对照 + Step 0/25 AIME 2024/2025 (`n=30`) 评估（对照 TPU `P3`） | `g2-retool-rl-25step-01` (`64ef634b`) | 2 节点 × 4 张 GB200（`4 trainer FSDP2=4 + 4 rollout TP=4`） | 完成全部 **25/25 步**训练 + Step 0/25 AIME 2024/2025 (`n=30`) 评估（`rc=0`，`SAVE_FREQ=-1` 未保存 Step-25 权重 checkpoint，所有原始日志与评估样本已归档至 [`gb200/evidence/g2-retool-rl-25step-01/`](./gb200/evidence/g2-retool-rl-25step-01/)）：AIME 2024 `mean@30: 23.78% (214/900) -> 28.78% (259/900, +5.00 pp)`、`maj@30: 40.55% -> 47.13% (+6.58 pp)`、`best@30: 64.29% -> 69.05%`；AIME 2025 `mean@30: 17.00% (153/900) -> 17.89% (161/900)`、`best@30: 45.52% -> 57.34% (+11.82 pp)`；25 步共 12,800 条轨迹触发 `24,106` 次 `<tool_response>`，200 个审计会话掩码违规 **`0`**，Step 2–25 均值 **`39.84s/step`**（Step 3–25 稳态均值 **`38.59s/step`**，异步全重叠步 `18.55s–24.63s`） | 25 步训练 `18m 24s`；`tqdm`（25 步 + Step 25 评估）`21m 35s`；**含 Step 0 + Step 25 两次 `n=30` 评估共 `24m 36s`**（`main_ppo` 全程 `27m 37s`） | **PASS（25/25 完成）** |
 
 ---
 
@@ -154,9 +154,9 @@ verl.workers.engine.torchtitan.utils.configure_qwen3_moe_for_rl: present
 ### 4.4 Stage G0.3：SandboxFusion 本地 Loopback 服务四用例功能连通性核验与代码执行隔离边界说明
 
 > **代码执行安全与隔离边界说明（重要）**：
-> 1. **四用例测试仅验证 HTTP/子进程功能连通性，不构成安全隔离验证**：下表四项测试（正常算术、异常 `stderr`、超时 `killpg` 清理、8 路并发）仅用于验证本地 `/run_code` 接口契约与 `retool_tpu` 工具调用链路连通性。
-> 2. **Pod 权限与挂载边界**：在 GB200 多卡训练中，K8s 训练/推理 Pod 因挂载 NVIDIA DRA `ComputeDomain` IMEX 通道（`/dev/nvidia-caps-imex-channels`）必须开启 `securityContext.privileged: true`，且挂载了共享数据卷 `/data`。[`sandbox_fusion_server.py`](./sandbox_fusion_server.py) 采用本地 Python 子进程（`asyncio.create_subprocess_exec`）执行模型生成的代码；尽管已加固为默认降权至非特权 `nobody:nogroup` (`65534:65534`)、清空附加组、设置 `CUDA_VISIBLE_DEVICES=""` 屏蔽 GPU 并限制 `RLIMIT_AS` 虚拟内存与进程组超时强杀，但子进程仍与训练容器共享内核命名空间与文件系统挂载表。
-> 3. **适用环境限制**：本目录中的 [`run_ray_jobset_gb200.sh`](./gb200/run_ray_jobset_gb200.sh) + Pod 内置 loopback `sandbox_fusion_server.py` **严格限定在单租户、受信任基准数据集（DAPO-Math-17k / AIME）与受控复现实验环境中使用**。若用于非受信任提示词/模型或多租户共享环境，必须将 `SANDBOX_FUSION_HOST` 指向外部独立部署、非 `privileged`、不挂载 `/data` 与宿主设备且具备容器/沙箱级隔离（如 `nsjail` / `gVisor`）的代码执行服务。
+> 1. **四用例测试仅验证 HTTP/子进程功能连通性，不构成安全隔离验证**：下表四项测试（正常算术、异常 `stderr`、超时 `killpg` 清理、8 路并发）仅用于验证 `/run_code` 接口契约与 `retool_tpu` 工具调用链路连通性。
+> 2. **Pod 权限、失败即报错（Fail-Closed）降权与挂载边界**：在 GB200 多卡训练中，K8s 训练/推理 Pod 因挂载 NVIDIA DRA `ComputeDomain` IMEX 通道（`/dev/nvidia-caps-imex-channels`）必须开启 `securityContext.privileged: true`，且挂载了共享数据卷 `/data`。[`sandbox_fusion_server.py`](./sandbox_fusion_server.py) 采用本地 Python 子进程（`asyncio.create_subprocess_exec`）执行模型生成的代码；当服务以 `root` 运行时，已强制将执行目录 `chown/chmod` 并通过 `os.setgroups([])` / `os.setgid(65534)` / `os.setuid(65534)` 降权至 `nobody:nogroup`（**任何一步降权失败均直接报错拒绝执行，绝不回退为 `root`**），同时注入 `CUDA_VISIBLE_DEVICES=""` 屏蔽 GPU 并限制 `RLIMIT_AS` 与进程组超时强杀。但子进程仍与训练容器共享内核命名空间与文件系统挂载表。
+> 3. **适用环境限制与外部沙箱端到端贯通**：[`run_ray_jobset_gb200.sh`](./gb200/run_ray_jobset_gb200.sh) + Pod 内置 loopback `sandbox_fusion_server.py` **严格限定在单租户、受信任基准数据集（DAPO-Math-17k / AIME）与受控复现实验环境中使用**。若用于非受信任提示词/模型或共享环境，可通过 `SANDBOX_FUSION_URL` 或 `SANDBOX_FUSION_HOST` + `SANDBOX_FUSION_PORT` 指向外部独立部署、非 `privileged`、不挂载 `/data` 且具备 `nsjail` / `gVisor` 隔离的沙箱服务——此时 [`run_ray_jobset_gb200.sh`](./gb200/run_ray_jobset_gb200.sh)（Head 与 Worker-0）、[`run_qwen3_30b_a3b_dapo_torchtitan_gb200.sh`](./gb200/run_qwen3_30b_a3b_dapo_torchtitan_gb200.sh) 及 [`sandbox_fusion_tools.py`](./sandbox_fusion_tools.py) 均会自动设置 `SANDBOX_DISABLE_AUTO_START=1`（`local_port=None`），**严禁自动启动任何 Pod 本地服务**，并将外部 URL 贯通至所有 Ray Rollout/Tool Worker。
 
 在 Trainer Head 节点启动 `sandbox_fusion_server.py --host 127.0.0.1 --port 18080 --workers 4` 后，执行四项功能连通性实测（原始产物 `g1-retool-rl-smoke-01-head-sandbox-4case.json` / [`g2-retool-rl-25step-01-head-sandbox-4case.json`](./gb200/evidence/g2-retool-rl-25step-01/env/g2-retool-rl-25step-01-head-sandbox-4case.json)）均通过：
 
@@ -259,13 +259,30 @@ verl.workers.engine.torchtitan.utils.configure_qwen3_moe_for_rl: present
   - `max_prompt_length = 2048`，`max_response_length = 8192`，`max_turns = 16`，`actor.optim.lr = 1.4e-6`，`training.max_norm = 1.0`
 - **Step-25 模型权重 Checkpoint 保存状态说明**：
   - 本次 `g2-retool-rl-25step-01` 启动参数为默认 `SAVE_FREQ=-1`（即 `trainer.save_freq = -1`），因此 **未将 Step-25 模型权重保存为磁盘 checkpoint**；Step 25 的 AIME 2024 / 2025 (`n=30`) 评估是在 Step 25 完成 `actor -> NCCL -> vLLM` 权重同步后直接在内存中触发执行（`trainer.test_freq = 25`），并将全部评估样本、训练轨迹与掩码审计落盘保存。
-- **可独立复算原始证据文件清单（已归档至本 PR [`examples/tpu/retool/gb200/evidence/g2-retool-rl-25step-01/`](./gb200/evidence/g2-retool-rl-25step-01/)）**：
-  1. [`head.log`](./gb200/evidence/g2-retool-rl-25step-01/head.log)（`810 KiB`，完整 3,037 行主节点控制台日志，含启动命令、Hydra 解析后完整配置、Ray 双节点 8 卡状态、26 次 `update_weights` 耗时及 `step:0..25` 原始输出）；
+- **可独立复算原始证据文件清单与验证范围说明（已归档至本 PR [`examples/tpu/retool/gb200/evidence/g2-retool-rl-25step-01/`](./gb200/evidence/g2-retool-rl-25step-01/)）**：
+  1. [`head.log`](./gb200/evidence/g2-retool-rl-25step-01/head.log)（`810 KiB`，完整 3,037 行主节点控制台日志）：
+     - 启动命令与环境变量：`L1–L130`；
+     - **Hydra 解析后完整配置（Resolved Config）**：`L142–L1142`；
+     - Step 0 初始 `update_weights` 与 AIME `n=30` 评估原始输出：`L1938–L2345`；
+     - `step:1..25` 逐步训练指标与 Step 25 AIME `n=30` 评估原始输出：`L2393–L2711`；
   2. [`g2_25step_metrics.json`](./gb200/evidence/g2-retool-rl-25step-01/g2_25step_metrics.json)（从 `head.log` 提取的 `step:0` 与 `step:1..25` 全量键值指标 JSON）；
-  3. [`validation_step0_samples.jsonl`](./gb200/evidence/g2-retool-rl-25step-01/validation_step0_samples.jsonl) 与 [`validation_step25_samples.jsonl`](./gb200/evidence/g2-retool-rl-25step-01/validation_step25_samples.jsonl)（Step 0 与 Step 25 各 `1,800` 条 AIME 2024/2025 评估轨迹的逐题逐样本 `question_id`、`gts`、`pred`、`acc`、`score`、`tool_response_count` 与输出 SHA-256）；
+  3. [`validation_step0_samples.jsonl`](./gb200/evidence/g2-retool-rl-25step-01/validation_step0_samples.jsonl) 与 [`validation_step25_samples.jsonl`](./gb200/evidence/g2-retool-rl-25step-01/validation_step25_samples.jsonl)（Step 0 与 Step 25 各 `1,800` 条、合计 `3,600` 条 AIME 2024/2025 样本记录）：
+     - **验证范围说明**：每条记录包含 `question_id`、`uid`、`gts`、`pred`、`acc`、`score`、`reward`、`tool_response_count`、全文 `output_sha256` 以及 **`output_tail_300`（模型原始输出的末尾 300 字符，即 `math_dapo.compute_score` 实际截取解析的原始文本窗口）**，不包含完整多轮中间长文本（原始 `validation/{0,25}.jsonl` 各约 `8.7 MB`）；
+     - 从 `output_tail_300` 调用 `math_dapo.compute_score(..., strict_box_verify=False)` 可 100% 复现全部 `3,600 / 3,600` 条样本的 `pred` 与 `acc`（`0` 偏差），并确定性复算出 AIME 2024 `mean@30`（`214/900 = 23.78%` $\rightarrow$ `259/900 = 28.78%`）、AIME 2025 `mean@30`（`153/900 = 17.00%` $\rightarrow$ `161/900 = 17.89%`）及 `std@30`；
+     - 报告中的 `maj@30/mean`、`best@30/mean`、`maj@8/mean`、`best@8/mean` 来自 `verl` 运行期 `process_validation_metrics(..., seed=42)`（见 `head.log` `L2345` 与 `L2707`），其中 `maj@k` 在票数并列时依赖运行期异步 rollout 完成顺序（落盘前未按 `uid` 排序）；
   4. [`rollout_and_audit_summary.json`](./gb200/evidence/g2-retool-rl-25step-01/rollout_and_audit_summary.json)（`rollout/1..25.jsonl` 共 `12,800` 条训练轨迹与 `rollout_audit/1..25.jsonl` 共 `200` 个审计会话的逐 Step 统计）；
   5. [`env/`](./gb200/evidence/g2-retool-rl-25step-01/env/)（双节点 `*-precheck.json`、`*-g0-verify.json`、`*-nvidia-smi-L.txt`、`*-topo.txt` 与 `*-sandbox-4case.json`）；
-  6. [`recompute_g2_metrics.py`](./gb200/evidence/g2-retool-rl-25step-01/recompute_g2_metrics.py)（一键独立复算并断言校验下述全部训练均值、步耗时与 AIME 评估指标的脚本：`python3 examples/tpu/retool/gb200/evidence/g2-retool-rl-25step-01/recompute_g2_metrics.py`）。
+  6. [`recompute_g2_metrics.py`](./gb200/evidence/g2-retool-rl-25step-01/recompute_g2_metrics.py)（独立复算并断言校验下述全部训练均值、步耗时、墙钟计时边界与 AIME 评估指标的脚本：`python3 examples/tpu/retool/gb200/evidence/g2-retool-rl-25step-01/recompute_g2_metrics.py`）。
+- **墙钟计时边界核实（基于 [`head.log`](./gb200/evidence/g2-retool-rl-25step-01/head.log) UTC 时间戳）**：
+  - `23:47:07.289`（`L131`）：`verl.trainer.main_ppo` 启动（Ray 连接、30B-A3B 权重加载与进程组初始化）；
+  - `23:50:05.530`（`L1938`）：Step 0 初始 `update_weights` 完成（耗时 `4.13s`）；
+  - `23:50:05.950` $\rightarrow$ `23:53:06`（`L1939–L2345`）：**Step 0 初始 AIME 2024/2025 (`n=30`) 评估，耗时 `3m 00s`（`180.1 s`）**；评估结束后初始化 `tqdm` 进度条 `Training Progress: 0/25 [00:00]`（`L2022`）；
+  - `23:53:06` $\rightarrow$ `00:11:30.538`（`L2022–L2686`）：**25 步多轮 RL 训练本体（不含首尾两次评估），墙钟耗时 `18m 24s`（`1,104.5 s`）**；
+  - `00:11:30.538` $\rightarrow$ `00:14:42.324`（`L2686–L2709`）：**Step 25 末次 AIME 2024/2025 (`n=30`) 评估，耗时 `3m 10s`（`timing_s/testing = 190.36 s`）**；
+  - 因此：
+    - `tqdm` 进度条显示的 **`21m 35s`**（`L2706`，`00:14:42` 结束时为 `21m 36s`）包含 **25 步训练（`18m 24s`）+ Step 25 末次评估（`3m 10s`）**，**不含 Step 0 初始评估**；
+    - **包含 Step 0 + Step 25 两次完整 `n=30` AIME 评估 + 25 步训练**的总耗时为 **`24m 36s`（`1,476.4 s`，`23:50:05.950` $\rightarrow$ `00:14:42.324`）**；
+    - 从 `main_ppo` 进程启动到退出的完整端到端墙钟耗时为 **`27m 37s`（`1,657.1 s`，`23:47:07.289` $\rightarrow$ `00:14:44.392`）**。
 
 ### 6.2 Step 0（RL 前 SFT 基线）vs Step 25（25 步 RL 后）AIME 2024 & AIME 2025 (`n=30`) 评估对照
 
@@ -343,7 +360,7 @@ verl.workers.engine.torchtitan.utils.configure_qwen3_moe_for_rl: present
 | **AIME 2025 `acc/mean@30` (Step 0 $\rightarrow$ Step 25)** | **`17.00%` $\rightarrow$ `17.89%` (`+0.89 pp`)**，`maj@30`: **`29.84%` $\rightarrow$ `30.60%`**，`best@30`: **`45.52%` $\rightarrow$ `57.34%` (`+11.82 pp`)** | 待 `Stage P3` 实测 | - |
 | **单次权重同步耗时 (`update_weights`)** | **`3.87 s – 5.37 s`**（Step 1–25 均值 **`4.35 s`**，Step 3–25 均值 **`4.38 s`**，`actor FSDP2=4 -> NCCL -> vLLM TP=4`） | `P1a` 实测约 `6–10 s`（Raiden DCN） | 约 `8–12 s`（Raiden DCN） |
 | **单步 Actor 更新耗时 (`update_actor`, BS=64×8)** | 稳态（Step 3–25）**`12.89 s – 18.95 s`**（均值 **`15.20 s`**） | 待 `Stage P3` 实测 | 约 `35–50 s` |
-| **单步端到端耗时 (`timing_s/step`, BS=64×8)** | Step 2–25 均值 **`39.84 s/step`**、Step 3–25 稳态均值 **`38.59 s/step`**、Step 1–25 全程均值 **`43.72 s/step`**（异步全重叠步 **`18.55 s – 24.63 s/step`**，吞吐最高 **`3,582 tok/s`**）；25 步总墙钟（含两次 `n=30` AIME 评估）仅 **`21 分 35 秒`** | 待 `Stage P3` 实测 | 约 `70–110 s/step` |
+| **单步端到端耗时 (`timing_s/step`, BS=64×8)** | Step 2–25 均值 **`39.84 s/step`**、Step 3–25 稳态均值 **`38.59 s/step`**、Step 1–25 全程均值 **`43.72 s/step`**（异步全重叠步 **`18.55 s – 24.63 s/step`**，吞吐最高 **`3,582 tok/s`**）；墙钟耗时：25 步训练本体 **`18m 24s`**，`tqdm`（25 步 + Step 25 评估）**`21m 35s`**，**含 Step 0 + Step 25 两次完整 `n=30` AIME 评估共 `24m 36s`**（`main_ppo` 全程 `27m 37s`） | 待 `Stage P3` 实测 | 约 `70–110 s/step` |
 
 
 

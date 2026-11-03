@@ -37,6 +37,12 @@ K8S_NAMESPACE="${K8S_NAMESPACE:-default}"
 K8S_SA="${K8S_SA:-default}"
 JOB_SCRIPT="${JOB_SCRIPT:-examples/tpu/retool/gb200/run_qwen3_30b_a3b_dapo_torchtitan_gb200.sh}"
 KEEP_PODS="${KEEP_PODS:-0}"
+ALLOW_OVERWRITE_RUN_DIR="${ALLOW_OVERWRITE_RUN_DIR:-0}"
+LAUNCH_ID="${LAUNCH_ID:-$(python3 -c 'import uuid; print(uuid.uuid4().hex[:12])')}"
+
+SANDBOX_FUSION_HOST="${SANDBOX_FUSION_HOST:-${JOBENV_SANDBOX_FUSION_HOST:-127.0.0.1}}"
+SANDBOX_FUSION_PORT="${SANDBOX_FUSION_PORT:-${JOBENV_SANDBOX_FUSION_PORT:-18080}}"
+SANDBOX_FUSION_URL="${SANDBOX_FUSION_URL:-${JOBENV_SANDBOX_FUSION_URL:-http://${SANDBOX_FUSION_HOST}:${SANDBOX_FUSION_PORT}/run_code}}"
 
 RUN_DIR="/data/${RUN_ROOT}/${RUN_NAME}"
 INPUTS_DIR="/data/${INPUTS_ROOT}"
@@ -52,6 +58,9 @@ JOBENV_YAML=""
 while IFS='=' read -r name val; do
     if [[ "${name}" == JOBENV_* ]]; then
         env_key="${name#JOBENV_}"
+        if [[ "${env_key}" == "SANDBOX_FUSION_HOST" || "${env_key}" == "SANDBOX_FUSION_PORT" || "${env_key}" == "SANDBOX_FUSION_URL" ]]; then
+            continue
+        fi
         escaped_val="${val//\"/\\\"}"
         JOBENV_YAML+="    - name: ${env_key}"$'\n'"      value: \"${escaped_val}\""$'\n'
     fi
@@ -62,36 +71,54 @@ CREATED_SVC_UID=""
 CREATED_WORKER_POD_UID=""
 CREATED_HEAD_POD_UID=""
 
-delete_if_uid_matches() {
-    local kind="$1"
-    local name="$2"
+atomic_delete_by_uid() {
+    local proxy_addr="$1"
+    local api_path="$2"
     local expected_uid="$3"
-    local wait_flag="${4:-false}"
     if [[ -z "${expected_uid}" ]]; then
         return 0
     fi
-    local live_uid
-    live_uid="$(kubectl --context="${KUBE_CONTEXT}" -n "${K8S_NAMESPACE}" get "${kind}" "${name}" -o jsonpath='{.metadata.uid}' 2>/dev/null || true)"
-    if [[ -n "${live_uid}" && "${live_uid}" == "${expected_uid}" ]]; then
-        kubectl --context="${KUBE_CONTEXT}" -n "${K8S_NAMESPACE}" delete "${kind}" "${name}" \
-            --ignore-not-found=true --wait="${wait_flag}" >/dev/null 2>&1 || true
-    fi
+    local payload
+    payload="$(printf '{"apiVersion":"meta.k8s.io/v1","kind":"DeleteOptions","propagationPolicy":"Background","preconditions":{"uid":"%s"}}' "${expected_uid}")"
+    curl -sS -X DELETE \
+        -H "Content-Type: application/json" \
+        -d "${payload}" \
+        "http://${proxy_addr}${api_path}" >/dev/null 2>&1 || true
 }
 
 cleanup() {
     if [[ "${KEEP_PODS}" != "1" ]]; then
         if [[ -n "${CREATED_HEAD_POD_UID}${CREATED_WORKER_POD_UID}${CREATED_SVC_UID}${CREATED_CD_UID}" ]]; then
-            echo "[gb200-launcher $(date -u +%H:%M:%S)] cleaning up UID-verified resources created by this invocation for ${RUN_NAME}"
-            delete_if_uid_matches pod "${RUN_NAME}-head" "${CREATED_HEAD_POD_UID}" false
-            delete_if_uid_matches pod "${RUN_NAME}-worker-0" "${CREATED_WORKER_POD_UID}" false
-            delete_if_uid_matches svc "${RUN_NAME}-head" "${CREATED_SVC_UID}" false
-            delete_if_uid_matches computedomain.resource.nvidia.com "${RUN_NAME}-cd" "${CREATED_CD_UID}" false
+            echo "[gb200-launcher $(date -u +%H:%M:%S)] atomically cleaning up resources by DeleteOptions.preconditions.uid for ${RUN_NAME}"
+            local proxy_log proxy_pid proxy_addr
+            proxy_log="$(mktemp)"
+            kubectl --context="${KUBE_CONTEXT}" proxy --port=0 >"${proxy_log}" 2>&1 &
+            proxy_pid=$!
+            proxy_addr=""
+            for _ in $(seq 1 50); do
+                if grep -q "Starting to serve on" "${proxy_log}" 2>/dev/null; then
+                    proxy_addr="$(sed -n 's/.*Starting to serve on //p' "${proxy_log}" | head -n1)"
+                    break
+                fi
+                sleep 0.1
+            done
+            if [[ -n "${proxy_addr}" ]]; then
+                atomic_delete_by_uid "${proxy_addr}" "/api/v1/namespaces/${K8S_NAMESPACE}/pods/${RUN_NAME}-head" "${CREATED_HEAD_POD_UID}"
+                atomic_delete_by_uid "${proxy_addr}" "/api/v1/namespaces/${K8S_NAMESPACE}/pods/${RUN_NAME}-worker-0" "${CREATED_WORKER_POD_UID}"
+                atomic_delete_by_uid "${proxy_addr}" "/api/v1/namespaces/${K8S_NAMESPACE}/services/${RUN_NAME}-head" "${CREATED_SVC_UID}"
+                atomic_delete_by_uid "${proxy_addr}" "/apis/resource.nvidia.com/v1beta1/namespaces/${K8S_NAMESPACE}/computedomains/${RUN_NAME}-cd" "${CREATED_CD_UID}"
+            else
+                echo "WARNING: kubectl proxy failed to start during cleanup; skipping unverified delete to avoid clobbering foreign resources." >&2
+            fi
+            kill "${proxy_pid}" 2>/dev/null || true
+            wait "${proxy_pid}" 2>/dev/null || true
+            rm -f "${proxy_log}"
         fi
     fi
 }
 trap cleanup EXIT
 
-# Fail fast if any target resource name is already in use so we never clobber an active run.
+# 1. Fail fast if any target K8s resource name is already in use so we never clobber an active run.
 for res_spec in \
     "pod/${RUN_NAME}-head" \
     "pod/${RUN_NAME}-worker-0" \
@@ -102,14 +129,35 @@ for res_spec in \
         exit 1
     fi
 done
-gsutil rm -f "gs://${GCS_BUCKET}/${RUN_ROOT}/${RUN_NAME}/exit_code.txt" >/dev/null 2>&1 || true
+
+# 2. Refuse to reuse an existing GCS run directory or stale G0 precheck files unless ALLOW_OVERWRITE_RUN_DIR=1.
+if gsutil -q stat "gs://${GCS_BUCKET}/${RUN_ROOT}/${RUN_NAME}/**" 2>/dev/null; then
+    if [[ "${ALLOW_OVERWRITE_RUN_DIR}" != "1" ]]; then
+        echo "ERROR: gs://${GCS_BUCKET}/${RUN_ROOT}/${RUN_NAME}/ already contains artifacts from a previous run; refusing to reuse stale RUN_DIR or G0 precheck files. Choose a fresh RUN_NAME or set ALLOW_OVERWRITE_RUN_DIR=1." >&2
+        exit 1
+    fi
+    gsutil -m rm -f \
+        "gs://${GCS_BUCKET}/${RUN_ROOT}/${RUN_NAME}/exit_code.txt" \
+        "gs://${GCS_BUCKET}/${RUN_ROOT}/${RUN_NAME}/env/*-g0-verify.json" >/dev/null 2>&1 || true
+fi
 
 EXTRA_ARGS_STR=""
 for a in "${EXTRA_ARGS[@]}"; do
     EXTRA_ARGS_STR+=" $(printf '%q' "${a}")"
 done
 
-cat <<EOF | kubectl --context="${KUBE_CONTEXT}" -n "${K8S_NAMESPACE}" create -f -
+create_k8s_object_and_record_uid() {
+    local var_name="$1"
+    local uid
+    uid="$(kubectl --context="${KUBE_CONTEXT}" -n "${K8S_NAMESPACE}" create -f - -o jsonpath='{.metadata.uid}')"
+    if [[ -z "${uid}" ]]; then
+        echo "ERROR: failed to capture metadata.uid from created Kubernetes object (${var_name})" >&2
+        exit 1
+    fi
+    printf -v "${var_name}" '%s' "${uid}"
+}
+
+create_k8s_object_and_record_uid CREATED_CD_UID <<EOF
 apiVersion: resource.nvidia.com/v1beta1
 kind: ComputeDomain
 metadata:
@@ -120,7 +168,9 @@ spec:
     allocationMode: Single
     resourceClaimTemplate:
       name: ${RUN_NAME}-cd-channel
----
+EOF
+
+create_k8s_object_and_record_uid CREATED_SVC_UID <<EOF
 apiVersion: v1
 kind: Service
 metadata:
@@ -137,7 +187,9 @@ spec:
   - name: ray-dash
     port: 8265
     targetPort: 8265
----
+EOF
+
+create_k8s_object_and_record_uid CREATED_WORKER_POD_UID <<EOF
 apiVersion: v1
 kind: Pod
 metadata:
@@ -193,10 +245,18 @@ spec:
     env:
     - name: RUN_NAME
       value: "${RUN_NAME}"
+    - name: LAUNCH_ID
+      value: "${LAUNCH_ID}"
     - name: RUN_DIR
       value: "${RUN_DIR}"
     - name: DATA_ROOT
       value: "${INPUTS_DIR}"
+    - name: SANDBOX_FUSION_HOST
+      value: "${SANDBOX_FUSION_HOST}"
+    - name: SANDBOX_FUSION_PORT
+      value: "${SANDBOX_FUSION_PORT}"
+    - name: SANDBOX_FUSION_URL
+      value: "${SANDBOX_FUSION_URL}"
 ${JOBENV_YAML}    resources:
       claims:
       - name: compute-domain-channel
@@ -243,7 +303,8 @@ ${JOBENV_YAML}    resources:
         --stage-from "\${MODEL_SRC}" \
         --model-dir "\${MODEL_DST}" \
         --ref-dir "\${MODEL_SRC}" \
-        --output-json "${RUN_DIR}/env/\${HOST_TAG}-g0-verify.json"
+        --output-json "${RUN_DIR}/env/${LAUNCH_ID}-\${HOST_TAG}-g0-verify.json"
+      cp -f "${RUN_DIR}/env/${LAUNCH_ID}-\${HOST_TAG}-g0-verify.json" "${RUN_DIR}/env/\${HOST_TAG}-g0-verify.json"
 
       CACHE_DIR="/data/\$(dirname "${RUN_ROOT}")/cache"
       mkdir -p /root/.cache
@@ -254,23 +315,37 @@ ${JOBENV_YAML}    resources:
         tar -xzf "\${CACHE_DIR}/vllm_cache_sm100a.tar.gz" -C /root/.cache || true
       fi
 
-      SANDBOX_FUSION_HOST=127.0.0.1
-      SANDBOX_FUSION_PORT=18080
-      nohup python3 examples/tpu/retool/sandbox_fusion_server.py \
-        --host "\${SANDBOX_FUSION_HOST}" \
-        --port "\${SANDBOX_FUSION_PORT}" \
-        --workers 4 > "/tmp/sandbox_fusion_server.log" 2>&1 &
-      SANDBOX_READY=0
-      for _ in \$(seq 1 20); do
-        if python3 examples/tpu/retool/sandbox_fusion_server.py --host "\${SANDBOX_FUSION_HOST}" --port "\${SANDBOX_FUSION_PORT}" --check >/dev/null 2>&1; then
-          SANDBOX_READY=1
-          break
+      SANDBOX_EFFECTIVE_HOST="\$(python3 -c 'import sys, urllib.parse; u = urllib.parse.urlparse(sys.argv[1]); print(u.hostname or sys.argv[2])' "\${SANDBOX_FUSION_URL}" "\${SANDBOX_FUSION_HOST}")"
+      if [[ "\${SANDBOX_EFFECTIVE_HOST}" == "127.0.0.1" || "\${SANDBOX_EFFECTIVE_HOST}" == "localhost" || "\${SANDBOX_EFFECTIVE_HOST}" == "::1" ]]; then
+        if [[ "\${SANDBOX_DISABLE_AUTO_START:-0}" == "1" ]]; then
+          if ! python3 examples/tpu/retool/sandbox_fusion_server.py --check --url "\${SANDBOX_FUSION_URL}" >/dev/null 2>&1; then
+            echo "ERROR: worker-0 loopback sandbox_fusion_server is not running at \${SANDBOX_FUSION_URL} and SANDBOX_DISABLE_AUTO_START=1" >&2
+            exit 1
+          fi
+        else
+          nohup python3 examples/tpu/retool/sandbox_fusion_server.py \
+            --host "\${SANDBOX_EFFECTIVE_HOST}" \
+            --port "\${SANDBOX_FUSION_PORT}" \
+            --workers 4 > "/tmp/sandbox_fusion_server.log" 2>&1 &
+          SANDBOX_READY=0
+          for _ in \$(seq 1 20); do
+            if python3 examples/tpu/retool/sandbox_fusion_server.py --check --url "\${SANDBOX_FUSION_URL}" >/dev/null 2>&1; then
+              SANDBOX_READY=1
+              break
+            fi
+            sleep 0.5
+          done
+          if [[ "\${SANDBOX_READY}" != "1" ]]; then
+            echo "ERROR: worker-0 local sandbox_fusion_server failed healthcheck on \${SANDBOX_FUSION_URL}" >&2
+            exit 1
+          fi
         fi
-        sleep 0.5
-      done
-      if [[ "\${SANDBOX_READY}" != "1" ]]; then
-        echo "ERROR: worker-0 local sandbox_fusion_server failed healthcheck on \${SANDBOX_FUSION_HOST}:\${SANDBOX_FUSION_PORT}" >&2
-        exit 1
+      else
+        export SANDBOX_DISABLE_AUTO_START=1
+        if ! python3 examples/tpu/retool/sandbox_fusion_server.py --check --url "\${SANDBOX_FUSION_URL}" >/dev/null 2>&1; then
+          echo "ERROR: worker-0 external SandboxFusion endpoint \${SANDBOX_FUSION_URL} is unreachable (local server auto-start disabled)" >&2
+          exit 1
+        fi
       fi
 
       nvidia-smi --query-gpu=timestamp,index,name,memory.used,memory.reserved,memory.total,utilization.gpu,power.draw \
@@ -305,7 +380,9 @@ ${JOBENV_YAML}    resources:
         sleep 3
       done
       ray stop || true
----
+EOF
+
+create_k8s_object_and_record_uid CREATED_HEAD_POD_UID <<EOF
 apiVersion: v1
 kind: Pod
 metadata:
@@ -361,10 +438,18 @@ spec:
     env:
     - name: RUN_NAME
       value: "${RUN_NAME}"
+    - name: LAUNCH_ID
+      value: "${LAUNCH_ID}"
     - name: RUN_DIR
       value: "${RUN_DIR}"
     - name: DATA_ROOT
       value: "${INPUTS_DIR}"
+    - name: SANDBOX_FUSION_HOST
+      value: "${SANDBOX_FUSION_HOST}"
+    - name: SANDBOX_FUSION_PORT
+      value: "${SANDBOX_FUSION_PORT}"
+    - name: SANDBOX_FUSION_URL
+      value: "${SANDBOX_FUSION_URL}"
 ${JOBENV_YAML}    resources:
       claims:
       - name: compute-domain-channel
@@ -413,7 +498,8 @@ ${JOBENV_YAML}    resources:
         --stage-from "\${MODEL_SRC}" \
         --model-dir "\${MODEL_DST}" \
         --ref-dir "\${MODEL_SRC}" \
-        --output-json "${RUN_DIR}/env/\${HOST_TAG}-g0-verify.json"
+        --output-json "${RUN_DIR}/env/${LAUNCH_ID}-\${HOST_TAG}-g0-verify.json"
+      cp -f "${RUN_DIR}/env/${LAUNCH_ID}-\${HOST_TAG}-g0-verify.json" "${RUN_DIR}/env/\${HOST_TAG}-g0-verify.json"
 
       CACHE_DIR="/data/\$(dirname "${RUN_ROOT}")/cache"
       mkdir -p /root/.cache
@@ -424,18 +510,18 @@ ${JOBENV_YAML}    resources:
         tar -xzf "\${CACHE_DIR}/vllm_cache_sm100a.tar.gz" -C /root/.cache || true
       fi
 
-      # Wait for 2 nodes (8 GPUs) and both nodes' G0 manifest files; fail explicitly on timeout
+      # Wait for 2 nodes (8 GPUs) and both nodes' G0 manifest files matching this LAUNCH_ID; fail explicitly on timeout
       CLUSTER_G0_READY=0
       for _ in \$(seq 1 200); do
-        if ray status 2>/dev/null | grep -q "8.0 GPU" && [[ \$(ls -1 "${RUN_DIR}/env/"*-g0-verify.json 2>/dev/null | wc -l) -ge 2 ]]; then
-          python3 -c 'import glob, json, sys; files = sorted(glob.glob(sys.argv[1] + "/*-g0-verify.json")); digests = {f: json.load(open(f))["g0_checkpoint_manifest"]["composite_sha256"] for f in files}; print("[g0-cross-node] digests:", digests, flush=True); assert len(files) >= 2 and len(set(digests.values())) == 1, f"Cross-node manifest mismatch: {digests}"' "${RUN_DIR}/env"
+        if ray status 2>/dev/null | grep -q "8.0 GPU" && [[ \$(ls -1 "${RUN_DIR}/env/${LAUNCH_ID}-"*-g0-verify.json 2>/dev/null | wc -l) -ge 2 ]]; then
+          python3 -c 'import glob, json, sys; files = sorted(glob.glob(sys.argv[1] + "/" + sys.argv[2] + "-*-g0-verify.json")); digests = {f: json.load(open(f))["g0_checkpoint_manifest"]["composite_sha256"] for f in files}; print("[g0-cross-node] digests:", digests, flush=True); assert len(files) >= 2 and len(set(digests.values())) == 1, f"Cross-node manifest mismatch: {digests}"' "${RUN_DIR}/env" "${LAUNCH_ID}"
           CLUSTER_G0_READY=1
           break
         fi
         sleep 3
       done
       if [[ "\${CLUSTER_G0_READY}" != "1" ]]; then
-        echo "ERROR: timed out waiting for 2 nodes (8.0 GPU) and both nodes' G0 manifest files in ${RUN_DIR}/env" >&2
+        echo "ERROR: timed out waiting for 2 nodes (8.0 GPU) and both nodes' G0 manifest files (launch_id=${LAUNCH_ID}) in ${RUN_DIR}/env" >&2
         echo "1" > "${RUN_DIR}/exit_code.txt"
         sync
         exit 1
@@ -453,11 +539,6 @@ ${JOBENV_YAML}    resources:
       sync
       exit "\${rc}"
 EOF
-
-CREATED_CD_UID="$(kubectl --context="${KUBE_CONTEXT}" -n "${K8S_NAMESPACE}" get computedomain.resource.nvidia.com "${RUN_NAME}-cd" -o jsonpath='{.metadata.uid}' 2>/dev/null || true)"
-CREATED_SVC_UID="$(kubectl --context="${KUBE_CONTEXT}" -n "${K8S_NAMESPACE}" get svc "${RUN_NAME}-head" -o jsonpath='{.metadata.uid}' 2>/dev/null || true)"
-CREATED_WORKER_POD_UID="$(kubectl --context="${KUBE_CONTEXT}" -n "${K8S_NAMESPACE}" get pod "${RUN_NAME}-worker-0" -o jsonpath='{.metadata.uid}' 2>/dev/null || true)"
-CREATED_HEAD_POD_UID="$(kubectl --context="${KUBE_CONTEXT}" -n "${K8S_NAMESPACE}" get pod "${RUN_NAME}-head" -o jsonpath='{.metadata.uid}' 2>/dev/null || true)"
 
 echo "[gb200-launcher $(date -u +%H:%M:%S)] waiting for pods ${RUN_NAME}-head (uid=${CREATED_HEAD_POD_UID}) and ${RUN_NAME}-worker-0 (uid=${CREATED_WORKER_POD_UID}) to be Ready..."
 kubectl --context="${KUBE_CONTEXT}" -n "${K8S_NAMESPACE}" wait --for=condition=Ready pod "${RUN_NAME}-head" "${RUN_NAME}-worker-0" --timeout=600s

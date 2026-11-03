@@ -82,6 +82,30 @@ class RunCodeRequest(BaseModel):
     fetch_files: list[str] = Field(default_factory=list)
 
 
+def _resolve_drop_uid_gid() -> Optional[tuple[int, int]]:
+    """Return unprivileged (uid, gid) to drop to when running as root, or raise if root execution is disallowed."""
+    if os.geteuid() != 0:
+        return None
+    if os.environ.get("SANDBOX_ALLOW_ROOT_EXEC", "0") == "1":
+        return None
+    uid = int(os.environ.get("SANDBOX_UNPRIVILEGED_UID", "65534"))
+    gid = int(os.environ.get("SANDBOX_UNPRIVILEGED_GID", "65534"))
+    if uid <= 0 or gid <= 0:
+        raise PermissionError(f"Refusing to drop to privileged uid={uid} gid={gid}")
+    return (uid, gid)
+
+
+def _prepare_exec_dir_permissions(tmp_dir: str, script_path: str, drop_uid_gid: Optional[tuple[int, int]]) -> None:
+    """Chown and chmod the temporary execution directory for the unprivileged target user; fail closed on error."""
+    if drop_uid_gid is None:
+        return
+    uid, gid = drop_uid_gid
+    os.chown(tmp_dir, uid, gid)
+    os.chmod(tmp_dir, 0o700)
+    os.chown(script_path, uid, gid)
+    os.chmod(script_path, 0o600)
+
+
 def _make_preexec_fn(memory_limit_mb: int, drop_uid_gid: Optional[tuple[int, int]] = None):
     def _preexec():
         os.setsid()
@@ -94,12 +118,13 @@ def _make_preexec_fn(memory_limit_mb: int, drop_uid_gid: Optional[tuple[int, int
                 pass
         if drop_uid_gid is not None:
             uid, gid = drop_uid_gid
-            try:
-                os.setgroups([])
-                os.setgid(gid)
-                os.setuid(uid)
-            except OSError:
-                pass
+            if uid <= 0 or gid <= 0:
+                raise PermissionError(f"Refusing to run child with privileged uid={uid} gid={gid}")
+            os.setgroups([])
+            os.setgid(gid)
+            os.setuid(uid)
+            if os.geteuid() == 0 or os.getegid() == 0:
+                raise PermissionError("Failed to drop root privileges in child process")
 
     return _preexec
 
@@ -126,23 +151,20 @@ async def run_code(req: RunCodeRequest) -> dict[str, Any]:
 
     async with _get_semaphore():
         with tempfile.TemporaryDirectory(prefix="sandbox_exec_") as tmp_dir:
-            drop_uid_gid: Optional[tuple[int, int]] = None
-            if os.geteuid() == 0 and os.environ.get("SANDBOX_DROP_PRIVILEGES", "1") == "1":
-                drop_uid_gid = (65534, 65534)
-                try:
-                    os.chown(tmp_dir, 65534, 65534)
-                    os.chmod(tmp_dir, 0o700)
-                except OSError:
-                    drop_uid_gid = None
-
             script_path = os.path.join(tmp_dir, "solution.py")
             with open(script_path, "w", encoding="utf-8") as f:
                 f.write(req.code)
-            if drop_uid_gid is not None:
-                try:
-                    os.chown(script_path, 65534, 65534)
-                except OSError:
-                    pass
+
+            try:
+                drop_uid_gid = _resolve_drop_uid_gid()
+                _prepare_exec_dir_permissions(tmp_dir, script_path, drop_uid_gid)
+            except (PermissionError, OSError, ValueError) as exc:
+                return {
+                    "status": "SandboxError",
+                    "message": f"PrivilegeDropError: {type(exc).__name__}: {exc}",
+                    "compile_result": None,
+                    "run_result": None,
+                }
 
             env = {
                 "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
@@ -229,11 +251,11 @@ async def run_code(req: RunCodeRequest) -> dict[str, Any]:
                 }
 
 
-def check_server(host: str = "127.0.0.1", port: int = 18080) -> bool:
-    """Verify the local SandboxFusion HTTP server responds cleanly to a smoke-test evaluation."""
-    url = f"http://{host}:{port}/run_code"
+def check_server(host: str = "127.0.0.1", port: int = 18080, url: Optional[str] = None) -> bool:
+    """Verify the target SandboxFusion HTTP server responds cleanly to a smoke-test evaluation."""
+    target_url = url or f"http://{host}:{port}/run_code"
     payload = json.dumps({"code": "print(6*7)", "run_timeout": 5}).encode("utf-8")
-    req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
+    req = urllib.request.Request(target_url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=5) as resp:
             body = json.loads(resp.read().decode("utf-8"))
@@ -248,11 +270,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="SandboxFusion-compatible loopback HTTP server")
     parser.add_argument("--host", type=str, default="127.0.0.1")
     parser.add_argument("--port", type=int, default=18080)
+    parser.add_argument("--url", type=str, default=None, help="Full /run_code endpoint URL for --check")
     parser.add_argument("--workers", type=int, default=4)
-    parser.add_argument("--check", action="store_true", help="Check if local server is healthy and exit")
+    parser.add_argument("--check", action="store_true", help="Check if target server is healthy and exit")
     args = parser.parse_args()
     if args.check:
-        sys.exit(0 if check_server(args.host, args.port) else 1)
+        sys.exit(0 if check_server(args.host, args.port, args.url) else 1)
     script_dir = os.path.dirname(os.path.abspath(__file__))
     verl_root = os.path.abspath(os.path.join(script_dir, "..", "..", ".."))
     existing_py_path = os.environ.get("PYTHONPATH", "")

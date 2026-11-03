@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
-"""Independently recompute and verify all Stage G2 (g2-retool-rl-25step-01) training & AIME evaluation metrics."""
+"""Independently recompute and verify Stage G2 (g2-retool-rl-25step-01) training, timing, and AIME evaluation metrics."""
 
 from collections import defaultdict
 import json
+import math
 from pathlib import Path
 import statistics
+import sys
+
+REPO_ROOT = Path(__file__).resolve().parents[5]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 
 def load_jsonl(path: Path) -> list[dict]:
@@ -20,32 +26,66 @@ def verify_validation_samples(path: Path, expected_step: int, metrics_step: dict
     total_tools = 0
     for r in rows:
         assert r["step"] == expected_step
+        assert "output_tail_300" in r and len(r["output_tail_300"]) <= 300
         by_ds_q[r["data_source"]][r["question_id"]].append(r)
         if r["tool_response_count"] > 0:
             with_tool += 1
         total_tools += r["tool_response_count"]
+
+    # Optional: if verl.utils.reward_score.math_dapo is importable, verify pred/acc extraction from output_tail_300
+    raw_tail_verified = False
+    try:
+        from verl.utils.reward_score import math_dapo  # type: ignore
+
+        for r in rows:
+            res = math_dapo.compute_score(r["output_tail_300"], str(r["gts"]), strict_box_verify=False)
+            pred = res["pred"] if res["pred"] is not None else ""
+            assert pred == r["pred"] and bool(res["acc"]) == bool(r["acc"]), f"Mismatch on {r['uid']}: {res} vs {r}"
+        raw_tail_verified = True
+    except ImportError:
+        pass
 
     out: dict[str, dict] = {}
     for ds in ("aime_2024", "aime_2025"):
         q_map = by_ds_q[ds]
         assert len(q_map) == 30, f"{ds}: expected 30 questions, got {len(q_map)}"
         per_q_means = []
+        per_q_stds = []
+        total_correct = 0
         for qid, samples in sorted(q_map.items()):
             assert len(samples) == 30, f"{ds} {qid}: expected n=30 samples, got {len(samples)}"
-            per_q_means.append(sum(1.0 if s["acc"] else 0.0 for s in samples) / 30.0)
+            accs = [1.0 if s["acc"] else 0.0 for s in samples]
+            total_correct += sum(1 for s in samples if s["acc"])
+            m = sum(accs) / 30.0
+            var = sum((x - m) ** 2 for x in accs) / 30.0
+            per_q_means.append(m)
+            per_q_stds.append(math.sqrt(var))
+
         mean_at_30 = sum(per_q_means) / len(per_q_means)
+        std_at_30 = sum(per_q_stds) / len(per_q_stds)
         logged_mean = metrics_step[f"val-core/{ds}/acc/mean@30"]
+        logged_std = metrics_step[f"val-aux/{ds}/acc/std@30"]
         assert abs(mean_at_30 - logged_mean) < 1e-6, f"{ds} mean@30 mismatch: {mean_at_30} vs {logged_mean}"
+        assert abs(std_at_30 - logged_std) < 1e-6, f"{ds} std@30 mismatch: {std_at_30} vs {logged_std}"
+
         out[ds] = {
             "num_questions": len(q_map),
             "samples_per_question": 30,
+            "total_correct_samples": f"{total_correct} / 900",
+            "raw_tail_300_extraction_verified": raw_tail_verified,
             "recomputed_acc_mean_at_30": round(mean_at_30, 6),
             "logged_acc_mean_at_30": round(logged_mean, 6),
-            "logged_acc_std_at_30": round(metrics_step[f"val-aux/{ds}/acc/std@30"], 6),
+            "recomputed_acc_std_at_30": round(std_at_30, 6),
+            "logged_acc_std_at_30": round(logged_std, 6),
             "logged_acc_maj_at_30": round(metrics_step[f"val-core/{ds}/acc/maj@30/mean"], 6),
             "logged_acc_best_at_30": round(metrics_step[f"val-core/{ds}/acc/best@30/mean"], 6),
             "logged_acc_maj_at_8": round(metrics_step[f"val-aux/{ds}/acc/maj@8/mean"], 6),
             "logged_acc_best_at_8": round(metrics_step[f"val-aux/{ds}/acc/best@8/mean"], 6),
+            "maj_best_verification_note": (
+                "mean@30 and std@30 are exact deterministic reductions over the 900 samples; "
+                "best@k and maj@k in verl use 1000-iteration numpy bootstrap (seed=42) where maj@k tie-breaking "
+                "depends on pre-sort async rollout completion order at runtime."
+            ),
         }
     out["tool_usage"] = {
         "trajectories_with_tool_response": with_tool,
@@ -76,6 +116,24 @@ def main() -> None:
         "hardware": "2 nodes x 4 NVIDIA GB200 GPUs = 8 GPUs (4 trainer FSDP2=4 + 4 rollout vLLM TP=4)",
         "step_25_checkpoint_saved": False,
         "step_25_checkpoint_note": "SAVE_FREQ=-1 (trainer.save_freq=-1); Step 25 evaluation ran in-memory before exit.",
+        "wall_clock_breakdown_from_head_log": {
+            "main_ppo_start_utc": "2026-11-02 23:47:07.289",
+            "step0_weight_sync_done_utc": "2026-11-02 23:50:05.530",
+            "step0_eval_start_utc": "2026-11-02 23:50:05.950",
+            "step0_eval_end_tqdm_start_utc": "2026-11-02 23:53:06",
+            "step25_weight_sync_done_utc": "2026-11-03 00:11:30.170",
+            "step25_eval_start_utc": "2026-11-03 00:11:30.538",
+            "step25_eval_and_audit_done_utc": "2026-11-03 00:14:42.324",
+            "step0_eval_wall_s": 180.1,
+            "training_25_steps_only_wall_s": 1104.5,
+            "step25_eval_wall_s": round(metrics["25"]["timing_s/testing"], 2),
+            "tqdm_25_steps_plus_step25_eval_wall_s": 1296.0,
+            "tqdm_25_steps_plus_step25_eval_formatted": "21m 36s (21m 35s at step:25 log line, includes 25 training steps + Step 25 eval; excludes Step 0 eval)",
+            "both_evals_plus_25_steps_wall_s": 1476.4,
+            "both_evals_plus_25_steps_formatted": "24m 36s (23:50:05.950 -> 00:14:42.324, includes Step 0 eval + 25 training steps + Step 25 eval)",
+            "full_main_ppo_wall_s": 1657.1,
+            "full_main_ppo_formatted": "27m 37s (23:47:07.289 -> 00:14:44.392, includes Ray init + 30B load + Step 0 sync + both evals + 25 steps)",
+        },
         "training_25_steps": {
             "pg_loss_mean_1_25": round(statistics.mean(s["actor/pg_loss"] for s in steps_1_25), 4),
             "grad_norm_mean_1_25": round(statistics.mean(s["actor/grad_norm"] for s in steps_1_25), 4),

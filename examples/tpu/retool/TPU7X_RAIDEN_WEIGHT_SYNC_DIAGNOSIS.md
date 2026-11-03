@@ -1,6 +1,6 @@
 # TPU v7x ReTool RL（Stage P1c）Raiden 初始权重同步 Tensor Mismatch 现象取证、受控验证与修复报告
 
-状态：**Stage P1c 全部闸门已 100% 验证通过（`p1c-retool-rl-07` & `p1c-retool-rl-08`：Step-0 `0 / 13,920` Mismatch + Step 1–3 Norm Parity 100% + `ppl_ratio = 1.011–1.020` + 210 次 SandboxFusion 多轮代码工具调用 0 错误 + `0` `response_mask` 违规；`Stage P3` `p3-retool-rl-02` 已启动 — 2026-11-03 修订）**
+状态：**Stage P1c 全部闸门已 100% 验证通过（`p1c-retool-rl-07` & `p1c-retool-rl-08`：Step-0 `0 / 13,920` Mismatch + Step 1–3 Norm Parity 100% + `ppl_ratio = 1.011–1.020` + 210 次 SandboxFusion 多轮代码工具调用 0 错误 + `0` `response_mask` 违规）；`Stage P3` 已以 `p3-retool-rl-11` 完成（Step-0 `0 / 13,920` Mismatch + Step 1–25 Norm Parity 全部通过，见阶段三）— 2026-11-03 修订**
 关联 PR：
 - TPU v7x 实验进展记录：PR #7（[`REPRO_RESULTS_TPU7X.md`](https://github.com/syangx39/verl-upstream/pull/7)）
 - NVIDIA GB200 实验结果记录：PR #9（[`REPRO_RESULTS_GB200_ZH.md`](https://github.com/syangx39/verl-upstream/pull/9)）
@@ -180,4 +180,16 @@
        | **Step 1** | `NORM PASS` (`L1 delta=0.094`, `L2 delta=0.0008`) | `1.1534` | `1.1689` | **`1.0132`** | **`0.9099`** | `0.01213` | **`+0.1250`** (`18 / 32 = 56.25%`) | **`46` 次 (`0` 错误)** | `15` 次 (`0` 违规) | `2.962 s` / `14.789 s` | `102.65 s` |
        | **Step 2 (Post-Step-0 & Step-1 Sync)** | `NORM PASS` (`L1 delta=0.209`, `L2 delta=0.0008`) | `1.1312` | `1.1481` | **`1.0147`** | **`0.4381`** | `0.01252` | `-0.6250` (`6 / 32 = 18.75%`) | **`97` 次 (`0` 错误)** | `29` 次 (`0` 违规) | `1.987 s` / `8.707 s` | `39.47 s` |
        | **Step 3 (Post-Step-1 & Step-2 Sync)** | `NORM PASS` (`L1 delta=0.188`, `L2 delta=0.0008`) | `1.1146` | `1.1282` | **`1.0119`** | **`0.6647`** | `0.01099` | `-0.1250` (`14 / 32 = 43.75%`) | **`67` 次 (`0` 错误)** | `18` 次 (`0` 违规) | `1.897 s` / `8.546 s` | **`10.73 s`** (`45.23 tok/s/chip`) |
-     - 至此，`Stage P1c` 全部验收闸门（`R1`, `R2`, `R5b`, `R11`, `R12`）均 100% 通过，**`Stage P3`（`p3-retool-rl-02`，25-step 正式 RL 训练 + Step-0 / Step-25 AIME 2024 & 2025 `n=30` 评估）已正式启动**。
+     - 至此，`Stage P1c` 全部验收闸门（`R1`, `R2`, `R5b`, `R11`, `R12`）均 100% 通过，`Stage P3` 随即启动（结果见阶段三）。
+
+### 阶段三：`Stage P3` 25 步长程运行中的同步验证（代码 `aa10dfed`，镜像 `sha256:d92a2b3d...`，与 `p1c-retool-rl-08` 相同）
+
+| 运行 | Step-0 `exact` 校验 | 后续 `norm` 校验 | 结果 |
+| :--- | :--- | :--- | :--- |
+| `p3-retool-rl-02` | `0 / 13,920` mismatched（12:13:46Z） | -（Step-0 AIME 验证完成 `57 / 60` 时被配额回收抢占，未进入训练） | 被抢占 |
+| `p3-retool-rl-10` | `0 / 13,920` mismatched（19:38:57Z） | Step 1–9 全部通过 | 第 9 步被 launcher 误删（#14 已修复） |
+| `p3-retool-rl-11` | `0 / 13,920` mismatched（20:39:38Z） | Step 1–25 全部通过，`ppl_ratio = 1.0083–1.0159` | `SUCCEEDED` |
+
+- 加上 `p1c-retool-rl-07` / `-08`，修复后的组合（新版镜像 + `#116` `adapt_for_raw_transfer`）在 5 次独立运行中 Step-0 初始同步均与 checkpoint 逐元素一致；`p3-retool-rl-11` 连续 25 次同步后的 `norm` 校验也全部通过。
+- 这些结果说明该组合在 P3 规模的长程运行中保持正确，但不额外区分第 4 节中的各个根因假设。
+- `Stage P3` 的评估与训练指标见 PR #7（`REPRO_RESULTS_TPU7X.md` 第 4.0.2 节）。

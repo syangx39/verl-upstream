@@ -620,6 +620,206 @@ owned_delete_all
     assert _delete_calls(k) == []
 
 
+# --- the whole launcher (watch loop + exit cleanup) against a fake kubectl/gcloud and a fast clock --------------------
+
+FAKE_LAUNCHER_KUBECTL = textwrap.dedent(
+    """\
+    #!/usr/bin/env python3
+    import json, os, sys, uuid
+    state = os.environ["FAKE_KUBE_STATE"]
+    args = sys.argv[1:]
+    with open(os.path.join(state, "_calls.log"), "a") as f:
+        f.write(" ".join(args) + "\\n")
+    a, i = [], 0
+    while i < len(args):
+        if args[i] in ("--context", "-n"):
+            i += 2
+            continue
+        a.append(args[i])
+        i += 1
+    def fail(msg):
+        sys.stderr.write(msg + "\\n")
+        sys.exit(1)
+    def scripted(kind):
+        # FAKE_<KIND>_READS: outcomes of successive reads, comma-separated; the last one repeats.
+        plan = os.environ.get(f"FAKE_{kind}_READS", "running").split(",")
+        counter = os.path.join(state, f"_{kind}_reads")
+        n = int(open(counter).read()) if os.path.exists(counter) else 0
+        open(counter, "w").write(str(n + 1))
+        return plan[min(n, len(plan) - 1)]
+    jobset = os.path.join(state, "jobset.json")
+    fmt = a[a.index("-o") + 1] if "-o" in a else ""
+    if a[:2] == ["config", "get-contexts"]:
+        pass
+    elif a[:2] == ["auth", "can-i"]:
+        print("yes")
+    elif a[:2] == ["get", "localqueue"]:
+        print("cq", end="")
+    elif a[:2] == ["get", "clusterqueue"]:
+        fail('Error from server (NotFound): clusterqueues "cq" not found')
+    elif a[0] == "create" and any(x.startswith("--dry-run") for x in a):
+        print("jobset.jobset.x-k8s.io/dry-run")
+    elif a[0] == "create":
+        text = open(a[a.index("-f") + 1]).read()
+        name = next(x.split(":", 1)[1].strip().strip('"') for x in text.splitlines() if x.startswith("  name:"))
+        uid = str(uuid.uuid4())
+        json.dump({"name": name, "uid": uid}, open(jobset, "w"))
+        print(f"JobSet {name} {uid}", end="")
+    elif a[:2] == ["get", "jobset"] and fmt == "json":
+        what = scripted("JOBSET")
+        if what == "fail":
+            fail("Unable to connect to the server: net/http: TLS handshake timeout")
+        if not os.path.exists(jobset):
+            fail(f'Error from server (NotFound): jobsets.jobset.x-k8s.io "{a[2]}" not found')
+        obj = json.load(open(jobset))
+        conditions = [{"type": "Completed", "status": "True"}] if what == "completed" else []
+        print(json.dumps({"metadata": {"name": obj["name"], "uid": obj["uid"]}, "status": {"conditions": conditions}}))
+    elif a[:2] == ["get", "jobset"]:
+        if not os.path.exists(jobset):
+            fail(f'Error from server (NotFound): jobsets.jobset.x-k8s.io "{a[2]}" not found')
+        print("0", end="")
+    elif a[0] == "get" and a[1].startswith("workloads") and fmt == "json":
+        what = scripted("WORKLOAD")
+        if what == "fail":
+            fail("Unable to connect to the server: net/http: TLS handshake timeout")
+        admitted = what == "admitted"
+        condition = {"type": "Admitted", "status": str(admitted), "reason": "Admitted" if admitted else "Pending"}
+        print(json.dumps({"items": [{"status": {"conditions": [condition]}}]}))
+    elif a[:2] == ["get", "pods"]:
+        print('{"items": []}' if fmt == "json" else "", end="")
+    elif a[0] == "delete" and "--raw" in a:
+        want = json.load(open(a[a.index("-f") + 1]))["preconditions"]["uid"]
+        if not os.path.exists(jobset):
+            fail('Error from server (NotFound): jobsets.jobset.x-k8s.io "run" not found')
+        if json.load(open(jobset))["uid"] != want:
+            fail("Error from server (Conflict): Precondition failed")
+        os.remove(jobset)
+    else:
+        fail("fake kubectl: unsupported " + " ".join(a))
+    """
+)
+
+FAKE_GCLOUD = textwrap.dedent(
+    """\
+    #!/usr/bin/env bash
+    case "$1 $2" in
+      "storage ls" | "storage cp") exit 0 ;;
+      "storage cat") [[ "$3" == */verdict.json ]] && echo '{"status": "SUCCEEDED", "message": "fake"}' && exit 0 ;;
+    esac
+    exit 1
+    """
+)
+
+# Every `date +%s` (the launcher's clock) advances FAKE_CLOCK_STEP_S seconds, so minute-scale deadlines pass in a few
+# polls; other formats (log timestamps) come from the real date.
+FAKE_DATE = textwrap.dedent(
+    """\
+    #!/usr/bin/env python3
+    import os, sys, time
+    if sys.argv[1:] == ["+%s"]:
+        counter = os.path.join(os.environ["FAKE_KUBE_STATE"], "_clock")
+        n = int(open(counter).read()) if os.path.exists(counter) else 0
+        open(counter, "w").write(str(n + 1))
+        print(int(time.time()) + n * int(os.environ.get("FAKE_CLOCK_STEP_S", "0")))
+    else:
+        real = next(p for p in ("/usr/bin/date", "/bin/date") if os.path.exists(p))
+        os.execv(real, [real, *sys.argv[1:]])
+    """
+)
+
+
+class FakeLauncherRun:
+    """run_ray_jobset_v7x_nap.sh end to end (PREWARM=0) against FAKE_LAUNCHER_KUBECTL, FAKE_GCLOUD and FAKE_DATE."""
+
+    def __init__(self, tmp_path: Path):
+        repo = LAUNCHER_DIR.parents[2]
+        if subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True).returncode != 0:
+            pytest.skip("needs a git checkout: the launcher archives CODE_REF")
+        self.state = tmp_path / "state"
+        self.state.mkdir()
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        for name, text in (("kubectl", FAKE_LAUNCHER_KUBECTL), ("gcloud", FAKE_GCLOUD), ("date", FAKE_DATE)):
+            (bin_dir / name).write_text(text)
+            (bin_dir / name).chmod(0o755)
+        self.launcher = LAUNCHER_DIR.parent / "run_ray_jobset_v7x_nap.sh"
+        path = os.pathsep.join([str(bin_dir), str(Path(sys.executable).parent), os.environ["PATH"]])
+        self.env = {
+            **os.environ,
+            "PATH": path,
+            "FAKE_KUBE_STATE": str(self.state),
+            "FAKE_CLOCK_STEP_S": "300",
+            "GCS_BUCKET": "example-bucket",
+            "IMAGE": "registry.example/verl-tpu@sha256:" + "0" * 64,
+            "KUBE_CONTEXT": "ctx",
+            "RAY_NAMESPACE": "dev-ns",
+            "RUN_NAME": "e2e-watch",
+            "CODE_REF": "HEAD",
+            "JOB_SCRIPT": "examples/tpu/gke/run_ray_jobset_v7x_nap.sh",
+            "POLL_S": "0",
+            "LOG_DIR": str(tmp_path / "logs"),
+        }
+
+    def run(self, **env) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["bash", str(self.launcher)], env={**self.env, **env}, capture_output=True, text=True, timeout=180
+        )
+
+    def delete_calls(self) -> list:
+        return [line for line in (self.state / "_calls.log").read_text().splitlines() if " delete " in f" {line} "]
+
+    def jobset_exists(self) -> bool:
+        return (self.state / "jobset.json").exists()
+
+
+def test_launcher_keeps_admission_when_workload_reads_fail(tmp_path):
+    run = FakeLauncherRun(tmp_path)
+    # Admitted at the first read, then every workload read fails while the JobSet stays readable and healthy. The failed
+    # reads must not reset the admission state: a reset restarts the 1-min queue timeout, whose expiry would make the
+    # exit cleanup delete the running JobSet.
+    res = run.run(
+        QUEUE_TIMEOUT_MIN="1",
+        FAKE_WORKLOAD_READS="admitted,fail",
+        FAKE_JOBSET_READS="running,running,running,running,running,running,completed",
+    )
+    out = res.stdout + res.stderr
+    assert res.returncode == 0, out
+    assert "admitted after" in out
+    assert "could not read the Kueue workload; keeping its last known state (admitted," in out
+    assert "not admitted after" not in out
+    assert "JobSet e2e-watch: Completed" in out and "SUCCESS" in out
+    assert len(run.delete_calls()) == 1  # only the normal cleanup after the job completed
+
+
+def test_launcher_retries_a_failed_jobset_read(tmp_path):
+    run = FakeLauncherRun(tmp_path)
+    # Two JobSet reads fail mid-run (what stopped p3-retool-rl-10): the watch retries, follows the JobSet to completion,
+    # and only the normal cleanup deletes it.
+    res = run.run(FAKE_WORKLOAD_READS="admitted", FAKE_JOBSET_READS="running,fail,fail,running,completed")
+    out = res.stdout + res.stderr
+    assert res.returncode == 0, out
+    assert "could not read JobSet e2e-watch; its state is unknown" in out and "readable again" in out
+    assert "JobSet e2e-watch: Completed" in out and "SUCCESS" in out
+    assert len(run.delete_calls()) == 1
+
+
+@pytest.mark.parametrize("keep", ["0", "1"])
+def test_launcher_deadline_still_applies_while_jobset_reads_fail(tmp_path, keep):
+    run = FakeLauncherRun(tmp_path)
+    # Retrying failed reads does not stop the clock: when the run limit passes while the JobSet cannot be read, the
+    # launcher exits like on any other error, and its exit cleanup deletes the JobSet unless KEEP_JOBSET=1.
+    res = run.run(
+        RUN_LIMIT_MIN="30", KEEP_JOBSET=keep, FAKE_WORKLOAD_READS="admitted", FAKE_JOBSET_READS="running,fail"
+    )
+    out = res.stdout + res.stderr
+    assert res.returncode == 1, out
+    assert "the queue and run deadlines keep counting" in out and "JobSet still running 50 min after admission" in out
+    if keep == "1":
+        assert run.delete_calls() == [] and run.jobset_exists()
+    else:
+        assert len(run.delete_calls()) == 1 and not run.jobset_exists()
+
+
 class FakeSlotStore:
     """Attempt slots with GCS create-if-absent semantics, plus fault injection."""
 

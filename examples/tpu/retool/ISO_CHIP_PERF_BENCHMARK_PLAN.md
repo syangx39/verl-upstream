@@ -48,7 +48,7 @@
 
 ### 2.2 本项目 TPU/GPU 对照的训练与评估配置
 
-以下以 `G2` [`head.log`](https://github.com/syangx39/verl-upstream/blob/gb200-retool-exp-results/examples/tpu/retool/gb200/evidence/g2-retool-rl-25step-01/head.log) 为对照；可核对的共同参数同时参考 Askhat 的 [`run_qwen3_30b_a3b_dapo_torchtitan.sh`](https://github.com/jialei777/verl-upstream/blob/266e793a20c7baa6f849476ba72c8f8052da1477/examples/tpu/retool/run_qwen3_30b_a3b_dapo_torchtitan.sh)。本项目 TPU/GPU 共享本地 P2 checkpoint，尚未证明其与 Askhat 的 checkpoint 一致；本对照运行 25 步，Askhat 的主运行是 400 步，Askhat 实际运行的 scorer 也尚待确认。
+以下以 `G2` [`head.log`](https://github.com/syangx39/verl-upstream/blob/70441d1ff2ed1986853212daaffa868c6270a9f3/examples/tpu/retool/gb200/evidence/g2-retool-rl-25step-01/head.log) 为对照；可核对的共同参数同时参考 Askhat 的 [`run_qwen3_30b_a3b_dapo_torchtitan.sh`](https://github.com/jialei777/verl-upstream/blob/266e793a20c7baa6f849476ba72c8f8052da1477/examples/tpu/retool/run_qwen3_30b_a3b_dapo_torchtitan.sh)。本项目 TPU/GPU 共享本地 P2 checkpoint，尚未证明其与 Askhat 的 checkpoint 一致；本对照运行 25 步，Askhat 的主运行是 400 步，Askhat 实际运行的 scorer 也尚待确认。
 
 - **SFT 起点**：共享 `p2-retool-sft-01/checkpoint/global_step_372/huggingface`（20 核心文件组合 SHA-256 `59247a00c13f2364a12aab5ab6b88b6d971d59ff643c57aad8ac4e55a71231b0`）
 - **批次与采样**：`data.train_batch_size = 64`，`actor_rollout_ref.actor.ppo_mini_batch_size = 64`，`actor_rollout_ref.rollout.n = 8`（每步 `64 × 8 = 512` 条训练轨迹；25 步共 `12,800` 条轨迹）

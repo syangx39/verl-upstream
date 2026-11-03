@@ -95,7 +95,7 @@
 
 ## 4. 待验证的工作假设与源码级佐证（Working Hypotheses & Code-Level Evidence）
 
-基于 `p1c-retool-rl-03`（Step 1 使用同步前预热轨迹时 `rollout_ppl=1.1322, ppl_ratio=0.9923, grad_norm=0.7330` 正常，Step 2–3 使用同步后权重时 `rollout_ppl=249.33` 乱码）、`p1c-retool-rl-05`（Step 0 `10,414` 个张量 mismatch 且后续大量张量 `recv_absmean=0`）以及对 `p1a-moe-smoke-12` 和 `tpu_sync` C++ 源码的交叉核对，我们梳理出以下三个待受控运行最终确认的假设（按优先级排序）：
+基于 `p1c-retool-rl-03`（Step 1 使用同步前预热轨迹时 `rollout_ppl=1.1322, ppl_ratio=0.9923, grad_norm=0.7330` 正常，Step 2 使用 Step-0 同步后权重时 `rollout_ppl=249.33` 乱码；Step 3 因 `timing_s/gen=0.02 s` 消费的是异步队列中已缓存的 Step-0 批次，不能独立证明 Step-1 同步后新生成的 rollout 仍然损坏）、`p1c-retool-rl-05`（Step 0 `10,414` 个张量 mismatch 且后续大量张量 `recv_absmean=0`）以及对 `p1a-moe-smoke-12` 和 `tpu_sync` C++ 源码的交叉核对，我们梳理出以下三个待受控运行最终确认的假设（按优先级排序）：
 
 1. **工作假设 H1（主假设：旧版 `tpu-sync-torch==0.0.1.dev20261001220631` 中 `PushWeightsReshardedLocal` 并发合并 D2H 竞态导致 Follower 线程推送未初始化的全零 Host Staging Buffer）**：
    - **C++ 源码级机制佐证（`WeightSynchronizerBase::PushWeightsReshardedLocal`）**：
@@ -104,7 +104,7 @@
      - 在 **Step 0**（`WeightSynchronizer` 首次创建、Host Staging Buffer 由 `memset(0)` 初始化为全零）时，Trainer 与 Sampler 均按 `(-global_numel, name)` 顺序注册 `579` 个传输张量（前 `2` 个为词表嵌入，`idx=2..145` 按字典序排列 `layers.0, 1, 10..19, 2, 20..29, 3, 30..39, 4, 40..47, 5..9` 的 3 个 MoE 专家栈，其中 `idx=71, 72, 73` 恰好对应第 25 层 `layers.3` 的 `down_proj, gate_proj, up_proj`；`idx=146..578` 为 433 个稠密与 Norm 张量）。若 Follower 线程在 `idx=72/73`（对应拼接进 `layers.3.mlp.experts.routed_experts.w13_weight` 的 `gate_proj` / `up_proj`）附近追上并超越 Leader 线程尚未完成的 `D2hLayer` + `DetileBuffer`，就会导致其中一个专家栈（或半数切片）仍为初始全零，从而表现为 `layers.3...w13_weight` 的 `recv_absmean = 0.009274` 约为 `ref_absmean = 0.01824` 的一半（注：“其中一个栈或半个张量全零”是基于该均值比值与字典序位置的推断，而非由标量均值直接证明），而排在其后的 `layers.30..39, 4, 40..47, 5..9` 及 `qkv_proj` 因 Leader 尚未完成 D2H，被 Follower 线程直接推送了初始全零的 Host Staging Buffer（`recv_absmean = 0`）。
    - **来自 `p1a-moe-smoke-12` 的历史日志交叉印证**：
      - 回查同样运行在旧镜像 `@sha256:dcece4bc...` 上但未开启 `VERIFY_PARITY` 的 `p1a-moe-smoke-12`（`p1a_12_driver.log`）可见：**Step 0 初始同步后生成的预热批次（供 `step:1` 和 `step:2` 使用）同样发生了权重损坏**（`training_ppl = 6443.22` / `5379.75`，`rollout_corr/kl = 3.14`，GSM8K `critic/score/mean = 0.0`，生成长度 100% 撞满 `1024`）；因所有回答得分为 `0`，`step:1` 梯度范数 `actor/grad_norm = 0.0`（Trainer 权重未变）。
-     - 而在 **`step:1` 结束触发的第二次 Raiden 权重同步（Step 1 Sync）** 中，由于复用了同一个 `self._trainer_raiden_ws`（`bind_weights`），且其持久化 Host Staging Buffer 已在 Step 0 结束前被 Leader 线程完整写入了初始权重，第二次同步后生成的 `step:3` 轨迹立即恢复完全正常（**`training_ppl = 1.0964`, `rollout_ppl = 1.0943`, `rollout_corr/kl = 0.0017`, `critic/score/mean = 0.7578`, GSM8K 验证集准确率 `58.59%`**）。这与“Step 0 首次同步时 Follower 线程读取了尚未完成 D2H 的全零 Host Staging Buffer”完全吻合。
+     - 而在 **`step:1` 结束触发的第二次 Raiden 权重同步（Step 1 Sync）** 中，由于复用了同一个 `self._trainer_raiden_ws`（`bind_weights`），如果该持久化 Host Staging Buffer 随后在 Step 0 结束前被 Leader 线程完整填入初始权重，这与 `P1a` 在第二次同步后生成的 `step:3` 轨迹恢复正常（**`training_ppl = 1.0964`, `rollout_ppl = 1.0943`, `rollout_corr/kl = 0.0017`, `critic/score/mean = 0.7578`, GSM8K 验证集准确率 `58.59%`**）的现象一致。
    - **新版 `tpu-sync-torch==0.0.1.dev20261006025601` 中的对应修复**：
      - 在 `verl-tpu:v20261006-tsync1006`（`@sha256:d92a2b3d...`）包含的 `tpu-sync-torch==0.0.1.dev20261006025601` 中，`PushWeightsReshardedLocal` 新增了逐层 D2H 完成状态同步结构 `UuidD2hState`（Follower 线程在推送每个 layer group 前必须通过 `d2h_state->mu.Await(...)` 等待 Leader 线程将该层的 `d2h_state->layer_ready[target_layer]` 或 `all_ready` 置为 `true`）。
    - **如何最终验证**：

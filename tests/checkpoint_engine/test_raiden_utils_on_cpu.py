@@ -292,9 +292,7 @@ def test_report_exact_archives_untruncated_mismatches_and_enforces_coverage(tmp_
             dump_dir=str(tmp_path),
         )
     with pytest.raises(RaidenParityError, match="non-uniform or zero tensors checked"):
-        RaidenParityCheck.report_exact(
-            0, [[_exact(0, checked=10), _exact(1, checked=9)]], dump_dir=str(tmp_path)
-        )
+        RaidenParityCheck.report_exact(0, [[_exact(0, checked=10), _exact(1, checked=9)]], dump_dir=str(tmp_path))
 
 
 def test_report_exact_fails_closed_when_json_archive_fails(tmp_path, monkeypatch):

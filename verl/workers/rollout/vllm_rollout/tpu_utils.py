@@ -587,8 +587,8 @@ class vLLMRaidenWorkerExtension(_BaseWorkerExtension):
         and fuse/transpose them directly into vLLM model parameters.
 
         Args:
-            exact_parity: Set by RaidenParityCheck on the step-0 sync: compare every received tensor bit for bit
-                with the vLLM parameter it overwrites.
+            exact_parity: Set by RaidenParityCheck on the step-0 sync: compare every received tensor elementwise
+                in float32 (max|ref - new| == 0.0) with the vLLM parameter it overwrites.
 
         Returns:
             Per-worker timings in seconds: ``total`` (whole install), ``h2d`` (pure ``_raiden_ws.h2d()``)

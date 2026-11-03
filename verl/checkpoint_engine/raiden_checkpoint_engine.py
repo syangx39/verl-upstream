@@ -413,9 +413,7 @@ class RaidenParityCheck:
         """Read ``engine_kwargs.raiden.*`` parity settings, with env-var fallbacks."""
         raiden_cfg = ((engine_kwargs or {}).get("raiden") or {}) if isinstance(engine_kwargs, dict) else {}
         raw_expected = raiden_cfg.get("expected_checked_per_rank")
-        expected_checked = (
-            int(raw_expected) if raw_expected is not None and str(raw_expected).strip() != "" else None
-        )
+        expected_checked = int(raw_expected) if raw_expected is not None and str(raw_expected).strip() != "" else None
         dump_dir = raiden_cfg.get("parity_dump_dir") or None
         return cls(
             raiden_cfg.get("verify_parity", False),
@@ -588,9 +586,9 @@ class RaidenParityCheck:
             coverage_errors.append(archive_err)
 
         summary = (
-            f"[RAIDEN PARITY EXACT | Step {step}] {len(results)} sampler ranks (distinct_workers={len(distinct_pairs)}, "
-            f"ranks={distinct_ranks}), {checked_per_rank} tensors checked per rank, {num_mismatched} mismatched, "
-            f"{num_unresolved} unresolved{archived_note}"
+            f"[RAIDEN PARITY EXACT | Step {step}] {len(results)} sampler ranks "
+            f"(distinct_workers={len(distinct_pairs)}, ranks={distinct_ranks}), {checked_per_rank} tensors "
+            f"checked per rank, {num_mismatched} mismatched, {num_unresolved} unresolved{archived_note}"
         )
         if num_mismatched == 0 and num_unresolved == 0 and not coverage_errors:
             logger.info(

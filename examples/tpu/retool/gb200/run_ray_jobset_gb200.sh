@@ -71,6 +71,43 @@ CREATED_SVC_UID=""
 CREATED_WORKER_POD_UID=""
 CREATED_HEAD_POD_UID=""
 
+ATTEMPTED_CD=""
+ATTEMPTED_SVC=""
+ATTEMPTED_WORKER_POD=""
+ATTEMPTED_HEAD_POD=""
+
+resolve_attempted_uid() {
+    local k8s_res="$1"
+    local recorded_uid="$2"
+    local attempted="$3"
+    if [[ -n "${recorded_uid}" ]]; then
+        printf '%s' "${recorded_uid}"
+        return 0
+    fi
+    if [[ "${attempted}" != "1" ]]; then
+        return 0
+    fi
+    local get_out get_rc
+    set +e
+    get_out="$(kubectl --context="${KUBE_CONTEXT}" -n "${K8S_NAMESPACE}" get "${k8s_res}" -o jsonpath='{.metadata.labels.retool-launch-id}:{.metadata.uid}' 2>&1)"
+    get_rc=$?
+    set -e
+    if [[ "${get_rc}" -eq 0 ]]; then
+        local found_launch_id="${get_out%%:*}"
+        local found_uid="${get_out#*:}"
+        if [[ "${found_launch_id}" == "${LAUNCH_ID}" && -n "${found_uid}" ]]; then
+            printf '%s' "${found_uid}"
+            return 0
+        fi
+        return 0
+    fi
+    if [[ "${get_out}" == *"NotFound"* || "${get_out}" == *"not found"* ]]; then
+        return 0
+    fi
+    echo "ERROR: cleanup failed to inspect ${k8s_res} after ambiguous create (launch_id=${LAUNCH_ID}, rc=${get_rc}): ${get_out}" >&2
+    return 1
+}
+
 atomic_delete_by_uid() {
     local proxy_addr="$1"
     local api_path="$2"
@@ -78,43 +115,71 @@ atomic_delete_by_uid() {
     if [[ -z "${expected_uid}" ]]; then
         return 0
     fi
-    local payload
+    local payload resp http_code curl_rc
     payload="$(printf '{"apiVersion":"meta.k8s.io/v1","kind":"DeleteOptions","propagationPolicy":"Background","preconditions":{"uid":"%s"}}' "${expected_uid}")"
-    curl -sS -X DELETE \
+    set +e
+    resp="$(curl -sS -w '\n%{http_code}' -X DELETE \
         -H "Content-Type: application/json" \
         -d "${payload}" \
-        "http://${proxy_addr}${api_path}" >/dev/null 2>&1 || true
+        "http://${proxy_addr}${api_path}" 2>&1)"
+    curl_rc=$?
+    set -e
+    if [[ "${curl_rc}" -ne 0 ]]; then
+        echo "ERROR: curl DELETE failed for ${api_path} (uid=${expected_uid}, rc=${curl_rc}): ${resp}" >&2
+        return 1
+    fi
+    http_code="$(printf '%s\n' "${resp}" | tail -n1)"
+    if [[ "${http_code}" == "200" || "${http_code}" == "202" || "${http_code}" == "404" ]]; then
+        return 0
+    fi
+    echo "ERROR: Kubernetes DELETE failed for ${api_path} (uid=${expected_uid}, http=${http_code}): ${resp}" >&2
+    return 1
 }
 
 cleanup() {
+    local exit_rc=$?
+    local cleanup_failed=0
     if [[ "${KEEP_PODS}" != "1" ]]; then
-        if [[ -n "${CREATED_HEAD_POD_UID}${CREATED_WORKER_POD_UID}${CREATED_SVC_UID}${CREATED_CD_UID}" ]]; then
-            echo "[gb200-launcher $(date -u +%H:%M:%S)] atomically cleaning up resources by DeleteOptions.preconditions.uid for ${RUN_NAME}"
-            local proxy_log proxy_pid proxy_addr
-            proxy_log="$(mktemp)"
-            kubectl --context="${KUBE_CONTEXT}" proxy --port=0 >"${proxy_log}" 2>&1 &
-            proxy_pid=$!
-            proxy_addr=""
-            for _ in $(seq 1 50); do
-                if grep -q "Starting to serve on" "${proxy_log}" 2>/dev/null; then
-                    proxy_addr="$(sed -n 's/.*Starting to serve on //p' "${proxy_log}" | head -n1)"
-                    break
+        if [[ -n "${ATTEMPTED_HEAD_POD}${ATTEMPTED_WORKER_POD}${ATTEMPTED_SVC}${ATTEMPTED_CD}" ]]; then
+            echo "[gb200-launcher $(date -u +%H:%M:%S)] atomically cleaning up resources by DeleteOptions.preconditions.uid for ${RUN_NAME} (launch_id=${LAUNCH_ID})"
+            local head_uid="" worker_uid="" svc_uid="" cd_uid=""
+            head_uid="$(resolve_attempted_uid "pod/${RUN_NAME}-head" "${CREATED_HEAD_POD_UID}" "${ATTEMPTED_HEAD_POD}")" || cleanup_failed=1
+            worker_uid="$(resolve_attempted_uid "pod/${RUN_NAME}-worker-0" "${CREATED_WORKER_POD_UID}" "${ATTEMPTED_WORKER_POD}")" || cleanup_failed=1
+            svc_uid="$(resolve_attempted_uid "svc/${RUN_NAME}-head" "${CREATED_SVC_UID}" "${ATTEMPTED_SVC}")" || cleanup_failed=1
+            cd_uid="$(resolve_attempted_uid "computedomain.resource.nvidia.com/${RUN_NAME}-cd" "${CREATED_CD_UID}" "${ATTEMPTED_CD}")" || cleanup_failed=1
+
+            if [[ -n "${head_uid}${worker_uid}${svc_uid}${cd_uid}" ]]; then
+                local proxy_log proxy_pid proxy_addr
+                proxy_log="$(mktemp)"
+                kubectl --context="${KUBE_CONTEXT}" proxy --port=0 >"${proxy_log}" 2>&1 &
+                proxy_pid=$!
+                proxy_addr=""
+                for _ in $(seq 1 50); do
+                    if grep -q "Starting to serve on" "${proxy_log}" 2>/dev/null; then
+                        proxy_addr="$(sed -n 's/.*Starting to serve on //p' "${proxy_log}" | head -n1)"
+                        break
+                    fi
+                    sleep 0.1
+                done
+                if [[ -n "${proxy_addr}" ]]; then
+                    atomic_delete_by_uid "${proxy_addr}" "/api/v1/namespaces/${K8S_NAMESPACE}/pods/${RUN_NAME}-head" "${head_uid}" || cleanup_failed=1
+                    atomic_delete_by_uid "${proxy_addr}" "/api/v1/namespaces/${K8S_NAMESPACE}/pods/${RUN_NAME}-worker-0" "${worker_uid}" || cleanup_failed=1
+                    atomic_delete_by_uid "${proxy_addr}" "/api/v1/namespaces/${K8S_NAMESPACE}/services/${RUN_NAME}-head" "${svc_uid}" || cleanup_failed=1
+                    atomic_delete_by_uid "${proxy_addr}" "/apis/resource.nvidia.com/v1beta1/namespaces/${K8S_NAMESPACE}/computedomains/${RUN_NAME}-cd" "${cd_uid}" || cleanup_failed=1
+                else
+                    echo "ERROR: kubectl proxy failed to start during cleanup; unable to delete resources for ${RUN_NAME} (launch_id=${LAUNCH_ID})." >&2
+                    cleanup_failed=1
                 fi
-                sleep 0.1
-            done
-            if [[ -n "${proxy_addr}" ]]; then
-                atomic_delete_by_uid "${proxy_addr}" "/api/v1/namespaces/${K8S_NAMESPACE}/pods/${RUN_NAME}-head" "${CREATED_HEAD_POD_UID}"
-                atomic_delete_by_uid "${proxy_addr}" "/api/v1/namespaces/${K8S_NAMESPACE}/pods/${RUN_NAME}-worker-0" "${CREATED_WORKER_POD_UID}"
-                atomic_delete_by_uid "${proxy_addr}" "/api/v1/namespaces/${K8S_NAMESPACE}/services/${RUN_NAME}-head" "${CREATED_SVC_UID}"
-                atomic_delete_by_uid "${proxy_addr}" "/apis/resource.nvidia.com/v1beta1/namespaces/${K8S_NAMESPACE}/computedomains/${RUN_NAME}-cd" "${CREATED_CD_UID}"
-            else
-                echo "WARNING: kubectl proxy failed to start during cleanup; skipping unverified delete to avoid clobbering foreign resources." >&2
+                kill "${proxy_pid}" 2>/dev/null || true
+                wait "${proxy_pid}" 2>/dev/null || true
+                rm -f "${proxy_log}"
             fi
-            kill "${proxy_pid}" 2>/dev/null || true
-            wait "${proxy_pid}" 2>/dev/null || true
-            rm -f "${proxy_log}"
         fi
     fi
+    if [[ "${cleanup_failed}" -ne 0 ]]; then
+        exit 1
+    fi
+    exit "${exit_rc}"
 }
 trap cleanup EXIT
 
@@ -131,14 +196,25 @@ for res_spec in \
 done
 
 # 2. Refuse to reuse an existing GCS run directory or stale G0 precheck files unless ALLOW_OVERWRITE_RUN_DIR=1.
-if gsutil -q stat "gs://${GCS_BUCKET}/${RUN_ROOT}/${RUN_NAME}/**" 2>/dev/null; then
+#    Fail closed if `gsutil stat` fails for any reason other than genuine object-not-found (e.g. permission/auth/network error).
+GCS_RUN_URI="gs://${GCS_BUCKET}/${RUN_ROOT}/${RUN_NAME}"
+set +e
+gcs_stat_out="$(gsutil stat "${GCS_RUN_URI}/**" 2>&1)"
+gcs_stat_rc=$?
+set -e
+if [[ "${gcs_stat_rc}" -eq 0 ]]; then
     if [[ "${ALLOW_OVERWRITE_RUN_DIR}" != "1" ]]; then
-        echo "ERROR: gs://${GCS_BUCKET}/${RUN_ROOT}/${RUN_NAME}/ already contains artifacts from a previous run; refusing to reuse stale RUN_DIR or G0 precheck files. Choose a fresh RUN_NAME or set ALLOW_OVERWRITE_RUN_DIR=1." >&2
+        echo "ERROR: ${GCS_RUN_URI}/ already contains artifacts from a previous run; refusing to reuse stale RUN_DIR or G0 precheck files. Choose a fresh RUN_NAME or set ALLOW_OVERWRITE_RUN_DIR=1." >&2
         exit 1
     fi
     gsutil -m rm -f \
-        "gs://${GCS_BUCKET}/${RUN_ROOT}/${RUN_NAME}/exit_code.txt" \
-        "gs://${GCS_BUCKET}/${RUN_ROOT}/${RUN_NAME}/env/*-g0-verify.json" >/dev/null 2>&1 || true
+        "${GCS_RUN_URI}/exit_code.txt" \
+        "${GCS_RUN_URI}/env/*-g0-verify.json" >/dev/null 2>&1 || true
+elif [[ "${gcs_stat_out}" == *"No URLs matched"* || "${gcs_stat_out}" == *"One or more URLs matched no objects"* || "${gcs_stat_out}" == *"matched no objects or files"* ]]; then
+    :
+else
+    echo "ERROR: failed to check GCS run directory ${GCS_RUN_URI}/ (rc=${gcs_stat_rc}); failing closed to prevent accidental overwrite: ${gcs_stat_out}" >&2
+    exit 1
 fi
 
 EXTRA_ARGS_STR=""
@@ -148,20 +224,25 @@ done
 
 create_k8s_object_and_record_uid() {
     local var_name="$1"
-    local uid
-    uid="$(kubectl --context="${KUBE_CONTEXT}" -n "${K8S_NAMESPACE}" create -f - -o jsonpath='{.metadata.uid}')"
-    if [[ -z "${uid}" ]]; then
-        echo "ERROR: failed to capture metadata.uid from created Kubernetes object (${var_name})" >&2
-        exit 1
+    local attempted_var_name="$2"
+    printf -v "${attempted_var_name}" '1'
+    local uid=""
+    if uid="$(kubectl --context="${KUBE_CONTEXT}" -n "${K8S_NAMESPACE}" create -f - -o jsonpath='{.metadata.uid}')" && [[ -n "${uid}" ]]; then
+        printf -v "${var_name}" '%s' "${uid}"
+        return 0
     fi
-    printf -v "${var_name}" '%s' "${uid}"
+    echo "ERROR: failed to create or capture metadata.uid from Kubernetes object (${var_name}, launch_id=${LAUNCH_ID})" >&2
+    exit 1
 }
 
-create_k8s_object_and_record_uid CREATED_CD_UID <<EOF
+create_k8s_object_and_record_uid CREATED_CD_UID ATTEMPTED_CD <<EOF
 apiVersion: resource.nvidia.com/v1beta1
 kind: ComputeDomain
 metadata:
   name: ${RUN_NAME}-cd
+  labels:
+    retool-run: ${RUN_NAME}
+    retool-launch-id: ${LAUNCH_ID}
 spec:
   numNodes: 2
   channel:
@@ -170,11 +251,14 @@ spec:
       name: ${RUN_NAME}-cd-channel
 EOF
 
-create_k8s_object_and_record_uid CREATED_SVC_UID <<EOF
+create_k8s_object_and_record_uid CREATED_SVC_UID ATTEMPTED_SVC <<EOF
 apiVersion: v1
 kind: Service
 metadata:
   name: ${RUN_NAME}-head
+  labels:
+    retool-run: ${RUN_NAME}
+    retool-launch-id: ${LAUNCH_ID}
 spec:
   clusterIP: None
   selector:
@@ -189,7 +273,7 @@ spec:
     targetPort: 8265
 EOF
 
-create_k8s_object_and_record_uid CREATED_WORKER_POD_UID <<EOF
+create_k8s_object_and_record_uid CREATED_WORKER_POD_UID ATTEMPTED_WORKER_POD <<EOF
 apiVersion: v1
 kind: Pod
 metadata:
@@ -197,6 +281,7 @@ metadata:
   labels:
     retool-run: ${RUN_NAME}
     retool-role: worker
+    retool-launch-id: ${LAUNCH_ID}
   annotations:
     gke-gcsfuse/volumes: "true"
 spec:
@@ -382,7 +467,7 @@ ${JOBENV_YAML}    resources:
       ray stop || true
 EOF
 
-create_k8s_object_and_record_uid CREATED_HEAD_POD_UID <<EOF
+create_k8s_object_and_record_uid CREATED_HEAD_POD_UID ATTEMPTED_HEAD_POD <<EOF
 apiVersion: v1
 kind: Pod
 metadata:
@@ -390,6 +475,7 @@ metadata:
   labels:
     retool-run: ${RUN_NAME}
     retool-role: head
+    retool-launch-id: ${LAUNCH_ID}
   annotations:
     gke-gcsfuse/volumes: "true"
 spec:

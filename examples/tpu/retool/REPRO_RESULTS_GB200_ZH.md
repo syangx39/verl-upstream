@@ -252,11 +252,22 @@ verl.workers.engine.torchtitan.utils.configure_qwen3_moe_for_rl: present
 - **硬件拓扑与并行度**：**2 节点 × 4 张 NVIDIA GB200（共 8 张 GPU，`NV18` 满规格 NVLink5 + `ComputeDomain` IMEX 通道）**：
   - **Actor / Ref Trainer（Head 节点）**：4 张 GB200，`FSDP2=4, TP=1, EP=1, CP=1`（`MoE: disabled expert-bias load balancing on 48 layers`）
   - **Async vLLM Rollout（Worker-0 节点）**：4 张 GB200，`TP=4`（`VLLM_USE_V1=1`，FlashInfer SM100 热缓存复用）
-- **核心训练与评估超参（与 TPU `Stage P3` 严格一致）**：
-  - `data.train_batch_size = 64`，`actor.ppo_mini_batch_size = 64`，`rollout.n = 8`（每步 `64 × 8 = 512` 条多轮轨迹；25 步合计 **`12,800` 条训练轨迹**）
-  - `rollout.val_kwargs.n = 30`（AIME 2024 共 30 题 + AIME 2025 共 30 题，每次评估 `60 × 30 = 1,800` 条多轮轨迹）
-  - `trainer.num_warmup_batches = 2`，`trainer.max_staleness = 3`，`trainer.total_training_steps = 25`，`trainer.val_before_train = True`，`trainer.test_freq = 25`
-  - `max_prompt_length = 2048`，`max_response_length = 8192`，`max_turns = 16`，`actor.optim.lr = 1.4e-6`，`training.max_norm = 1.0`
+- **核心训练与评估超参（经 [`head.log`](./gb200/evidence/g2-retool-rl-25step-01/head.log) 启动命令 `L130` 与 Hydra Resolved Config `L142–L1142` 逐项核实；与 TPU `Stage P3` 计划超参基本对齐，具体异同见下表 6.1.1）**：
+  - `data.train_batch_size = 64`，`actor.ppo_mini_batch_size = 64`，`rollout.n = 8`（每步 `64 × 8 = 512` 条多轮轨迹；25 步合计 **`12,800` 条训练轨迹**，见 [`head.log#L130`](./gb200/evidence/g2-retool-rl-25step-01/head.log#L130)）
+  - `rollout.val_kwargs.n = 30`（AIME 2024 共 30 题 + AIME 2025 共 30 题，每次评估 `60 × 30 = 1,800` 条多轮轨迹，见 [`head.log#L574-L580`](./gb200/evidence/g2-retool-rl-25step-01/head.log#L574-L580)）
+  - `trainer.v1.sampler.num_warmup_steps = 2`，`trainer.v1.sampler.max_off_policy_threshold = 4`（注：早先报告正文曾误写为 `max_staleness = 3`，实际启动脚本 `L90` 与 Hydra 解析配置 [`head.log#L1064`](./gb200/evidence/g2-retool-rl-25step-01/head.log#L1064) 均为 `trainer.v1.sampler.max_off_policy_threshold = 4`），`trainer.total_training_steps = 25`，`trainer.val_before_train = True`，`trainer.test_freq = 25`
+  - `max_prompt_length = 2048`，`max_response_length = 8192`，`multi_turn.max_user_turns = 8`、`multi_turn.max_assistant_turns = 8`（单条轨迹最多 `8 user + 8 assistant = 16` 轮总消息，对应日志 `val-aux/num_turns/max = 16`，见 [`head.log#L64`](./gb200/evidence/g2-retool-rl-25step-01/head.log#L64)、[`head.log#L498-L501`](./gb200/evidence/g2-retool-rl-25step-01/head.log#L498-L501)、[`head.log#L3028`](./gb200/evidence/g2-retool-rl-25step-01/head.log#L3028)），`actor.optim.lr = 1e-6`（注：启动脚本 `L130` 与 [`head.log#L261`](./gb200/evidence/g2-retool-rl-25step-01/head.log#L261) 实际为 `1e-6`，与 Askhat 脚本一致），`training.max_norm = 1.0`
+
+#### 6.1.1 Askhat 脚本基线 vs G2 报告表述 vs G2 实际运行配置（`head.log`）逐项对照表
+
+| 项目 | G2 早期报告表述 | G2 实际运行配置（[`head.log`](./gb200/evidence/g2-retool-rl-25step-01/head.log) 实证） | Askhat 脚本默认值（[`run_qwen3_32b_dapo_torchtitan.sh`](./run_qwen3_32b_dapo_torchtitan.sh)） | 状态与结论 |
+| --- | --- | --- | --- | --- |
+| **多轮上限** | 曾简写为 `max_turns=16` | `max_turns=8` $\rightarrow$ `multi_turn.max_user_turns=8`、`multi_turn.max_assistant_turns=8`（[`head.log#L64`](./gb200/evidence/g2-retool-rl-25step-01/head.log#L64), [`#L498-L501`](./gb200/evidence/g2-retool-rl-25step-01/head.log#L498-L501)）；单条轨迹最多 `8 user + 8 assistant = 16` 轮消息（`val-aux/num_turns/max = 16`，[`head.log#L2343`](./gb200/evidence/g2-retool-rl-25step-01/head.log#L2343), [`#L3028`](./gb200/evidence/g2-retool-rl-25step-01/head.log#L3028)） | `max_turns=8` $\rightarrow$ `multi_turn.max_user_turns=8`、`multi_turn.max_assistant_turns=8` | **已对齐**（报告先前写 `16` 是将分角色上限 `8+8` 的总对话轮数 `num_turns/max=16` 混写为配置名；实际配置与 Askhat 完全相同） |
+| **Off-policy 阈值** | 曾误写为 `max_staleness=3` | `MAX_OFF_POLICY_THRESHOLD=4` $\rightarrow$ `trainer.v1.sampler.max_off_policy_threshold=4`（[`head.log#L90`](./gb200/evidence/g2-retool-rl-25step-01/head.log#L90), [`#L130`](./gb200/evidence/g2-retool-rl-25step-01/head.log#L130), [`#L1064`](./gb200/evidence/g2-retool-rl-25step-01/head.log#L1064)） | `MAX_OFF_POLICY_THRESHOLD=4` $\rightarrow$ `trainer.v1.sampler.max_off_policy_threshold=4` | **已对齐**（`max_staleness=3` 系早期文档笔误；G2 实际运行参数名称与数值均为 `trainer.v1.sampler.max_off_policy_threshold=4`，与 Askhat 完全一致） |
+| **SFT 起点 Checkpoint** | 使用本地 TPU `Stage P2` Step-372 导出 checkpoint | `/dev/shm/models/multiturn-sft-qwen3-30b-a3b-tpu7x`（20 核心文件 `composite_sha256 = 59247a00...`，与本地 TPU `p2-retool-sft-01` Step-372 逐字节一致） | Askhat 自身训练导出的 SFT checkpoint（末 10 步 `train/loss=0.039429` vs 本地 `P2` `0.039265`） | **不同 / 未确认逐位相同**（已严格证明 GB200 `G2` 与本地 TPU `P2/P3` 起点逐位相同；但与 Askhat 的 SFT checkpoint 属于不同训练实例，尚未证明权重相同） |
+| **评分函数（Reward Scorer）** | 启动脚本指定 `custom_reward_function.path=pkg://examples.tpu.retool.retool_tpu` | CLI 传入顶层 `custom_reward_function.path=pkg://examples.tpu.retool.retool_tpu`（[`head.log#L765-L766`](./gb200/evidence/g2-retool-rl-25step-01/head.log#L765-L766)），但 `trainer.use_v1=True` 下 `config.reward.custom_reward_function.path` 为 `None`（[`head.log#L899-L904`](./gb200/evidence/g2-retool-rl-25step-01/head.log#L899-L904)），运行期实际回退加载 `default_compute_score` $\rightarrow$ `math_dapo.compute_score(..., strict_box_verify=False)` | 同样传入顶层 `custom_reward_function.path=pkg://examples.tpu.retool.retool_tpu` 且 `trainer.use_v1=True`（未设 `reward.custom_reward_function.path`） | **已对齐（均回退至 `strict_box_verify=False`）**；详见下方 6.2.1 节双口径复算 |
+| **Batch / Rollout / LR** | `BS=64, mini_bs=64, n=8, val_n=30` | `train_batch_size=64, ppo_mini_batch_size=64, rollout.n=8, val_kwargs.n=30, lr=1e-6, clip_ratio_low=0.2, clip_ratio_high=0.28`（[`head.log#L130`](./gb200/evidence/g2-retool-rl-25step-01/head.log#L130)） | `train_batch_size=64, ppo_mini_batch_size=64, rollout.n=8, val_kwargs.n=30, lr=1e-6, clip_ratio_low=0.2, clip_ratio_high=0.28` | **已对齐** |
+| **加速器类型与物理卡数** | 2 节点 × 4 张 GB200 = **8 张 GB200 GPU**（`4 trainer + 4 rollout`） | **8 张 NVIDIA GB200 GPU**（`4 trainer FSDP2=4 + 4 rollout TP=4`） | Askhat TPU v6e 配置为 **64 张 v6e 物理芯片**（`32 trainer + 32 rollout`）；本仓库 TPU v7x 配置为 **32 张 v7x 物理芯片 / 64 逻辑核**（`16 trainer + 16 rollout`） | **不同**（跨平台性能需在相同物理加速器数量下进一步对照，见第 8 节 TODO） |
 - **Step-25 模型权重 Checkpoint 保存状态说明**：
   - 本次 `g2-retool-rl-25step-01` 启动参数为默认 `SAVE_FREQ=-1`（即 `trainer.save_freq = -1`），因此 **未将 Step-25 模型权重保存为磁盘 checkpoint**；Step 25 的 AIME 2024 / 2025 (`n=30`) 评估是在 Step 25 完成 `actor -> NCCL -> vLLM` 权重同步后直接在内存中触发执行（`trainer.test_freq = 25`），并将全部评估样本、训练轨迹与掩码审计落盘保存。
 - **可独立复算原始证据文件清单与验证范围说明（已归档至本 PR [`examples/tpu/retool/gb200/evidence/g2-retool-rl-25step-01/`](./gb200/evidence/g2-retool-rl-25step-01/)）**：
@@ -302,6 +313,30 @@ verl.workers.engine.torchtitan.utils.configure_qwen3_moe_for_rl: present
 | **AIME 2025 `acc/std@30`** | `17.79%` (`0.1779`) | `21.14%` (`0.2114`) | `+3.35 pp` | - |
 | **评估集多轮对话轮数 `val-aux/num_turns/mean` (`min`–`max`)** | `5.9467` (`2`–`16`) | **`5.5878`** (`2`–`16`) | `-0.3589`（工具调用更精炼） | - |
 | **评估轨迹含 `<tool_response>` 比例 (`validation/{0,25}.jsonl`)** | `1,634 / 1,800` (**`90.78%`**, 共 `3,552` 次调用) | `1,591 / 1,800` (**`88.39%`**, 共 `3,229` 次调用) | 全程保持 ~90% 工具调用率 | - |
+
+#### 6.2.1 评分器（Scorer）加载路径核实与 `strict_box_verify=False` vs `strict_box_verify=True` 双口径全量复算
+
+1. **运行期实际加载的评分器（从 [`head.log`](./gb200/evidence/g2-retool-rl-25step-01/head.log) 与 `verl` 源码确认）**：
+   - 启动脚本 [`run_qwen3_30b_a3b_dapo_torchtitan_gb200.sh`](./gb200/run_qwen3_30b_a3b_dapo_torchtitan_gb200.sh)（沿用自 Askhat 的 [`run_qwen3_32b_dapo_torchtitan.sh`](./run_qwen3_32b_dapo_torchtitan.sh)）在命令行传入了顶层参数 `custom_reward_function.path=pkg://examples.tpu.retool.retool_tpu` 与 `custom_reward_function.name=compute_score`（见 [`head.log#L53-L54`](./gb200/evidence/g2-retool-rl-25step-01/head.log#L53-L54)、[`head.log#L130`](./gb200/evidence/g2-retool-rl-25step-01/head.log#L130)）。
+   - 但在 `trainer.use_v1=True`（`TaskRunnerV1`，见 [`verl/trainer/main_ppo.py`](../../../verl/trainer/main_ppo.py)）路径下，`migrate_legacy_reward_impl()` 未被调用，因此顶层 `config.custom_reward_function` 为 `{'name': 'compute_score', 'path': 'pkg://examples.tpu.retool.retool_tpu'}`（[`head.log#L765-L766`](./gb200/evidence/g2-retool-rl-25step-01/head.log#L765-L766)），而 V1 `RewardLoopWorker` 实际读取的嵌套字段 `config.reward.custom_reward_function` 保持默认值 `{'name': 'compute_score', 'path': None}`（[`head.log#L899-L904`](./gb200/evidence/g2-retool-rl-25step-01/head.log#L899-L904)）。
+   - 因此，[`verl/trainer/ppo/reward.py:get_custom_reward_fn()`](../../../verl/trainer/ppo/reward.py) 因 `module_path is None` 返回 `None`，`load_reward_manager()` 自动回退至 [`verl/utils/reward_score/__init__.py:default_compute_score`](../../../verl/utils/reward_score/__init__.py)，对 `math_dapo` / `aime*` 数据源调用 `math_dapo.compute_score(solution_str, ground_truth, strict_box_verify=False)`（纯结果奖励 `{-1.0, +1.0}`）。
+   - 这一点在 3,600 条样本记录及 `head.log` 中得到 100% 交叉印证：
+     - 全部 `3,600 / 3,600` 条评估样本的 `pred`、`acc` 与 `score`（仅含 `-1.0` 与 `+1.0`）与 `math_dapo.compute_score(output_tail_300, gts, strict_box_verify=False)` **零偏差完全一致**；
+     - `head.log` 打印的 `val-aux/aime_2024/reward/mean@30`（Step 0 `-0.524444`、Step 25 `-0.424444`）与 `val-core/aime_2024/acc/mean@30`（Step 0 `0.237778`、Step 25 `0.287778`）严格满足 $\text{reward} = 2 \times \text{acc} - 1$。
+2. **为什么 `strict_box_verify=False` 与 `strict_box_verify=True` 在 Step 0 相差 5 条、Step 25 相差 9 条样本？**
+   - 在 [`verl/utils/reward_score/math_dapo.py:verify()`](../../../verl/utils/reward_score/math_dapo.py) 中，当 `strict_box_verify=False` 时，会优先尝试 Minerva 正则（`(?i)Answer\s*:\s*([^\n]+)`），仅当其返回 `"[INVALID]"` 时才回退到 `\boxed{...}` 提取；
+   - 当模型输出形如 `**Answer:** \boxed{45}`、`Final answer: \(\boxed{204}\)` 或 `**Final Answer:**\n\n\boxed{204}` 时，Minerva 正则匹配到了冒号前后的 Markdown 符号并经 `normalize_final_answer` 归一化为 `'**45'`、`'\\(204\\)'` 或 `'**'`（非 `"[INVALID]"`），导致 `strict_box_verify=False` 直接判定为错误（`acc=False`）而未触发 `\boxed{}` 回退；
+   - 反之，`strict_box_verify=True`（即 `retool_tpu.compute_score` 指定的方式）直接提取最后一个 `\boxed{...}` 内的数字（`'45'`、`'204'`、`'211'`、`'16'`、`'77'`），将这 5 条（Step 0）与 9 条（Step 25）实际答对并放在 `\boxed{}` 内的样本全部正确判为 **`acc=True`**。
+3. **双口径（运行期实际 `strict_box_verify=False` vs ReTool `strict_box_verify=True`）全量 3,600 条样本复算对照表**（由 [`recompute_g2_metrics.py`](./gb200/evidence/g2-retool-rl-25step-01/recompute_g2_metrics.py) 自动复算验证）：
+
+| 评估数据集与指标 | 运行期实际评分器（`strict_box_verify=False`，与 `head.log` 一致） | ReTool 严格 Box 评分器（`strict_box_verify=True`） | 两种评分方式差异说明 |
+| --- | --- | --- | --- |
+| **AIME 2024 Step 0 正确样本数 / `mean@30` (`std@30`)** | **`214 / 900` (`23.78%`**, `0.237778`, `std=0.255242`) | **`218 / 900` (`24.22%`**, `0.242222`, `std=0.255773`) | Step 0 共 **4 条** AIME 2024 样本因 `**Answer:** \boxed{45}` / `Final answer: \(\boxed{204}\)` 在 `strict=True` 下恢复为正确（`+0.44 pp`） |
+| **AIME 2024 Step 25 正确样本数 / `mean@30` (`std@30`)** | **`259 / 900` (`28.78%`**, `0.287778`, `std=0.267813`) | **`267 / 900` (`29.67%`**, `0.296667`, `std=0.268052`) | Step 25 共 **8 条** AIME 2024 样本（答案 `45`、`204`、`211`）在 `strict=True` 下恢复为正确（`+0.89 pp`） |
+| **AIME 2024 25 步绝对增益（$\Delta$ Step 25 $-$ Step 0）** | **`+45 / 900` (`+5.00 pp`)** | **`+49 / 900` (`+5.44 pp`)** | 无论采用哪种口径，25 步 RL 在 AIME 2024 上均取得 **`+5.00 pp ~ +5.44 pp`** 的显著提升 |
+| **AIME 2025 Step 0 正确样本数 / `mean@30` (`std@30`)** | **`153 / 900` (`17.00%`**, `0.170000`, `std=0.177899`) | **`154 / 900` (`17.11%`**, `0.171111`, `std=0.177257`) | Step 0 共 **1 条** AIME 2025 样本（`**Answer:** \boxed{16}`）在 `strict=True` 下恢复为正确（`+0.11 pp`） |
+| **AIME 2025 Step 25 正确样本数 / `mean@30` (`std@30`)** | **`161 / 900` (`17.89%`**, `0.178889`, `std=0.211361`) | **`162 / 900` (`18.00%`**, `0.180000`, `std=0.212003`) | Step 25 共 **1 条** AIME 2025 样本（`**Final Answer:**\n\n\boxed{77}`）在 `strict=True` 下恢复为正确（`+0.11 pp`） |
+| **AIME 2025 25 步绝对增益（$\Delta$ Step 25 $-$ Step 0）** | **`+8 / 900` (`+0.89 pp`)** | **`+8 / 900` (`+0.89 pp`)** | 两种口径下 AIME 2025 的 25 步净增益完全一致（均为 **`+8 / 900 = +0.89 pp`**） |
 
 ### 6.3 25 步多轮 RL 训练逐 Step 全量指标表（`step:1` – `step:25`）
 
@@ -362,7 +397,19 @@ verl.workers.engine.torchtitan.utils.configure_qwen3_moe_for_rl: present
 | **单步 Actor 更新耗时 (`update_actor`, BS=64×8)** | 稳态（Step 3–25）**`12.89 s – 18.95 s`**（均值 **`15.20 s`**） | 待 `Stage P3` 实测 | 约 `35–50 s` |
 | **单步端到端耗时 (`timing_s/step`, BS=64×8)** | Step 2–25 均值 **`39.84 s/step`**、Step 3–25 稳态均值 **`38.59 s/step`**、Step 1–25 全程均值 **`43.72 s/step`**（异步全重叠步 **`18.55 s – 24.63 s/step`**，吞吐最高 **`3,582 tok/s`**）；墙钟耗时：25 步训练本体 **`18m 24s`**，`tqdm`（25 步 + Step 25 评估）**`21m 35s`**，**含 Step 0 + Step 25 两次完整 `n=30` AIME 评估共 `24m 36s`**（`main_ppo` 全程 `27m 37s`） | 待 `Stage P3` 实测 | 约 `70–110 s/step` |
 
+---
 
+## 8. 待办事项（TODO）：同加速器数量（Iso-Accelerator-Count）TPU v7x vs NVIDIA GB200 性能基准对照
 
+当前各线的硬件物理卡数尚未对齐，因此不能直接将上述单步耗时作为等规模硬件性能对比结论：
 
+| 对照线 | 物理芯片 / GPU 总数 | 逻辑加速核总数 | Trainer / Rollout 切分 | 备注 |
+| --- | --- | --- | --- | --- |
+| **Askhat 原始基线（TPU v6e）** | **64 张 v6e 物理芯片** | 64 核心（1 核/芯片） | `32 v6e trainer + 32 v6e rollout` | 单芯片 32 GiB HBM |
+| **本仓库 TPU v7x 当前配置（PR #7）** | **32 张 v7x 物理芯片** | 64 逻辑 TensorCore（2 核/芯片） | `16 v7x 芯片 (32 核) trainer + 16 v7x 芯片 (32 核) rollout` | 单芯片 192 GiB HBM（每逻辑核 96 GiB） |
+| **本仓库 NVIDIA GB200 当前配置（本 PR #9）** | **8 张 GB200 GPU** | 8 张 GPU | `4 GB200 trainer + 4 GB200 rollout` | 单卡 184.31 GiB HBM |
+
+- **后续同卡数（Iso-Accelerator-Count）性能对照 TODO（已在独立 PR #11 中建立专门基准计划与占位记录）**：
+  1. **8 物理芯片对照档（`8 × TPU v7x 物理芯片` vs `8 × NVIDIA GB200 GPU`）**：在 TPU v7x（`4 芯片 trainer + 4 芯片 rollout`，即双 `2×2` 拓扑、共 8 物理芯片 / 16 逻辑核）与 GB200（`4 GPU trainer + 4 GPU rollout`，共 8 张 GPU）上以完全相同的 `BS=64, n=8` 对比稳态 `update_actor`、`update_weights`、`gen` 与 `timing_s/step`；
+  2. **32 物理芯片对照档（`32 × TPU v7x 物理芯片` vs `32 × NVIDIA GB200 GPU`）**：在 TPU v7x（`16 芯片 trainer + 16 芯片 rollout`，共 32 物理芯片）修复 Raiden P2P 权重同步（见 PR #10）完成 `Stage P3` 后，与 8 节点 `32 × GB200 GPU`（`16 GPU trainer + 16 GPU rollout`）进行同等 32 物理加速器规模吞吐对照。
 

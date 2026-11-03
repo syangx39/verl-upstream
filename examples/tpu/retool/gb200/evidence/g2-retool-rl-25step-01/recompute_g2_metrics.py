@@ -32,7 +32,17 @@ def verify_validation_samples(path: Path, expected_step: int, metrics_step: dict
             with_tool += 1
         total_tools += r["tool_response_count"]
 
-    # Verify pred/acc extraction from output_tail_300 using verl/utils/reward_score/math_dapo.py (stdlib-only module)
+    # Verify pred/acc extraction from output_tail_300 using verl/utils/reward_score/math_dapo.py (stdlib-only module).
+    # Note on runtime scorer resolution in G2 (verified in head.log lines 765-766 and 899-901):
+    # - The launch script passed legacy CLI overrides `custom_reward_function.path=pkg://examples.tpu.retool.retool_tpu`
+    #   and `custom_reward_function.name=compute_score` (inherited from examples/tpu/retool/run_qwen3_32b_dapo_torchtitan.sh).
+    # - Under `trainer.use_v1=True` (`TaskRunnerV1` in `verl/trainer/main_ppo.py`), `migrate_legacy_reward_impl` is not
+    #   called, so `config.reward.custom_reward_function.path` remained `None` (`head.log#L899-L901`), and
+    #   `verl/trainer/ppo/reward.py:get_custom_reward_fn` fell back to `default_compute_score`
+    #   (`verl/utils/reward_score/__init__.py:59-62`), which invokes `math_dapo.compute_score(..., strict_box_verify=False)`.
+    # Below we verify 100% agreement with the runtime scorer (`strict_box_verify=False`) AND also recompute metrics
+    # under `strict_box_verify=True` (`retool_tpu.compute_score`) to quantify the exact difference (5 samples at Step 0,
+    # 9 samples at Step 25 where Markdown around `Answer:` caused Minerva regex extraction to return `**45`/`**`/`\(204\)`).
     import importlib.util
 
     math_dapo_path = REPO_ROOT / "verl" / "utils" / "reward_score" / "math_dapo.py"
@@ -40,10 +50,35 @@ def verify_validation_samples(path: Path, expected_step: int, metrics_step: dict
     assert spec is not None and spec.loader is not None
     math_dapo = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(math_dapo)
+    strict_By_ds_q: dict[str, dict[str, list[bool]]] = defaultdict(lambda: defaultdict(list))
+    strict_vs_runtime_diffs: list[dict] = []
     for r in rows:
-        res = math_dapo.compute_score(r["output_tail_300"], str(r["gts"]), strict_box_verify=False)
-        pred = res["pred"] if res["pred"] is not None else ""
-        assert pred == r["pred"] and bool(res["acc"]) == bool(r["acc"]), f"Mismatch on {r['uid']}: {res} vs {r}"
+        res_runtime = math_dapo.compute_score(r["output_tail_300"], str(r["gts"]), strict_box_verify=False)
+        pred_runtime = res_runtime["pred"] if res_runtime["pred"] is not None else ""
+        assert pred_runtime == r["pred"] and bool(res_runtime["acc"]) == bool(r["acc"]), (
+            f"Mismatch on {r['uid']}: {res_runtime} vs {r}"
+        )
+        expected_score = 1.0 if r["acc"] else -1.0
+        assert abs(float(r["score"]) - expected_score) < 1e-6, (
+            f"Score mismatch on {r['uid']}: {r['score']} vs {expected_score}"
+        )
+
+        res_strict = math_dapo.compute_score(r["output_tail_300"], str(r["gts"]), strict_box_verify=True)
+        pred_strict = res_strict["pred"] if res_strict["pred"] is not None else ""
+        strict_By_ds_q[r["data_source"]][r["question_id"]].append(bool(res_strict["acc"]))
+        if bool(res_strict["acc"]) != bool(res_runtime["acc"]):
+            strict_vs_runtime_diffs.append(
+                {
+                    "uid": r["uid"],
+                    "data_source": r["data_source"],
+                    "question_id": r["question_id"],
+                    "gts": str(r["gts"]),
+                    "runtime_strict_false_pred": pred_runtime,
+                    "runtime_strict_false_acc": bool(res_runtime["acc"]),
+                    "strict_true_pred": pred_strict,
+                    "strict_true_acc": bool(res_strict["acc"]),
+                }
+            )
     raw_tail_verified = True
 
     out: dict[str, dict] = {}
@@ -66,18 +101,41 @@ def verify_validation_samples(path: Path, expected_step: int, metrics_step: dict
         std_at_30 = sum(per_q_stds) / len(per_q_stds)
         logged_mean = metrics_step[f"val-core/{ds}/acc/mean@30"]
         logged_std = metrics_step[f"val-aux/{ds}/acc/std@30"]
+        logged_reward_mean = metrics_step[f"val-aux/{ds}/reward/mean@30"]
         assert abs(mean_at_30 - logged_mean) < 1e-6, f"{ds} mean@30 mismatch: {mean_at_30} vs {logged_mean}"
         assert abs(std_at_30 - logged_std) < 1e-6, f"{ds} std@30 mismatch: {std_at_30} vs {logged_std}"
+        assert abs((2.0 * mean_at_30 - 1.0) - logged_reward_mean) < 1e-6, (
+            f"{ds} reward/mean@30 mismatch: {2.0 * mean_at_30 - 1.0} vs {logged_reward_mean}"
+        )
+
+        # Also compute strict_box_verify=True metrics for side-by-side comparison
+        strict_q_map = strict_By_ds_q[ds]
+        strict_per_q_means = []
+        strict_per_q_stds = []
+        strict_total_correct = 0
+        for qid, strict_accs_bool in sorted(strict_q_map.items()):
+            strict_accs = [1.0 if a else 0.0 for a in strict_accs_bool]
+            strict_total_correct += sum(1 for a in strict_accs_bool if a)
+            sm = sum(strict_accs) / 30.0
+            svar = sum((x - sm) ** 2 for x in strict_accs) / 30.0
+            strict_per_q_means.append(sm)
+            strict_per_q_stds.append(math.sqrt(svar))
+        strict_mean_at_30 = sum(strict_per_q_means) / len(strict_per_q_means)
+        strict_std_at_30 = sum(strict_per_q_stds) / len(strict_per_q_stds)
 
         out[ds] = {
             "num_questions": len(q_map),
             "samples_per_question": 30,
+            "runtime_scorer": "default_compute_score -> math_dapo.compute_score(strict_box_verify=False)",
             "total_correct_samples": f"{total_correct} / 900",
             "raw_tail_300_extraction_verified": raw_tail_verified,
             "recomputed_acc_mean_at_30": round(mean_at_30, 6),
             "logged_acc_mean_at_30": round(logged_mean, 6),
             "recomputed_acc_std_at_30": round(std_at_30, 6),
             "logged_acc_std_at_30": round(logged_std, 6),
+            "strict_box_verify_true_total_correct_samples": f"{strict_total_correct} / 900",
+            "strict_box_verify_true_acc_mean_at_30": round(strict_mean_at_30, 6),
+            "strict_box_verify_true_acc_std_at_30": round(strict_std_at_30, 6),
             "logged_acc_maj_at_30": round(metrics_step[f"val-core/{ds}/acc/maj@30/mean"], 6),
             "logged_acc_best_at_30": round(metrics_step[f"val-core/{ds}/acc/best@30/mean"], 6),
             "logged_acc_maj_at_8": round(metrics_step[f"val-aux/{ds}/acc/maj@8/mean"], 6),
@@ -88,6 +146,8 @@ def verify_validation_samples(path: Path, expected_step: int, metrics_step: dict
                 "depends on pre-sort async rollout completion order at runtime."
             ),
         }
+    out["strict_box_verify_vs_runtime_diff_count"] = len(strict_vs_runtime_diffs)
+    out["strict_box_verify_vs_runtime_diffs"] = strict_vs_runtime_diffs
     out["tool_usage"] = {
         "trajectories_with_tool_response": with_tool,
         "total_trajectories": len(rows),

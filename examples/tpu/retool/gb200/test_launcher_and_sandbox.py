@@ -18,6 +18,54 @@ REPO_ROOT = Path(__file__).resolve().parents[4]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+try:
+    import uvicorn  # noqa: F401
+except ImportError:
+    import types
+
+    sys.modules["uvicorn"] = types.ModuleType("uvicorn")
+
+try:
+    import fastapi  # noqa: F401
+except ImportError:
+    import types
+
+    fa = types.ModuleType("fastapi")
+
+    class _DummyFastAPI:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def middleware(self, *args, **kwargs):
+            return lambda fn: fn
+
+        def get(self, *args, **kwargs):
+            return lambda fn: fn
+
+        def post(self, *args, **kwargs):
+            return lambda fn: fn
+
+    fa.FastAPI = _DummyFastAPI
+    fa.Request = object
+    fa.Response = object
+    sys.modules["fastapi"] = fa
+
+try:
+    import pydantic  # noqa: F401
+except ImportError:
+    import types
+
+    pd = types.ModuleType("pydantic")
+
+    class _DummyBaseModel:
+        def __init__(self, **kwargs):
+            for k, v in kwargs.items():
+                setattr(self, k, v)
+
+    pd.BaseModel = _DummyBaseModel
+    pd.Field = lambda default=None, **kwargs: default
+    sys.modules["pydantic"] = pd
+
 from examples.tpu.retool import sandbox_fusion_server  # noqa: E402
 
 
@@ -145,25 +193,31 @@ class TestSandboxEndpointResolution(unittest.TestCase):
 
 class _MockKubeProxyHandler(BaseHTTPRequestHandler):
     deletes: list[tuple[str, dict]] = []
+    status_code: int = 200
 
     def do_DELETE(self):
         length = int(self.headers.get("Content-Length", "0"))
         body = json.loads(self.rfile.read(length).decode("utf-8")) if length > 0 else {}
         self.__class__.deletes.append((self.path, body))
-        self.send_response(200)
+        code = self.__class__.status_code
+        self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
-        self.wfile.write(b'{"kind":"Status","status":"Success"}')
+        if code == 200:
+            self.wfile.write(b'{"kind":"Status","status":"Success"}')
+        else:
+            self.wfile.write(b'{"kind":"Status","status":"Failure","message":"simulated delete failure"}')
 
     def log_message(self, format, *args):  # noqa: A002
         return
 
 
 class TestLauncherResourceLifecycle(unittest.TestCase):
-    """Verify run_ray_jobset_gb200.sh per-object UID capture, partial failure cleanup, and collision checks."""
+    """Verify run_ray_jobset_gb200.sh per-object UID capture, ambiguous create cleanup, and fail-closed GCS checks."""
 
     def setUp(self):
         _MockKubeProxyHandler.deletes = []
+        _MockKubeProxyHandler.status_code = 200
         self.server = HTTPServer(("127.0.0.1", 0), _MockKubeProxyHandler)
         self.port = self.server.server_port
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -173,7 +227,15 @@ class TestLauncherResourceLifecycle(unittest.TestCase):
         self.server.shutdown()
         self.server.server_close()
 
-    def _make_mock_bins(self, tmp_dir: Path, fail_on_create_idx: int = 3, existing_k8s: bool = False, existing_gcs: bool = False):
+    def _make_mock_bins(
+        self,
+        tmp_dir: Path,
+        fail_on_create_idx: int = 3,
+        existing_k8s: bool = False,
+        gcs_mode: str = "not_found",
+        ambiguous_get_response: str = "Error from server (NotFound): not found",
+        ambiguous_get_rc: int = 1,
+    ):
         bin_dir = tmp_dir / "bin"
         bin_dir.mkdir(parents=True, exist_ok=True)
         state_file = tmp_dir / "create_count.txt"
@@ -184,10 +246,15 @@ class TestLauncherResourceLifecycle(unittest.TestCase):
             f"""#!/usr/bin/env bash
 set -euo pipefail
 args=("$@")
+if [[ "${{args[*]}}" == *" get "* && "${{args[*]}}" == *"jsonpath={{.metadata.labels.retool-launch-id}}:{{.metadata.uid}}"* ]]; then
+    echo "{ambiguous_get_response}"
+    exit {ambiguous_get_rc}
+fi
 if [[ "${{args[*]}}" == *" get "* ]]; then
     if [[ "{1 if existing_k8s else 0}" == "1" ]]; then
         exit 0
     fi
+    echo "Error from server (NotFound): not found" >&2
     exit 1
 fi
 if [[ "${{args[*]}}" == *" create -f - "* ]]; then
@@ -214,10 +281,16 @@ exit 0
         kubectl_script.chmod(0o755)
 
         gsutil_script = bin_dir / "gsutil"
+        if gcs_mode == "exists":
+            gsutil_body = "exit 0"
+        elif gcs_mode == "not_found":
+            gsutil_body = 'echo "No URLs matched: gs://mock-bucket/mock-runs" >&2\nexit 1'
+        else:
+            gsutil_body = 'echo "AccessDeniedException: 403 Caller does not have storage.objects.list access" >&2\nexit 1'
         gsutil_script.write_text(
             f"""#!/usr/bin/env bash
 if [[ "$*" == *"stat"* ]]; then
-    exit {0 if existing_gcs else 1}
+    {gsutil_body}
 fi
 exit 0
 """,
@@ -235,6 +308,7 @@ exit 0
                 {
                     "PATH": f"{bin_dir}:{env.get('PATH', '')}",
                     "RUN_NAME": "unit-test-run",
+                    "LAUNCH_ID": "launch-abc123",
                     "KUBE_CONTEXT": "mock-ctx",
                     "NODEPOOL": "mock-pool",
                     "GCS_BUCKET": "mock-bucket",
@@ -245,8 +319,6 @@ exit 0
             )
             res = subprocess.run(["bash", str(launcher)], env=env, capture_output=True, text=True)
             self.assertNotEqual(res.returncode, 0)
-            # Object 1 (ComputeDomain: uid-obj-1) and Object 2 (Service: uid-obj-2) succeeded before Object 3 failed.
-            # Cleanup must have issued atomic DELETEs with DeleteOptions.preconditions.uid for exactly those two!
             deleted = dict(_MockKubeProxyHandler.deletes)
             self.assertEqual(len(deleted), 2, f"Expected 2 atomic deletes, got: {_MockKubeProxyHandler.deletes}")
             self.assertEqual(
@@ -260,12 +332,111 @@ exit 0
                 "uid-obj-1",
             )
 
-    def test_collision_on_existing_k8s_or_gcs_aborts_without_deletes(self):
+    def test_ambiguous_create_response_loss_cleans_up_when_launch_id_matches(self):
+        """If kubectl create created the Service on the server but lost the response, cleanup resolves UID via launch-id."""
         launcher = REPO_ROOT / "examples" / "tpu" / "retool" / "gb200" / "run_ray_jobset_gb200.sh"
-        for existing_k8s, existing_gcs in ((True, False), (False, True)):
+        with tempfile.TemporaryDirectory() as td:
+            # Fail on object 2 (Service), but simulate that the Service WAS created on the server with our launch-id
+            bin_dir = self._make_mock_bins(
+                Path(td),
+                fail_on_create_idx=2,
+                ambiguous_get_response="launch-svc999:uid-ambiguous-svc-2",
+                ambiguous_get_rc=0,
+            )
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PATH": f"{bin_dir}:{env.get('PATH', '')}",
+                    "RUN_NAME": "ambig-svc-run",
+                    "LAUNCH_ID": "launch-svc999",
+                    "KUBE_CONTEXT": "mock-ctx",
+                    "NODEPOOL": "mock-pool",
+                    "GCS_BUCKET": "mock-bucket",
+                    "RUN_ROOT": "mock-runs",
+                    "INPUTS_ROOT": "mock-inputs",
+                    "IMAGE": "mock-image:latest",
+                }
+            )
+            res = subprocess.run(["bash", str(launcher)], env=env, capture_output=True, text=True)
+            self.assertNotEqual(res.returncode, 0)
+            deleted = dict(_MockKubeProxyHandler.deletes)
+            self.assertEqual(len(deleted), 2, f"Expected both CD and ambiguous Service to be deleted, got: {deleted}")
+            self.assertEqual(
+                deleted["/api/v1/namespaces/default/services/ambig-svc-run-head"]["preconditions"]["uid"],
+                "uid-ambiguous-svc-2",
+            )
+            self.assertEqual(
+                deleted["/apis/resource.nvidia.com/v1beta1/namespaces/default/computedomains/ambig-svc-run-cd"][
+                    "preconditions"
+                ]["uid"],
+                "uid-obj-1",
+            )
+
+    def test_ambiguous_create_does_not_delete_foreign_launch_id(self):
+        """If an object with a different retool-launch-id exists after ambiguous create, cleanup must not delete it."""
+        launcher = REPO_ROOT / "examples" / "tpu" / "retool" / "gb200" / "run_ray_jobset_gb200.sh"
+        with tempfile.TemporaryDirectory() as td:
+            bin_dir = self._make_mock_bins(
+                Path(td),
+                fail_on_create_idx=2,
+                ambiguous_get_response="foreign-launch-id:uid-foreign-svc",
+                ambiguous_get_rc=0,
+            )
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PATH": f"{bin_dir}:{env.get('PATH', '')}",
+                    "RUN_NAME": "foreign-svc-run",
+                    "LAUNCH_ID": "our-launch-id",
+                    "KUBE_CONTEXT": "mock-ctx",
+                    "NODEPOOL": "mock-pool",
+                    "GCS_BUCKET": "mock-bucket",
+                    "RUN_ROOT": "mock-runs",
+                    "INPUTS_ROOT": "mock-inputs",
+                    "IMAGE": "mock-image:latest",
+                }
+            )
+            res = subprocess.run(["bash", str(launcher)], env=env, capture_output=True, text=True)
+            self.assertNotEqual(res.returncode, 0)
+            deleted = dict(_MockKubeProxyHandler.deletes)
+            self.assertNotIn("/api/v1/namespaces/default/services/foreign-svc-run-head", deleted)
+            self.assertIn(
+                "/apis/resource.nvidia.com/v1beta1/namespaces/default/computedomains/foreign-svc-run-cd",
+                deleted,
+            )
+
+    def test_delete_failure_is_logged_to_stderr(self):
+        launcher = REPO_ROOT / "examples" / "tpu" / "retool" / "gb200" / "run_ray_jobset_gb200.sh"
+        _MockKubeProxyHandler.status_code = 500
+        with tempfile.TemporaryDirectory() as td:
+            bin_dir = self._make_mock_bins(Path(td), fail_on_create_idx=2)
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PATH": f"{bin_dir}:{env.get('PATH', '')}",
+                    "RUN_NAME": "del-fail-run",
+                    "KUBE_CONTEXT": "mock-ctx",
+                    "NODEPOOL": "mock-pool",
+                    "GCS_BUCKET": "mock-bucket",
+                    "RUN_ROOT": "mock-runs",
+                    "INPUTS_ROOT": "mock-inputs",
+                    "IMAGE": "mock-image:latest",
+                }
+            )
+            res = subprocess.run(["bash", str(launcher)], env=env, capture_output=True, text=True)
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn("ERROR: Kubernetes DELETE failed", res.stderr)
+
+    def test_collision_or_gcs_permission_error_fails_closed_without_deletes(self):
+        launcher = REPO_ROOT / "examples" / "tpu" / "retool" / "gb200" / "run_ray_jobset_gb200.sh"
+        for existing_k8s, gcs_mode, expected_err in (
+            (True, "not_found", "already exists in namespace"),
+            (False, "exists", "already contains artifacts from a previous run"),
+            (False, "perm_denied", "failing closed to prevent accidental overwrite"),
+        ):
             with tempfile.TemporaryDirectory() as td:
                 bin_dir = self._make_mock_bins(
-                    Path(td), fail_on_create_idx=99, existing_k8s=existing_k8s, existing_gcs=existing_gcs
+                    Path(td), fail_on_create_idx=99, existing_k8s=existing_k8s, gcs_mode=gcs_mode
                 )
                 env = os.environ.copy()
                 env.update(
@@ -282,6 +453,7 @@ exit 0
                 )
                 res = subprocess.run(["bash", str(launcher)], env=env, capture_output=True, text=True)
                 self.assertNotEqual(res.returncode, 0)
+                self.assertIn(expected_err, res.stderr)
                 self.assertEqual(_MockKubeProxyHandler.deletes, [])
 
 

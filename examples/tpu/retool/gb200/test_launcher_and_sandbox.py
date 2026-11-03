@@ -283,14 +283,25 @@ exit 0
         gsutil_script = bin_dir / "gsutil"
         if gcs_mode == "exists":
             gsutil_body = "exit 0"
+            gsutil_lock_body = "exit 0"
         elif gcs_mode == "not_found":
             gsutil_body = 'echo "No URLs matched: gs://mock-bucket/mock-runs" >&2\nexit 1'
+            gsutil_lock_body = "cat >/dev/null\nexit 0"
+        elif gcs_mode == "lock_race":
+            gsutil_body = 'echo "No URLs matched: gs://mock-bucket/mock-runs" >&2\nexit 1'
+            gsutil_lock_body = (
+                'cat >/dev/null\necho "PreconditionException: 412 Precondition Failed" >&2\nexit 1'
+            )
         else:
             gsutil_body = 'echo "AccessDeniedException: 403 Caller does not have storage.objects.list access" >&2\nexit 1'
+            gsutil_lock_body = "exit 1"
         gsutil_script.write_text(
             f"""#!/usr/bin/env bash
 if [[ "$*" == *"stat"* ]]; then
     {gsutil_body}
+fi
+if [[ "$*" == *"x-goog-if-generation-match:0"* ]]; then
+    {gsutil_lock_body}
 fi
 exit 0
 """,
@@ -433,6 +444,7 @@ exit 0
             (True, "not_found", "already exists in namespace"),
             (False, "exists", "already contains artifacts from a previous run"),
             (False, "perm_denied", "failing closed to prevent accidental overwrite"),
+            (False, "lock_race", "failed to acquire atomic GCS launch lock"),
         ):
             with tempfile.TemporaryDirectory() as td:
                 bin_dir = self._make_mock_bins(

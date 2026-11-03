@@ -15,7 +15,8 @@
 #   that does not mount `/data` or host devices.
 #
 # Required environment variables (kept external so no cluster/bucket names are hardcoded):
-#   RUN_NAME       Unique run identifier (e.g., g1-retool-rl-smoke-01)
+#   RUN_NAME       Globally unique run identifier across all concurrent runs sharing `gs://${GCS_BUCKET}/${RUN_ROOT}`
+#                  (including across different K8s namespaces or clusters; e.g., g1-retool-rl-smoke-01)
 #   KUBE_CONTEXT   Kubernetes context name
 #   NODEPOOL       Target 4xGB200 GKE nodepool name
 #   GCS_BUCKET     Shared GCS bucket name mounted via GCSFuse CSI at /data
@@ -197,6 +198,10 @@ done
 
 # 2. Refuse to reuse an existing GCS run directory or stale G0 precheck files unless ALLOW_OVERWRITE_RUN_DIR=1.
 #    Fail closed if `gsutil stat` fails for any reason other than genuine object-not-found (e.g. permission/auth/network error).
+#    NOTE: RUN_NAME must be globally unique across all concurrent launches sharing `gs://${GCS_BUCKET}/${RUN_ROOT}`
+#    (including across different K8s namespaces or clusters). To close the TOCTOU window between `gsutil stat` and
+#    pod startup, when ALLOW_OVERWRITE_RUN_DIR!=1 we also atomically create `${GCS_RUN_URI}/.launch_lock.json` with
+#    GCS precondition `x-goog-if-generation-match:0`.
 GCS_RUN_URI="gs://${GCS_BUCKET}/${RUN_ROOT}/${RUN_NAME}"
 set +e
 gcs_stat_out="$(gsutil stat "${GCS_RUN_URI}/**" 2>&1)"
@@ -204,14 +209,23 @@ gcs_stat_rc=$?
 set -e
 if [[ "${gcs_stat_rc}" -eq 0 ]]; then
     if [[ "${ALLOW_OVERWRITE_RUN_DIR}" != "1" ]]; then
-        echo "ERROR: ${GCS_RUN_URI}/ already contains artifacts from a previous run; refusing to reuse stale RUN_DIR or G0 precheck files. Choose a fresh RUN_NAME or set ALLOW_OVERWRITE_RUN_DIR=1." >&2
+        echo "ERROR: ${GCS_RUN_URI}/ already contains artifacts from a previous run; refusing to reuse stale RUN_DIR or G0 precheck files. Choose a globally unique RUN_NAME or set ALLOW_OVERWRITE_RUN_DIR=1." >&2
         exit 1
     fi
     gsutil -m rm -f \
         "${GCS_RUN_URI}/exit_code.txt" \
         "${GCS_RUN_URI}/env/*-g0-verify.json" >/dev/null 2>&1 || true
 elif [[ "${gcs_stat_out}" == *"No URLs matched"* || "${gcs_stat_out}" == *"One or more URLs matched no objects"* || "${gcs_stat_out}" == *"matched no objects or files"* ]]; then
-    :
+    if [[ "${ALLOW_OVERWRITE_RUN_DIR}" != "1" ]]; then
+        set +e
+        gcs_lock_out="$(printf '{"run_name":"%s","launch_id":"%s","namespace":"%s"}\n' "${RUN_NAME}" "${LAUNCH_ID}" "${K8S_NAMESPACE}" | gsutil -h "x-goog-if-generation-match:0" cp - "${GCS_RUN_URI}/.launch_lock.json" 2>&1)"
+        gcs_lock_rc=$?
+        set -e
+        if [[ "${gcs_lock_rc}" -ne 0 ]]; then
+            echo "ERROR: failed to acquire atomic GCS launch lock ${GCS_RUN_URI}/.launch_lock.json (rc=${gcs_lock_rc}); another concurrent run may have claimed RUN_NAME=${RUN_NAME}: ${gcs_lock_out}" >&2
+            exit 1
+        fi
+    fi
 else
     echo "ERROR: failed to check GCS run directory ${GCS_RUN_URI}/ (rc=${gcs_stat_rc}); failing closed to prevent accidental overwrite: ${gcs_stat_out}" >&2
     exit 1

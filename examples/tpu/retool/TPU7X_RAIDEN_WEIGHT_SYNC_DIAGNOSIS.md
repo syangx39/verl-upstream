@@ -76,7 +76,7 @@
    - 此前草稿根据 `rank 0` 上首个失败张量 `model.layers.3.mlp.experts.routed_experts.w13_weight` 推算 `435 - 110 = 325` 并假定所有 32 个 rank 均为 `325`，会得出 `32 × 325 = 10,400`，比真实总数 `10,414` 少 **14 个**（说明 32 个 Sampler rank 之间的截断位置存在轻微差异，部分 rank 比 `rank 0` 多出 1 个或数个不匹配张量）。
    - **修正措施（文档与代码双侧补齐）**：
      1. 在报告中严格使用 `p1c-retool-rl-05` 日志实测总计 **`10,414 / 13,920`**；
-     2. 已入队的 `p1c-retool-rl-06` 绑定的是提交前的基线代码 `CODE_REF=c2e17624`（保留“仅切换容器镜像”的严格单变量对照，因此**不包含**本 PR 新增的 `(replica, rank)` `0..31` 集合断言、`expected_checked_per_rank=435` 断言、JSON 持久化归档或 staging 诊断），故让 `-06` 继续排队完成，并在其结束后**人工核对 `head.log` 中的 Step-0 摘要行是否精确为 `32 sampler ranks, [435] tensors checked per rank, 0 mismatched, 0 unresolved`**；
+     2. `p1c-retool-rl-06` 绑定的是提交前的基线代码 `CODE_REF=c2e17624`（保留“仅切换容器镜像”的单变量对照，因此**不包含**本 PR 新增的 `(replica, rank)` `0..31` 集合断言、`expected_checked_per_rank=435` 断言、JSON 持久化归档或 staging 诊断）。它已于 09:41:32Z 结束：在 Step-0 的 `WeightSynchronizer` 注册阶段报 `ValueError`（情形 B，见阶段一），没有进入 parity 检查，因此也没有可供人工核对的 Step-0 摘要行；Step-0 `exact` 校验随后由包含本 PR 断言与归档的 `p1c-retool-rl-07` / `-08` 完成（见阶段二）；
      3. 同时，**本 PR 已在 [`verl/checkpoint_engine/raiden_checkpoint_engine.py`](../../../verl/checkpoint_engine/raiden_checkpoint_engine.py)、[`verl/workers/rollout/vllm_rollout/tpu_utils.py`](../../../verl/workers/rollout/vllm_rollout/tpu_utils.py) 与 [`examples/tpu/retool/run_qwen3_30b_a3b_dapo_torchtitan.sh`](run_qwen3_30b_a3b_dapo_torchtitan.sh) 中补齐三项采集与校验能力**（供后续基于本 PR commit 启动的运行如 `p1c-retool-rl-07` 直接使用）：
         - **强制完整 `(replica, rank)` 集合与张量覆盖率断言**：在 `update_raiden_weights` 实际调用路径中向 `report_exact` 传入每个 replica 的预期 worker 数 `expected_workers_per_replica` 与 `expected_checked_per_rank=435`（同时在 Sampler Worker 侧通过 `compute_expected_checked_params(vllm_model, received_lm_head)` 按 `id(p)` 去重记录该 worker 实际应经 `check_exact` 检查的参数总数 `expected_checked`：仅当 `!received_lm_head` 且 `lm_head.weight` 与 `embed_tokens.weight` 为不同 `nn.Parameter` 实例时剔除 `id(lm_head.weight)`，避免共享同一 `nn.Parameter` 的 tied-weight 模型重复扣减），强制校验每个 replica 返回的 rank ID 集合精确为 `0..W_r-1`（如 `0..31`，拒绝 `100..131` 或重复/缺失 rank）且每个 rank 检查的张量数精确等于预期参数数（如 `435`，拒绝 `checked=1` 等部分检查）；
         - **未截断逐 Rank 全量明细持久化归档与写失败 Fail-Closed**：`run_qwen3_30b_a3b_dapo_torchtitan.sh` 将 `RAIDEN_PARITY_DUMP_DIR` 指向共享运行目录（`${VERL_NAP_RUN_DIR}/env` 或 `${default_local_dir}/parity`）并通过 `+ray_kwargs.ray_init.runtime_env.env_vars.RAIDEN_PARITY_DUMP_DIR` 与 `+actor_rollout_ref.rollout.checkpoint_engine.engine_kwargs.raiden.parity_dump_dir` 传入 Ray 进程；`report_exact` 将全部 32 个 rank 的完整结果写入 `${RAIDEN_PARITY_DUMP_DIR}/raiden_exact_parity_step_<step>.json`，若目录创建或文件写入失败则直接记入 `coverage_errors` 并抛出 `RaidenParityError`（Fail-Closed，绝不在归档失败时静默返回 `PASS`）；
@@ -190,6 +190,6 @@
 | `p3-retool-rl-10` | `0 / 13,920` mismatched（19:38:57Z） | Step 1–9 全部通过 | 第 9 步被 launcher 误删（#14 已修复） |
 | `p3-retool-rl-11` | `0 / 13,920` mismatched（20:39:38Z） | Step 1–25 全部通过，`ppl_ratio = 1.0083–1.0159` | `SUCCEEDED` |
 
-- 加上 `p1c-retool-rl-07` / `-08`，修复后的组合（新版镜像 + `#116` `adapt_for_raw_transfer`）在 5 次独立运行中 Step-0 初始同步均与 checkpoint 逐元素一致；`p3-retool-rl-11` 连续 25 次同步后的 `norm` 校验也全部通过。
-- 这些结果说明该组合在 P3 规模的长程运行中保持正确，但不额外区分第 4 节中的各个根因假设。
+- 加上 `p1c-retool-rl-07` / `-08`，修复后的组合（新版镜像 + `#116` `adapt_for_raw_transfer`）在 5 次独立运行中，Step 0 的 float32 逐元素比较均通过（`0 / 13,920` mismatched）。`p3-retool-rl-11` 后续 25 次同步的 numel / L1 norm 检查全部通过（每个张量 numel 相等、L1 相对误差不超过 `1e-3`），训练指标正常（`ppl_ratio = 1.0083–1.0159`）。
+- 后续的 norm 检查有盲区：它只比较每个张量的元素个数与 L1 范数，不能证明每一步都逐元素一致。这些结果也不区分第 4 节中的各个根因假设。
 - `Stage P3` 的评估与训练指标见 PR #7（`REPRO_RESULTS_TPU7X.md` 第 4.0.2 节）。

@@ -24,15 +24,21 @@
 #     annotation; if that cannot be confirmed either, the name is kept as "unconfirmed" and re-checked at cleanup.
 #   * owned_delete deletes with a UID precondition (DeleteOptions.preconditions.uid): an object that was replaced
 #     by someone else under the same name is left alone, without a check-then-delete race.
+#   * owned_watch reads the run's JobSet once per poll of the launcher's watch loop. A failed read (API, auth or
+#     network error, unreadable reply) only makes the state unknown and concludes nothing. Only the API server's
+#     NotFound means gone, and the name carrying another UID means the object was replaced; in both cases the JobSet
+#     is forgotten (dropped from OWNED_OBJECTS without a delete), so cleanup never deletes it or its replacement.
 #
 # Needs: KUBE_CONTEXT, RAY_NAMESPACE, LAUNCH_ID, OWNED_LEDGER (append-only record of created/deleted objects), and
 # a log() function. OWNED_LOOKUP_ATTEMPTS / OWNED_LOOKUP_SLEEP_S tune the launch-id lookups.
 # ===================================================================================
-# shellcheck disable=SC2034  # OWNED_LAST_UID is read by the sourcing launcher
+# shellcheck disable=SC2034  # OWNED_LAST_UID and OWNED_WATCH* are read by the sourcing launcher
 
 OWNED_OBJECTS=()      # "<name> <uid>" of JobSets this invocation created and has not deleted yet
 OWNED_UNCONFIRMED=()  # names whose create outcome is unknown; re-checked by launch id at cleanup
 OWNED_LAST_UID=""     # UID recorded by the last successful owned_create
+OWNED_WATCH=""        # result of the last owned_watch: ours, unknown, gone or replaced
+OWNED_WATCH_DETAIL="" # ours: the JobSet's conditions ("Type=Status;..."); replaced: the other object's UID
 
 _owned_ledger() { echo "$(date -u +%FT%TZ) $*" >>"${OWNED_LEDGER}"; }
 
@@ -173,6 +179,82 @@ owned_delete_all() {
     owned_delete "${entry% *}" "${entry#* }" || left=("${entry}" "${left[@]}")
   done
   OWNED_OBJECTS=("${left[@]}")
+}
+
+# owned_state NAME UID: one read of JobSet NAME, compared with the UID this invocation recorded for it.
+# Returns 0 (ours; prints its conditions as "Type=Status;..."), 1 (gone: the API server answered NotFound),
+# 2 (unknown: the read failed, e.g. an API, auth or network error, or the reply was unreadable) or 3 (replaced: the
+# name now belongs to another object; prints that object's UID). Only the API server's own NotFound counts as gone:
+# client-side errors that merely contain "not found" (e.g. a missing auth plugin) are unknown.
+owned_state() {
+  local name="$1" uid="$2" out err_file err rc=0
+  err_file="$(mktemp)"
+  out="$(kubectl --context "${KUBE_CONTEXT}" -n "${RAY_NAMESPACE}" get jobset "${name}" -o json \
+    2>"${err_file}")" || rc=$?
+  err="$(cat "${err_file}")"
+  rm -f "${err_file}"
+  if ((rc != 0)); then
+    case "${err}" in
+      *"(NotFound)"*) return 1 ;;
+      *) return 2 ;;
+    esac
+  fi
+  python3 -c '
+import json, sys
+try:
+    obj = json.loads(sys.stdin.read())
+    uid = obj["metadata"]["uid"]
+    conditions = (obj.get("status") or {}).get("conditions") or []
+except (ValueError, KeyError, TypeError, AttributeError):
+    sys.exit(2)
+if not uid:
+    sys.exit(2)
+if uid != sys.argv[1]:
+    print(uid)
+    sys.exit(3)
+print("".join("%s=%s;" % (c.get("type"), c.get("status")) for c in conditions if isinstance(c, dict)))
+' "${uid}" <<<"${out}"
+}
+
+# owned_forget NAME UID WHY: stop tracking JobSet NAME/UID without deleting it, so cleanup never issues a delete for
+# it (it is gone, or its name now belongs to another object that is not ours to touch).
+owned_forget() {
+  local name="$1" uid="$2" why="$3" entry kept=()
+  for entry in "${OWNED_OBJECTS[@]}"; do
+    [[ "${entry}" == "${name} ${uid}" ]] || kept+=("${entry}")
+  done
+  OWNED_OBJECTS=("${kept[@]}")
+  _owned_ledger "forgot jobset ${name} uid ${uid} (${why})"
+}
+
+# owned_watch NAME UID: one look at JobSet NAME for the launcher's watch loop. Sets OWNED_WATCH to
+#   ours      it still has UID (OWNED_WATCH_DETAIL: its conditions as "Type=Status;...")
+#   unknown   the read failed: the state is unknown, so nothing is concluded or deleted; read it again later
+#   gone      the API server answered NotFound: stop watching; it is forgotten, so cleanup issues no delete for it
+#   replaced  the name now belongs to another object (OWNED_WATCH_DETAIL: its UID): stop watching; ours is forgotten
+#             and the replacement is never touched
+# Must not run in a subshell (it updates OWNED_OBJECTS).
+owned_watch() {
+  local name="$1" uid="$2" out rc=0
+  out="$(owned_state "${name}" "${uid}")" || rc=$?
+  OWNED_WATCH_DETAIL="${out}"
+  case "${rc}" in
+    0) OWNED_WATCH="ours" ;;
+    1)
+      OWNED_WATCH="gone"
+      owned_forget "${name}" "${uid}" "gone: the API server answered NotFound"
+      log "JobSet ${name} (uid ${uid}) is gone (the API server answered NotFound); nothing to delete"
+      ;;
+    3)
+      OWNED_WATCH="replaced"
+      owned_forget "${name}" "${uid}" "replaced by uid ${out}"
+      log "WARNING: JobSet ${name} now has uid ${out}, not ours (uid ${uid}); leaving it alone"
+      ;;
+    *)
+      OWNED_WATCH="unknown"
+      OWNED_WATCH_DETAIL=""
+      ;;
+  esac
 }
 
 # owned_list: print the owned and unconfirmed JobSets with the commands that resolve each one safely.

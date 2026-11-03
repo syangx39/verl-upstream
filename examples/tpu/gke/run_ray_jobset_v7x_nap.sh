@@ -31,7 +31,12 @@
 #   5. Creates the JobSet, waits for Kueue admission and the pods, follows the head log into LOG_DIR, waits for the
 #      JobSet to finish and exits with the job's verdict (<run dir>/verdict.json).
 #   6. Deletes only objects this invocation created: every JobSet is created on its own, its UID recorded
-#      (LOG_DIR/owned_objects.log), and deleted with a UID precondition (v7x_nap/owned_objects.sh).
+#      (LOG_DIR/owned_objects.log), and deleted with a UID precondition (v7x_nap/owned_objects.sh). While watching,
+#      a failed read of the JobSet or of its Kueue workload (API, auth or network error) is retried at the next poll and
+#      changes nothing: the last known JobSet, admission and eviction state stay. A JobSet the API server reports
+#      NotFound, or whose name now has another UID, ends the watch and is never deleted. The queue and run deadlines
+#      keep counting while reads fail; when one expires the launcher exits, and its exit cleanup then deletes the
+#      JobSet as on any other exit (unless KEEP_JOBSET=1).
 #
 # Exit, Ctrl-C, SIGTERM and SIGHUP all delete the run's JobSet (and placeholders), which stops the run. To let a run
 # continue without the launcher, set KEEP_JOBSET=1: the JobSet then ends with its head (success or failure) and is
@@ -473,39 +478,115 @@ LAST_EVICTIONS=0
 LAST_RESTARTS="0"
 HEAD_UIDS=""
 TOTAL_PODS=$((TOTAL_HOSTS + 1))
+UNKNOWN_SINCE=""     # set while the JobSet cannot be read
+WL_UNKNOWN_SINCE=""  # set while the Kueue workload cannot be read
+WL_JSON="${LOG_DIR}/.workload.json"
+check_deadlines() {  # give up on a run that waits for admission, or runs, longer than allowed
+  if [[ -z "${ADMITTED_TS}" ]] && (( QUEUE_TIMEOUT_MIN > 0 && NOW - START_TS > QUEUE_TIMEOUT_MIN * 60 )); then
+    die "not admitted after ${QUEUE_TIMEOUT_MIN} min"
+  fi
+  if [[ -n "${ADMITTED_TS}" ]] && (( NOW - ADMITTED_TS > (RUN_LIMIT_MIN + 20) * 60 )); then
+    die "JobSet still running $((RUN_LIMIT_MIN + 20)) min after admission"
+  fi
+}
+# workload_read: one read of the run's Kueue workload. Prints four lines: its state (none: no workload yet; admitted;
+# waiting: it exists and is not admitted), the eviction count, the eviction reasons and its conditions. Returns 1 when
+# the read failed (API, auth or network error, or an unreadable reply): the workload's state is then unknown.
+workload_read() {
+  k get workloads.kueue.x-k8s.io -l "kueue.x-k8s.io/job-uid=${JOBSET_UID}" -o json >"${WL_JSON}" 2>/dev/null || return 1
+  python3 - "${WL_JSON}" <<'PY'
+import json
+import sys
+
+try:
+    items = json.load(open(sys.argv[1]))["items"]
+except (ValueError, KeyError, TypeError):
+    sys.exit(1)
+if not items:
+    print("none\n0\n-")
+    sys.exit(0)
+status = items[0].get("status") or {}
+conditions = [c for c in status.get("conditions") or [] if isinstance(c, dict)]
+evictions = [e for e in (status.get("schedulingStats") or {}).get("evictions") or [] if isinstance(e, dict)]
+admitted = any(c.get("type") == "Admitted" and c.get("status") == "True" for c in conditions)
+print("admitted" if admitted else "waiting")
+print(sum(int(e.get("count") or 0) for e in evictions))
+print(";".join(f"{e.get('count')} {e.get('reason')}" for e in evictions) or "-")
+print(" ".join(f"{c.get('type')}={c.get('status')}({c.get('reason')})" for c in conditions))
+PY
+}
 while true; do
   NOW=$(date +%s)
-  CONDS="$(k get jobset "${RUN_NAME}" -o jsonpath='{range .status.conditions[*]}{.type}={.status};{end}' 2>/dev/null || true)"
-  if [[ "${CONDS}" == *"Completed=True"* ]]; then RESULT="Completed"; break; fi
-  if [[ "${CONDS}" == *"Failed=True"* ]]; then RESULT="Failed"; break; fi
-  if [[ "$(k get jobset "${RUN_NAME}" -o jsonpath='{.metadata.uid}' 2>/dev/null || true)" != "${JOBSET_UID}" ]]; then
-    RESULT="Deleted"  # gone, or replaced by another object of that name (which is not ours to touch)
-    break
+  # A failed read of the JobSet (API, auth or network error) says nothing about it: its state is unknown and it is
+  # read again at the next poll. The watch ends early only when the API server answers NotFound (gone) or the name
+  # now has another UID (replaced); owned_watch then forgets the JobSet, so cleanup deletes neither it nor a
+  # replacement. Retrying does not stop the clock: the queue and run deadlines keep counting while the state is
+  # unknown, and when one expires the launcher exits like on any other error, so with KEEP_JOBSET=0 its exit cleanup
+  # deletes the JobSet (with the UID precondition).
+  owned_watch "${RUN_NAME}" "${JOBSET_UID}"
+  case "${OWNED_WATCH}" in
+    unknown)
+      if [[ -z "${UNKNOWN_SINCE}" ]]; then
+        UNKNOWN_SINCE=${NOW}
+        log "WARNING: could not read JobSet ${RUN_NAME}; its state is unknown, reading it again every ${POLL_S} s" \
+          "(the queue and run deadlines keep counting)"
+      fi
+      check_deadlines
+      sleep "${POLL_S}"
+      continue
+      ;;
+    gone) RESULT="Gone"; break ;;
+    replaced) RESULT="Replaced"; break ;;
+  esac
+  if [[ -n "${UNKNOWN_SINCE}" ]]; then
+    log "JobSet ${RUN_NAME} is readable again after $((NOW - UNKNOWN_SINCE)) s"
+    UNKNOWN_SINCE=""
   fi
+  if [[ "${OWNED_WATCH_DETAIL}" == *"Completed=True"* ]]; then RESULT="Completed"; break; fi
+  if [[ "${OWNED_WATCH_DETAIL}" == *"Failed=True"* ]]; then RESULT="Failed"; break; fi
 
-  WL="$(k get workloads.kueue.x-k8s.io -l "kueue.x-k8s.io/job-uid=${JOBSET_UID}" \
-    -o jsonpath='{range .items[0].status.conditions[*]}{.type}={.status}({.reason}) {end}' 2>/dev/null || true)"
-  if [[ "${WL}" != "${LAST_WL}" ]]; then
-    log "workload: ${WL:-not created yet}"
-    LAST_WL="${WL}"
-  fi
-  if [[ -z "${ADMITTED_TS}" && "${WL}" == *"Admitted=True"* ]]; then
-    ADMITTED_TS=${NOW}
-    log "admitted after $((NOW - START_TS)) s"
-  elif [[ -n "${ADMITTED_TS}" && "${WL}" != *"Admitted=True"* ]]; then
-    ADMITTED_TS=""
-    START_TS=${NOW}
-    stop_follower
-  fi
-  # Evictions (preemption, reclaim, node failure, pods-ready timeout) as counted by Kueue itself, so an eviction and
-  # re-admission between two polls is not missed; each one reruns the job on re-admission.
-  EVICTIONS="$(k get workloads.kueue.x-k8s.io -l "kueue.x-k8s.io/job-uid=${JOBSET_UID}" \
-    -o jsonpath='{range .items[0].status.schedulingStats.evictions[*]}{.count}{" "}{.reason}{";"}{end}' 2>/dev/null || true)"
-  EVICTION_COUNT="$(python3 -c 'import sys; print(sum(int(e.split()[0]) for e in sys.argv[1].split(";") if e.strip()))' "${EVICTIONS}")"
-  if (( EVICTION_COUNT != LAST_EVICTIONS )); then
-    log "workload evictions: ${EVICTION_COUNT} (${EVICTIONS%;}; ALLOW_REQUEUE=${ALLOW_REQUEUE})"
-    LAST_EVICTIONS=${EVICTION_COUNT}
-    (( EVICTION_COUNT <= ALLOW_REQUEUE )) || die "workload evicted ${EVICTION_COUNT} time(s) > ALLOW_REQUEUE=${ALLOW_REQUEUE}"
+  # The Kueue workload likewise: a failed read keeps the last known admission state and eviction count, so it neither
+  # restarts the queue timeout nor counts as an eviction. Only a successful read changes them, and only a workload that
+  # exists and is not admitted counts as no longer admitted.
+  WL_RC=0
+  WL_OUT="$(workload_read)" || WL_RC=$?
+  if (( WL_RC != 0 )); then
+    if [[ -z "${WL_UNKNOWN_SINCE}" ]]; then
+      WL_UNKNOWN_SINCE=${NOW}
+      KNOWN="not admitted"
+      if [[ -n "${ADMITTED_TS}" ]]; then KNOWN="admitted"; fi
+      log "WARNING: could not read the Kueue workload; keeping its last known state (${KNOWN}," \
+        "${LAST_EVICTIONS} eviction(s)) and reading it again every ${POLL_S} s"
+    fi
+  else
+    if [[ -n "${WL_UNKNOWN_SINCE}" ]]; then
+      log "Kueue workload is readable again after $((NOW - WL_UNKNOWN_SINCE)) s"
+      WL_UNKNOWN_SINCE=""
+    fi
+    mapfile -t W <<<"${WL_OUT}"
+    WL_STATE="${W[0]:-none}"
+    WL="${W[3]:-}"
+    if [[ "${WL}" != "${LAST_WL}" ]]; then
+      log "workload: ${WL:-not created yet}"
+      LAST_WL="${WL}"
+    fi
+    if [[ -z "${ADMITTED_TS}" && "${WL_STATE}" == "admitted" ]]; then
+      ADMITTED_TS=${NOW}
+      log "admitted after $((NOW - START_TS)) s"
+    elif [[ -n "${ADMITTED_TS}" && "${WL_STATE}" == "waiting" ]]; then
+      ADMITTED_TS=""
+      START_TS=${NOW}
+      stop_follower
+    fi
+    # Evictions (preemption, reclaim, node failure, pods-ready timeout) as counted by Kueue itself, so an eviction and
+    # re-admission between two polls is not missed; each one reruns the job on re-admission.
+    EVICTION_COUNT="${W[1]:-0}"
+    if (( EVICTION_COUNT != LAST_EVICTIONS )); then
+      log "workload evictions: ${EVICTION_COUNT} (${W[2]:--}; ALLOW_REQUEUE=${ALLOW_REQUEUE})"
+      LAST_EVICTIONS=${EVICTION_COUNT}
+      (( EVICTION_COUNT <= ALLOW_REQUEUE )) \
+        || die "workload evicted ${EVICTION_COUNT} time(s) > ALLOW_REQUEUE=${ALLOW_REQUEUE}"
+    fi
   fi
   RESTARTS="$(k get jobset "${RUN_NAME}" -o jsonpath='{.status.restarts}' 2>/dev/null || true)"
   if [[ -n "${RESTARTS}" && "${RESTARTS}" != "${LAST_RESTARTS}" ]]; then
@@ -537,12 +618,7 @@ while true; do
     log "following ${HEAD_POD} into ${HEAD_LOG}"
   fi
 
-  if [[ -z "${ADMITTED_TS}" ]] && (( QUEUE_TIMEOUT_MIN > 0 && NOW - START_TS > QUEUE_TIMEOUT_MIN * 60 )); then
-    die "not admitted after ${QUEUE_TIMEOUT_MIN} min"
-  fi
-  if [[ -n "${ADMITTED_TS}" ]] && (( NOW - ADMITTED_TS > (RUN_LIMIT_MIN + 20) * 60 )); then
-    die "JobSet still running $((RUN_LIMIT_MIN + 20)) min after admission"
-  fi
+  check_deadlines
   sleep "${POLL_S}"
 done
 

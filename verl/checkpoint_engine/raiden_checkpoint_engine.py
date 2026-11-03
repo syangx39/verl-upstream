@@ -326,6 +326,29 @@ def merge_rank_stats(rank_stats: dict) -> dict:
     }
 
 
+def compute_expected_checked_params(vllm_model: Any, received_lm_head: bool) -> int:
+    """Return the expected number of ``RaidenParityCheck.check_exact`` calls on ``vllm_model``.
+
+    When ``received_lm_head`` is False and ``vllm_model`` has ``lm_head.weight``, ``install_raiden_weights``
+    populates ``lm_head.weight`` by copying from ``embed_tokens.weight`` after the staging install loop rather
+    than checking it via ``check_exact``. If ``lm_head.weight`` and ``embed_tokens.weight`` share the same
+    ``nn.Parameter`` instance, ``vllm_model.named_parameters()`` already deduplicates them; only when
+    ``lm_head.weight`` is a distinct parameter object from ``embed_tokens.weight`` should its parameter ID be
+    excluded from the expected ``check_exact`` count.
+    """
+    param_ids = {id(p) for _, p in vllm_model.named_parameters()}
+    if not received_lm_head and hasattr(vllm_model, "lm_head") and hasattr(vllm_model.lm_head, "weight"):
+        lm_head_w = vllm_model.lm_head.weight
+        embed_w = None
+        if hasattr(vllm_model, "model") and hasattr(vllm_model.model, "embed_tokens"):
+            embed_w = getattr(vllm_model.model.embed_tokens, "weight", None)
+        elif hasattr(vllm_model, "embed_tokens"):
+            embed_w = getattr(vllm_model.embed_tokens, "weight", None)
+        if embed_w is None or id(lm_head_w) != id(embed_w):
+            param_ids.discard(id(lm_head_w))
+    return len(param_ids)
+
+
 class RaidenParityError(RuntimeError):
     """Raised when an enabled Raiden parity check finds wrong weights or cannot collect what it needs to verify."""
 
@@ -339,10 +362,11 @@ class RaidenParityCheck:
       orchestrator compares them with the samplers' stats after the install (``verify_norms``). Cheap, but blind to
       misplaced bytes: a reordered or mis-sliced tensor keeps its norms.
     * ``"exact"``: on the step-0 sync of a fresh run, when the trainer weights equal the checkpoint vLLM loaded,
-      every sampler worker compares each received tensor bit for bit with the vLLM parameter it is about to
-      overwrite (``check_exact``) and returns the result (``exact_result``); the orchestrator logs one summary for
-      all ranks (``report_exact``). Catches any wrong byte (shard slice, tiling, fusion/transpose). Use it after
-      changing sharding or upgrading tpu-sync / torch-tpu. Cost: ~0.4 s once per rank (Qwen3-32B, TP32).
+      every sampler worker compares each received tensor elementwise in float32 (``max|ref - new| == 0.0``) with the
+      vLLM parameter it is about to overwrite (``check_exact``) and returns the result (``exact_result``); the
+      orchestrator logs one summary for all ranks (``report_exact``). Catches any wrong element value (shard slice,
+      tiling, fusion/transpose). Use it after changing sharding or upgrading tpu-sync / torch-tpu. Cost: ~0.4 s once
+      per rank (Qwen3-32B, TP32).
 
     ``"all"`` enables both; ``False`` / ``"off"`` (default) neither.
 
@@ -446,8 +470,8 @@ class RaidenParityCheck:
 
         Returns True when every expected sampler rank (0..W_r-1 per replica) returned a unique result with
         uniform expected tensor coverage, the JSON report was archived, and every received tensor matches
-        bit for bit. Raises ``RaidenParityError`` on any mismatched, unresolved, duplicate/out-of-range rank,
-        incomplete tensor coverage, or JSON archive write failure.
+        elementwise in float32 (``max|ref - new| == 0.0``). Raises ``RaidenParityError`` on any mismatched,
+        unresolved, duplicate/out-of-range rank, incomplete tensor coverage, or JSON archive write failure.
         """
         if expected_checked_per_rank is None:
             env_expected = os.environ.get("RAIDEN_PARITY_EXPECTED_CHECKED_PER_RANK", "").strip()
@@ -569,7 +593,9 @@ class RaidenParityCheck:
             f"{num_unresolved} unresolved{archived_note}"
         )
         if num_mismatched == 0 and num_unresolved == 0 and not coverage_errors:
-            logger.info(f"{summary}: every received tensor matches the checkpoint bit for bit")
+            logger.info(
+                f"{summary}: every received tensor matches the checkpoint elementwise in float32 (max|diff| == 0.0)"
+            )
             return True
         details = [f"  * coverage: {err}" for err in coverage_errors]
         details += [f"  * rank {r['rank']}: {line}" for r in results for line in r["mismatched"]]

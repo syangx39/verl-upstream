@@ -27,7 +27,7 @@
     - `model.layers.3.mlp.experts.routed_experts.w13_weight` 的接收端平均绝对值约为参照值的一半（实测 `max|diff|=0.5195, ref_absmean=0.01824, recv_absmean=0.009274`，比值约 `0.508x`；**注：该比值与“拼接进 `w13_weight = [gate^T | up^T]` 的 `gate_proj` 或 `up_proj` 之一全零（或半截张量全零）”的方向一致，但仅凭标量均值本身尚不能证明具体哪一半全零，且该检查发生在 `_raiden_ws.h2d()` 与 `_raiden_fused_expert_weights` 融合/转置之后**）；
     - 随后打印的 `layers.30..47, 4..9` 的 MoE `w13_weight / w2_weight` 以及 `layers.0, 1, 10..18` 的 `self_attn.qkv_proj.weight` 全部表现为 **`recv_absmean = 0`**（全零）。
 - **证据边界说明（为什么具体根因仍属于待验证假设 Working Hypothesis）**：
-  - 在现有代码 [`verl/workers/rollout/vllm_rollout/tpu_utils.py#L604-L730`](../verl/workers/rollout/vllm_rollout/tpu_utils.py#L604-L730) 中，`parity.check_exact(...)` 发生在 **`self._raiden_ws.h2d()`（`L606`）之后**，以及 **MoE 专家权重拆包/融合（`_raiden_fused_expert_weights`，`L671–L684`）或 Dense 权重拼接/转置（`to_target_layout`，`L707–L728`）过程中**。
+  - 在现有代码 [`verl/workers/rollout/vllm_rollout/tpu_utils.py#L604-L730`](../../../verl/workers/rollout/vllm_rollout/tpu_utils.py#L604-L730) 中，`parity.check_exact(...)` 发生在 **`self._raiden_ws.h2d()`（`L606`）之后**，以及 **MoE 专家权重拆包/融合（`_raiden_fused_expert_weights`，`L671–L684`）或 Dense 权重拼接/转置（`to_target_layout`，`L707–L728`）过程中**。
   - 因此，仅凭现有日志摘录，尚不能单独断定全零数据究竟产生于：
     1. **假设 H1（H2D 之前 Host Staging Buffer 已全零 / P2P 传输未完成即返回）**；
     2. **假设 H2（`_raiden_ws.h2d()` 主机到 TPU HBM DMA 拷贝阶段在中途截断或清零）**；或
@@ -70,26 +70,26 @@
    verl.checkpoint_engine.raiden_checkpoint_engine.RaidenParityError: [RAIDEN PARITY EXACT | Step 0] 32 sampler ranks, [435] tensors checked per rank, 10414 mismatched, 0 unresolved
    ```
 2. **与 `325 × 32 = 10,400` 差 14 个的原因**：
-   - 在 [`verl/checkpoint_engine/raiden_checkpoint_engine.py#L414-L427`](../verl/checkpoint_engine/raiden_checkpoint_engine.py#L414-L427) 中，`RaidenParityCheck.report_exact` 计算全集群总不匹配数 `num_mismatched = sum(r["num_mismatched"] for r in results)`（即 **`10,414`**，跨 `32 × 435 = 13,920` 个检查项，平均每 rank **`325.4375`** 个 mismatch，即 `10,414 = 32 × 325 + 14`）。
-   - 然而，`report_exact` 在构造异常文本时执行了 `detail_text = "\n".join(details[: cls.MAX_DETAIL_LINES])`（其中 `MAX_DETAIL_LINES = 60`），且在 Sampler Worker 侧 `exact_result()`（`L454`）中同样对 `self.mismatched` 做了 `[:60]` 截断。
+   - 在 [`verl/checkpoint_engine/raiden_checkpoint_engine.py#L457-L601`](../../../verl/checkpoint_engine/raiden_checkpoint_engine.py#L457-L601) 中，`RaidenParityCheck.report_exact` 计算全集群总不匹配数 `num_mismatched = sum(r["num_mismatched"] for r in results)`（即 **`10,414`**，跨 `32 × 435 = 13,920` 个检查项，平均每 rank **`325.4375`** 个 mismatch，即 `10,414 = 32 × 325 + 14`）。
+   - 然而，`report_exact` 在构造异常文本时执行了 `detail_text = "\n".join(details[: cls.MAX_DETAIL_LINES])`（其中 `MAX_DETAIL_LINES = 60`），且在 Sampler Worker 侧 `exact_result()` 中同样对 `self.mismatched` 做了 `[:60]` 截断。
    - 因为 `rank 0` 自身的 mismatch 数已超过 60 个，日志打印出的 60 行明细全部来自 `rank 0`，**并未打印出全部 32 个 rank 各自的 `r["num_mismatched"]` 数值**。
    - 此前草稿根据 `rank 0` 上首个失败张量 `model.layers.3.mlp.experts.routed_experts.w13_weight` 推算 `435 - 110 = 325` 并假定所有 32 个 rank 均为 `325`，会得出 `32 × 325 = 10,400`，比真实总数 `10,414` 少 **14 个**（说明 32 个 Sampler rank 之间的截断位置存在轻微差异，部分 rank 比 `rank 0` 多出 1 个或数个不匹配张量）。
    - **修正措施（文档与代码双侧补齐）**：
      1. 在报告中严格使用 `p1c-retool-rl-05` 日志实测总计 **`10,414 / 13,920`**；
      2. 已入队的 `p1c-retool-rl-06` 绑定的是提交前的基线代码 `CODE_REF=c2e17624`（保留“仅切换容器镜像”的严格单变量对照，因此**不包含**本 PR 新增的 `(replica, rank)` `0..31` 集合断言、`expected_checked_per_rank=435` 断言、JSON 持久化归档或 staging 诊断），故让 `-06` 继续排队完成，并在其结束后**人工核对 `head.log` 中的 Step-0 摘要行是否精确为 `32 sampler ranks, [435] tensors checked per rank, 0 mismatched, 0 unresolved`**；
-     3. 同时，**本 PR 已在 [`verl/checkpoint_engine/raiden_checkpoint_engine.py`](../verl/checkpoint_engine/raiden_checkpoint_engine.py)、[`verl/workers/rollout/vllm_rollout/tpu_utils.py`](../verl/workers/rollout/vllm_rollout/tpu_utils.py) 与 [`examples/tpu/retool/run_qwen3_30b_a3b_dapo_torchtitan.sh`](run_qwen3_30b_a3b_dapo_torchtitan.sh) 中补齐三项采集与校验能力**（供后续基于本 PR commit 启动的运行如 `p1c-retool-rl-07` 直接使用）：
-        - **强制完整 `(replica, rank)` 集合与张量覆盖率断言**：在 `update_raiden_weights` 实际调用路径中向 `report_exact` 传入每个 replica 的预期 worker 数 `expected_workers_per_replica` 与 `expected_checked_per_rank=435`（同时在 Sampler Worker 侧 `exact_result` 中记录该 worker 实际应安装的模型参数总数 `expected_checked`），强制校验每个 replica 返回的 rank ID 集合精确为 `0..W_r-1`（如 `0..31`，拒绝 `100..131` 或重复/缺失 rank）且每个 rank 检查的张量数精确等于 `435`（拒绝 `checked=1` 等部分检查）；
+     3. 同时，**本 PR 已在 [`verl/checkpoint_engine/raiden_checkpoint_engine.py`](../../../verl/checkpoint_engine/raiden_checkpoint_engine.py)、[`verl/workers/rollout/vllm_rollout/tpu_utils.py`](../../../verl/workers/rollout/vllm_rollout/tpu_utils.py) 与 [`examples/tpu/retool/run_qwen3_30b_a3b_dapo_torchtitan.sh`](run_qwen3_30b_a3b_dapo_torchtitan.sh) 中补齐三项采集与校验能力**（供后续基于本 PR commit 启动的运行如 `p1c-retool-rl-07` 直接使用）：
+        - **强制完整 `(replica, rank)` 集合与张量覆盖率断言**：在 `update_raiden_weights` 实际调用路径中向 `report_exact` 传入每个 replica 的预期 worker 数 `expected_workers_per_replica` 与 `expected_checked_per_rank=435`（同时在 Sampler Worker 侧通过 `compute_expected_checked_params(vllm_model, received_lm_head)` 按 `id(p)` 去重记录该 worker 实际应经 `check_exact` 检查的参数总数 `expected_checked`：仅当 `!received_lm_head` 且 `lm_head.weight` 与 `embed_tokens.weight` 为不同 `nn.Parameter` 实例时剔除 `id(lm_head.weight)`，避免共享同一 `nn.Parameter` 的 tied-weight 模型重复扣减），强制校验每个 replica 返回的 rank ID 集合精确为 `0..W_r-1`（如 `0..31`，拒绝 `100..131` 或重复/缺失 rank）且每个 rank 检查的张量数精确等于预期参数数（如 `435`，拒绝 `checked=1` 等部分检查）；
         - **未截断逐 Rank 全量明细持久化归档与写失败 Fail-Closed**：`run_qwen3_30b_a3b_dapo_torchtitan.sh` 将 `RAIDEN_PARITY_DUMP_DIR` 指向共享运行目录（`${VERL_NAP_RUN_DIR}/env` 或 `${default_local_dir}/parity`）并通过 `+ray_kwargs.ray_init.runtime_env.env_vars.RAIDEN_PARITY_DUMP_DIR` 与 `+actor_rollout_ref.rollout.checkpoint_engine.engine_kwargs.raiden.parity_dump_dir` 传入 Ray 进程；`report_exact` 将全部 32 个 rank 的完整结果写入 `${RAIDEN_PARITY_DUMP_DIR}/raiden_exact_parity_step_<step>.json`，若目录创建或文件写入失败则直接记入 `coverage_errors` 并抛出 `RaidenParityError`（Fail-Closed，绝不在归档失败时静默返回 `PASS`）；
         - **仅在 Mismatch 时惰性触发的 Staging Buffer 诊断及明确归因边界**：`install_raiden_weights` 将融合前 `self._raiden_staging` 中的 `gate / up / down` 引用传给 `check_exact(..., staging_tensors=...)`，**仅当 `diff != 0.0`（且 `VERL_RAIDEN_DIAG_STAGING != "0"`）时才计算 `absmean` 与 `zero_frac` 并调用 `.item()`**，在无 mismatch 的正常同步中**零额外归约与零同步开销**。注意归因边界：由于 `self._raiden_staging` 是在 `self._raiden_ws.h2d()` **之后**读取的，若 `self._raiden_staging` 非零而融合后张量为零可定位 **H3**（`install_raiden_weights` 内部融合/转置异常）；若 `self._raiden_staging` 已为零则可排除 **H3**（证明损坏发生在 `install_raiden_weights` 拆包之前），**但仅凭该指标本身尚不能单独区分 H1（Trainer D2H / Follower 发送竞态）与 H2（Host gRPC 传输或 Sampler `h2d()` DMA 拷贝截断）**。
 
 ### 3.2 现有 `VERIFY_PARITY=all` 代码的实际检查能力边界
 
-检视 [`verl/checkpoint_engine/raiden_checkpoint_engine.py#L332-L606`](../verl/checkpoint_engine/raiden_checkpoint_engine.py#L332-L606) 可确认，`VERIFY_PARITY=all` 由两个阶段组成，其覆盖范围和判定条件如下：
+检视 [`verl/checkpoint_engine/raiden_checkpoint_engine.py#L332-L675`](../../../verl/checkpoint_engine/raiden_checkpoint_engine.py#L332-L675) 可确认，`VERIFY_PARITY=all` 由两个阶段组成，其覆盖范围和判定条件如下：
 
 | 阶段 / 步数 | 触发函数 | 实际比对内容与通过条件 | 局限性与注意事项 |
 | :--- | :--- | :--- | :--- |
-| **Step 0（初始同步）** | `exact_install_kwargs` (`not global_steps`) $\rightarrow$ `check_exact` + `report_exact` | 在 `install_raiden_weights` 中（`_raiden_ws.h2d()` 及拆包/拼接/转置之后、覆盖 vLLM 参数之前），将每个 Sampler rank 收到的张量与 vLLM 从初始 HF checkpoint 加载的对应参数做逐元素 `max\|ref - new\| == 0.0` 比对。在当前 2-D 折叠 MoE 路径下，每 rank 检查 `435` 个 vLLM 参数张量（`48 × 2 = 96` 个 MoE `w13/w2` + `48 × 7 = 336` 个每层稠密/路由/Norm 参数 + `3` 个全局 `embed_tokens / norm / lm_head`）。 | **仅在 Step 0 运行一次**。注意：在 `p1c-retool-rl-06` 所用的基线代码 `c2e17624` 中，`report_exact` 仅检查 `len(results) > 0` 且 `num_mismatched == 0 and num_unresolved == 0`，未在代码内自动断言 `32` 个不同 rank 与 `[435]` 项/rank，因此审阅 `-06` 日志时须核对完整摘要行；本 PR 代码已新增 `expected_ranks`、无重复 rank ID 与均匀 `checked_per_rank` 强制断言。 |
-| **Step 1 及后续步（`global_steps > 0`）** | `verify_norms` $\rightarrow$ `_compare_replica_norms` (`L520–L605`) | 汇总 Trainer 所有 rank 导出的逐张量 `(numel, l1, l2_sq)` 与每个 Sampler Replica 聚合后的逐张量统计。**实际判定通过的条件（`L579, L588`）仅检查 `numel`（`delta_numel == 0`）与 `L1` 范数（`delta_l1 <= 1e-3 * max(\|t_agg_l1\|, 1.0)`）**；全局 `L2` 范数虽然被计算并打印在日志中（`L593–L594`），但**未参与 `mismatches` 或最终 `if` 通过判定**。 | **Norm 通过 $\neq$ Bit-Exact（逐位一致）**：一方面 Step 1+ 未做 Trainer 与 Sampler 的逐元素比对；另一方面范数检查对张量内部元素顺序错位/切片置换不敏感（见源码注释 `L338–L339`）。若需要证明 Step 1+ 逐元素一致，必须额外实现 Trainer 当前权重与 Sampler 权重的逐元素对照。 |
+| **Step 0（初始同步）** | `exact_install_kwargs` (`not global_steps`) $\rightarrow$ `check_exact` + `report_exact` | 在 `install_raiden_weights` 中（`_raiden_ws.h2d()` 及拆包/拼接/转置之后、覆盖 vLLM 参数之前），将每个 Sampler rank 收到的张量与 vLLM 从初始 HF checkpoint 加载的对应参数均转为 `float32`（`target.detach().float()`, `received.detach().float()`）后做逐元素数值比对 `max\|ref - new\| == 0.0`。在当前 2-D 折叠 MoE 路径下，每 rank 检查 `435` 个 vLLM 参数张量（`48 × 2 = 96` 个 MoE `w13/w2` + `48 × 7 = 336` 个每层稠密/路由/Norm 参数 + `3` 个全局 `embed_tokens / norm / lm_head`）。 | **仅在 Step 0 运行一次，且为 `float32` 逐元素数值相等（而非原始二进制位比较，例如不区分 `+0.0` 与 `-0.0`）**。注意：在 `p1c-retool-rl-06` 所用的基线代码 `c2e17624` 中，`report_exact` 仅检查 `len(results) > 0` 且 `num_mismatched == 0 and num_unresolved == 0`，未在代码内自动断言 `32` 个不同 rank 与 `[435]` 项/rank，因此审阅 `-06` 日志时须核对完整摘要行；本 PR 代码已新增 `(replica, rank)` `0..W_r-1` 集合与 `expected_checked` 强制断言。 |
+| **Step 1 及后续步（`global_steps > 0`）** | `verify_norms` $\rightarrow$ `_compare_replica_norms` | 汇总 Trainer 所有 rank 导出的逐张量 `(numel, l1, l2_sq)` 与每个 Sampler Replica 聚合后的逐张量统计。**实际判定通过的条件仅检查 `numel`（`delta_numel == 0`）与 `L1` 范数（`delta_l1 <= 1e-3 * max(\|t_agg_l1\|, 1.0)`）**；全局 `L2` 范数虽然被计算并打印在日志中，但**未参与 `mismatches` 或最终 `if` 通过判定**。 | **Norm 通过 $\neq$ 逐元素数值相等**：一方面 Step 1+ 未做 Trainer 与 Sampler 的逐元素比对；另一方面范数检查对张量内部元素顺序错位/切片置换不敏感。若需要证明 Step 1+ 逐元素一致，必须额外实现 Trainer 当前权重与 Sampler 权重的逐元素对照。 |
 
 ---
 
@@ -125,7 +125,7 @@
 ### 阶段一：环境审计与受控 Runtime 镜像验证（已启动 `p1c-retool-rl-06`，未 Cherry-pick `#110` 或 `#116`）
 
 1. **已固定镜像 Digest 与受控运行配置（`p1c-retool-rl-06`）**：
-   - **Run Name**: `p1c-retool-rl-06`（JobSet 已创建并进入队列等待调度，与 `p1c-retool-rl-05` 保持完全相同的代码 commit 与超参，**唯一变量为容器镜像**）：
+   - **Run Name**: `p1c-retool-rl-06`（JobSet 已在 `bodaborg-tpu7x-nap` 创建；实时集群状态：`Workload/jobset-p1c-retool-rl-06-1634e` 在 ClusterQueue `priority-dev` 中已取得配额 `QuotaReserved=True`，当前处于 `check-capacity-prov` 等待 GKE Cluster Autoscaler 扩容分配两个 `2×2×4` TPU v7x Slice；与 `p1c-retool-rl-05` 保持完全相同的代码 commit 与超参，**唯一变量为容器镜像**）：
      - **代码 Git SHA**: `c2e176240dcff0a25911b0576880e46624f7249b`（未合入 `#110` 或 `#116`；**运行边界说明**：为保留“只换镜像”的严格单变量对照，`p1c-retool-rl-06` 固定在旧 commit `c2e17624`，**不包含**本 PR 新增的 `0..31` rank 集合断言、`expected_checked_per_rank=435` 断言、共享目录 JSON 归档及 mismatch-only staging 诊断；建议保持 `-06` 继续排队运行）；
      - **容器镜像 Digest**: `us-west2-docker.pkg.dev/tpu-pytorch/raycluster/verl-tpu@sha256:d92a2b3d6667584d67ea51874a721228a96c799263ab40f4aee168680476f64e`（`verl-tpu:v20261006-tsync1006`，含 `torch-tpu==0.1.2.dev20261006000518` 与 `tpu-sync-torch==0.0.1.dev20261006025601`）；
      - **拓扑与校验开关**: `2 × 2×2×4` Slice（Trainer `16 physical chips / 32 TensorCore devices`, `dp_shard=8, cp=4`；Rollout `16 physical chips / 32 TensorCore devices`, `TP=32, EP=32`），`VERIFY_PARITY=all`，`TOTAL_TRAINING_STEPS=3`，`NUM_WARMUP_BATCHES=1`，`TRAIN_BATCH_SIZE=8`，`PPO_MINI_BATCH_SIZE=8`，`N_RESP_PER_PROMPT=4`。
@@ -140,9 +140,9 @@
    - 仅当阶段一触发 2-D folded expert stack 的 `UnpackTorchTensor` 错误时，才评估从 [`jialei777/verl-upstream#116`](https://github.com/jialei777/verl-upstream/pull/116) 移植最小必要的 host-rebind 处理；
    - [`verl-project/verl-hardware-plugin#89`](https://github.com/verl-project/verl-hardware-plugin/pull/89) 的 3-D direct install 方案因涉及跨仓库依赖，单独评估，不与 `#116` 混用。
 2. **明确定义的 `Stage P1c` 通过门槛（Gate Criteria）**：
-   - **Step 0（`exact` 逐位校验门槛）**：在 `VERIFY_PARITY=all` 下，全部 **32 个 Sampler ranks** 的全部预期检查项（当前 2-D 折叠路径下为 `435 / 435` 项/rank；若未来采用 3-D direct install 则按对应 expert region 检查项计数）必须 **`exact` 100% 通过（`0 mismatched, 0 unresolved`）**；
+   - **Step 0（`exact` 逐元素数值相等校验门槛）**：在 `VERIFY_PARITY=all` 下，全部 **32 个 Sampler ranks** 的全部预期检查项（当前 2-D 折叠路径下为 `435 / 435` 项/rank；若未来采用 3-D direct install 则按对应 expert region 检查项计数）必须 **`exact` 100% 通过（转为 `float32` 后 `max|ref - new| == 0.0`，`0 mismatched, 0 unresolved`）**；
    - **Step 1–2（`norm` 范数校验 + 训练/推理闭环健康度门槛）**：
-     - 通过现有 `verify_norms` 校验（全模型 `numel` 与逐张量/全局 `L1` 范数在 `1e-3` 相对容差内一致；**注：报告中须明确注明 Step 1–2 的 `norm` 通过仅验证 `numel` 与 `L1` 范数一致，不等于逐元素 bit-exact**）；
+     - 通过现有 `verify_norms` 校验（全模型 `numel` 与逐张量/全局 `L1` 范数在 `1e-3` 相对容差内一致；**注：报告中须明确注明 Step 1–2 的 `norm` 通过仅验证 `numel` 与 `L1` 范数一致，不等于逐元素数值相等**）；
      - 同步后生成的 Rollout 困惑度比值 `actor/rollout_corr/ppl_ratio` 稳定在 `~1.0` 正常区间（无乱码或 PPL 暴涨）；
      - 连续完成真实梯度更新（`actor/grad_norm > 0`），触发多轮 SandboxFusion 代码工具调用，且 `rollout_audit` 的 Token 级 `response_mask` 违规数为 **`0`**。
 3. **证据归档与推进 `Stage P3`**：

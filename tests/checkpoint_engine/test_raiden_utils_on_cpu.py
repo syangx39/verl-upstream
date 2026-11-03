@@ -36,6 +36,7 @@ from verl.checkpoint_engine.raiden_checkpoint_engine import (
     _dim0_shard_info,
     _replica_num_workers,
     _sampler_job_name,
+    compute_expected_checked_params,
     filter_tied_embeddings,
     merge_rank_stats,
 )
@@ -56,6 +57,41 @@ def test_filter_tied_embeddings():
     # Without an embedding in the set there is nothing lm_head could be copied from: keep it.
     no_embed = [("lm_head.weight", 2), ("model.norm.weight", 3)]
     assert filter_tied_embeddings(no_embed, tie_word_embeddings=True) == no_embed
+
+
+def test_compute_expected_checked_params_untied_and_tied():
+    class _ToyModel(torch.nn.Module):
+        def __init__(self, tie_mode: str):
+            super().__init__()
+            self.model = torch.nn.Module()
+            self.model.embed_tokens = torch.nn.Embedding(8, 4)
+            self.model.norm = torch.nn.LayerNorm(4, elementwise_affine=True)
+            self.lm_head = torch.nn.Linear(4, 8, bias=False)
+            if tie_mode == "shared_param":
+                # Shared nn.Parameter instance: named_parameters() already deduplicates to 3 params
+                # (embed_tokens.weight, norm.weight, norm.bias), and all 3 are checked by check_exact.
+                self.lm_head.weight = self.model.embed_tokens.weight
+
+    # 1. Untied model: trainer sends lm_head.weight (received_lm_head=True), all 4 distinct params are checked.
+    untied = _ToyModel("untied")
+    assert len(list(untied.named_parameters())) == 4
+    assert compute_expected_checked_params(untied, received_lm_head=True) == 4
+
+    # 2. Tied model with shared nn.Parameter (lm_head.weight is model.embed_tokens.weight):
+    #    named_parameters() yields 3 unique parameters, and all 3 are checked by check_exact.
+    #    Must NOT double-subtract 1 (must return 3, not 2).
+    tied_shared = _ToyModel("shared_param")
+    assert tied_shared.lm_head.weight is tied_shared.model.embed_tokens.weight
+    assert len(list(tied_shared.named_parameters())) == 3
+    assert compute_expected_checked_params(tied_shared, received_lm_head=False) == 3
+
+    # 3. Tied model where lm_head.weight is a separate nn.Parameter buffer copied from embed_tokens.weight
+    #    in step 3 (received_lm_head=False, lm_head.weight is not embed_tokens.weight):
+    #    named_parameters() yields 4 parameters, but lm_head.weight is copied after check_exact -> expected 3.
+    tied_separate = _ToyModel("separate_param")
+    assert tied_separate.lm_head.weight is not tied_separate.model.embed_tokens.weight
+    assert len(list(tied_separate.named_parameters())) == 4
+    assert compute_expected_checked_params(tied_separate, received_lm_head=False) == 3
 
 
 class _FakeMesh:

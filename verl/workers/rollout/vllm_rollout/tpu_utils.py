@@ -793,9 +793,9 @@ class vLLMRaidenWorkerExtension(_BaseWorkerExtension):
         # Returned through collective_rpc so the orchestrator can log them as step metrics.
         result = {"total": t_total, "h2d": t_h2d, "sync": t_sync}
         if parity:
-            total_model_params = sum(1 for _ in vllm_model.named_parameters())
-            tied_lm_head = int(not received_lm_head and hasattr(vllm_model, "lm_head"))
-            expected_checked = max(total_model_params - tied_lm_head, 0)
+            from verl.checkpoint_engine.raiden_checkpoint_engine import compute_expected_checked_params
+
+            expected_checked = compute_expected_checked_params(vllm_model, received_lm_head)
             result["exact_parity"] = parity.exact_result(
                 getattr(self, "rank", 0),
                 unresolved,

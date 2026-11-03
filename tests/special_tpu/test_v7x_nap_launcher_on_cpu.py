@@ -333,12 +333,12 @@ FAKE_KUBECTL = textwrap.dedent(
         failures = int(open(counter).read()) if os.path.exists(counter) else 0
         if failures < int(os.environ.get("FAKE_GET_FAIL_FIRST", "0")):
             open(counter, "w").write(str(failures + 1))
-            fail("Unable to connect to the server: dial tcp: connection refused")
+            fail(os.environ.get("FAKE_GET_FAIL_MESSAGE", "Unable to connect to the server: connection refused"))
         if not os.path.exists(path(name)):
             fail(f'Error from server (NotFound): jobsets.jobset.x-k8s.io "{name}" not found')
         obj = json.load(open(path(name)))
         meta = {"name": name, "uid": obj["uid"], "annotations": {"verl-nap/launch-id": obj["launch_id"]}}
-        print(json.dumps({"metadata": meta}))
+        print(json.dumps({"metadata": meta, "status": {"conditions": obj.get("conditions", [])}}))
     elif a[0] == "delete" and "--raw" in a:
         name = a[a.index("--raw") + 1].rsplit("/", 1)[1]
         want = json.load(open(a[a.index("-f") + 1]))["preconditions"]["uid"]
@@ -514,6 +514,110 @@ owned_list
     assert "NOT_CONFIRMED" in res.stdout and "absent or not ours" in res.stderr
     assert k.names() == {"run-a"}
     assert "delete" not in (k.state / "_calls.log").read_text()
+
+
+# --- watching the run's JobSet (owned_watch, used by the launcher's watch loop) ---------------------------------------
+
+
+def _delete_calls(k: FakeCluster) -> list:
+    return [line for line in (k.state / "_calls.log").read_text().splitlines() if " delete " in f" {line} "]
+
+
+def test_owned_watch_failed_read_is_unknown_and_deletes_nothing(tmp_path):
+    k = FakeCluster(tmp_path)
+    # The read fails (connection refused): the state is unknown, the JobSet stays tracked and nothing is deleted.
+    script = f"""
+owned_create {k.manifest("run-a")}
+owned_watch run-a "$OWNED_LAST_UID"
+echo "WATCH=$OWNED_WATCH OWNED=${{#OWNED_OBJECTS[@]}}"
+"""
+    res = k.run(script, FAKE_GET_FAIL_FIRST="1")
+    assert res.returncode == 0, res.stderr
+    assert "WATCH=unknown OWNED=1" in res.stdout
+    assert k.names() == {"run-a"} and _delete_calls(k) == []
+
+
+def test_owned_watch_client_side_not_found_text_is_unknown(tmp_path):
+    k = FakeCluster(tmp_path)
+    # Only the API server's NotFound means gone; a client-side error that merely says "not found" is unknown.
+    script = f"""
+owned_create {k.manifest("run-a")}
+owned_watch run-a "$OWNED_LAST_UID"
+echo "WATCH=$OWNED_WATCH OWNED=${{#OWNED_OBJECTS[@]}}"
+"""
+    res = k.run(
+        script,
+        FAKE_GET_FAIL_FIRST="1",
+        FAKE_GET_FAIL_MESSAGE="error: exec: executable gke-gcloud-auth-plugin not found",
+    )
+    assert res.returncode == 0, res.stderr
+    assert "WATCH=unknown OWNED=1" in res.stdout
+    assert k.names() == {"run-a"} and _delete_calls(k) == []
+
+
+def test_owned_watch_recovers_after_one_failed_read(tmp_path):
+    k = FakeCluster(tmp_path)
+    # One read fails while the run is healthy; the next read sees the JobSet again, the watch follows it to its end,
+    # and only then does the normal cleanup delete it.
+    script = f"""
+owned_create {k.manifest("run-a")}
+uid="$OWNED_LAST_UID"
+owned_watch run-a "$uid"
+echo "FIRST=$OWNED_WATCH"
+owned_watch run-a "$uid"
+echo "SECOND=$OWNED_WATCH [$OWNED_WATCH_DETAIL] OWNED=${{#OWNED_OBJECTS[@]}}"
+python3 - "$FAKE_KUBE_STATE/run-a.json" <<'PY'
+import json, sys
+obj = json.load(open(sys.argv[1]))
+obj["conditions"] = [{{"type": "Completed", "status": "True"}}]
+json.dump(obj, open(sys.argv[1], "w"))
+PY
+owned_watch run-a "$uid"
+echo "THIRD=$OWNED_WATCH [$OWNED_WATCH_DETAIL]"
+owned_delete_all
+echo "LEFT=${{#OWNED_OBJECTS[@]}}"
+"""
+    res = k.run(script, FAKE_GET_FAIL_FIRST="1")
+    assert res.returncode == 0, res.stderr
+    assert "FIRST=unknown" in res.stdout
+    assert "SECOND=ours [] OWNED=1" in res.stdout
+    assert "THIRD=ours [Completed=True;]" in res.stdout
+    assert "LEFT=0" in res.stdout and k.names() == set() and len(_delete_calls(k)) == 1
+
+
+def test_owned_watch_not_found_is_gone_and_never_deleted(tmp_path):
+    k = FakeCluster(tmp_path)
+    script = f"""
+owned_create {k.manifest("run-a")}
+rm "$FAKE_KUBE_STATE/run-a.json"
+owned_watch run-a "$OWNED_LAST_UID"
+echo "WATCH=$OWNED_WATCH OWNED=${{#OWNED_OBJECTS[@]}}"
+owned_delete_all
+"""
+    res = k.run(script)
+    assert res.returncode == 0, res.stderr
+    assert "WATCH=gone OWNED=0" in res.stdout and "the API server answered NotFound" in res.stderr
+    assert _delete_calls(k) == []
+    assert "forgot jobset run-a" in (tmp_path / "ledger.log").read_text()
+
+
+def test_owned_watch_replaced_object_is_left_alone(tmp_path):
+    k = FakeCluster(tmp_path)
+    script = f"""
+owned_create {k.manifest("run-a")}
+python3 - "$FAKE_KUBE_STATE/run-a.json" <<'PY'
+import json, sys
+json.dump({{"uid": "replacement-uid", "launch_id": "launch-theirs"}}, open(sys.argv[1], "w"))
+PY
+owned_watch run-a "$OWNED_LAST_UID"
+echo "WATCH=$OWNED_WATCH [$OWNED_WATCH_DETAIL] OWNED=${{#OWNED_OBJECTS[@]}}"
+owned_delete_all
+"""
+    res = k.run(script)
+    assert res.returncode == 0, res.stderr
+    assert "WATCH=replaced [replacement-uid] OWNED=0" in res.stdout and "leaving it alone" in res.stderr
+    assert json.loads((k.state / "run-a.json").read_text())["uid"] == "replacement-uid"
+    assert _delete_calls(k) == []
 
 
 class FakeSlotStore:

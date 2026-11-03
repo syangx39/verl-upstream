@@ -31,7 +31,9 @@
 #   5. Creates the JobSet, waits for Kueue admission and the pods, follows the head log into LOG_DIR, waits for the
 #      JobSet to finish and exits with the job's verdict (<run dir>/verdict.json).
 #   6. Deletes only objects this invocation created: every JobSet is created on its own, its UID recorded
-#      (LOG_DIR/owned_objects.log), and deleted with a UID precondition (v7x_nap/owned_objects.sh).
+#      (LOG_DIR/owned_objects.log), and deleted with a UID precondition (v7x_nap/owned_objects.sh). While watching,
+#      a failed read of the JobSet (API, auth or network error) only makes its state unknown until the next read; a
+#      JobSet the API server reports NotFound, or whose name now has another UID, ends the watch and is never deleted.
 #
 # Exit, Ctrl-C, SIGTERM and SIGHUP all delete the run's JobSet (and placeholders), which stops the run. To let a run
 # continue without the launcher, set KEEP_JOBSET=1: the JobSet then ends with its head (success or failure) and is
@@ -473,15 +475,41 @@ LAST_EVICTIONS=0
 LAST_RESTARTS="0"
 HEAD_UIDS=""
 TOTAL_PODS=$((TOTAL_HOSTS + 1))
+UNKNOWN_SINCE=""
+check_deadlines() {  # give up on a run that waits for admission, or runs, longer than allowed
+  if [[ -z "${ADMITTED_TS}" ]] && (( QUEUE_TIMEOUT_MIN > 0 && NOW - START_TS > QUEUE_TIMEOUT_MIN * 60 )); then
+    die "not admitted after ${QUEUE_TIMEOUT_MIN} min"
+  fi
+  if [[ -n "${ADMITTED_TS}" ]] && (( NOW - ADMITTED_TS > (RUN_LIMIT_MIN + 20) * 60 )); then
+    die "JobSet still running $((RUN_LIMIT_MIN + 20)) min after admission"
+  fi
+}
 while true; do
   NOW=$(date +%s)
-  CONDS="$(k get jobset "${RUN_NAME}" -o jsonpath='{range .status.conditions[*]}{.type}={.status};{end}' 2>/dev/null || true)"
-  if [[ "${CONDS}" == *"Completed=True"* ]]; then RESULT="Completed"; break; fi
-  if [[ "${CONDS}" == *"Failed=True"* ]]; then RESULT="Failed"; break; fi
-  if [[ "$(k get jobset "${RUN_NAME}" -o jsonpath='{.metadata.uid}' 2>/dev/null || true)" != "${JOBSET_UID}" ]]; then
-    RESULT="Deleted"  # gone, or replaced by another object of that name (which is not ours to touch)
-    break
+  # A failed read of the JobSet (API, auth or network error) says nothing about it: its state is unknown and it is
+  # read again at the next poll. The watch ends early only when the API server answers NotFound (gone) or the name
+  # now has another UID (replaced); owned_watch then forgets the JobSet, so cleanup deletes neither it nor a
+  # replacement.
+  owned_watch "${RUN_NAME}" "${JOBSET_UID}"
+  case "${OWNED_WATCH}" in
+    unknown)
+      if [[ -z "${UNKNOWN_SINCE}" ]]; then
+        UNKNOWN_SINCE=${NOW}
+        log "WARNING: could not read JobSet ${RUN_NAME}; its state is unknown, reading it again every ${POLL_S} s"
+      fi
+      check_deadlines
+      sleep "${POLL_S}"
+      continue
+      ;;
+    gone) RESULT="Gone"; break ;;
+    replaced) RESULT="Replaced"; break ;;
+  esac
+  if [[ -n "${UNKNOWN_SINCE}" ]]; then
+    log "JobSet ${RUN_NAME} is readable again after $((NOW - UNKNOWN_SINCE)) s"
+    UNKNOWN_SINCE=""
   fi
+  if [[ "${OWNED_WATCH_DETAIL}" == *"Completed=True"* ]]; then RESULT="Completed"; break; fi
+  if [[ "${OWNED_WATCH_DETAIL}" == *"Failed=True"* ]]; then RESULT="Failed"; break; fi
 
   WL="$(k get workloads.kueue.x-k8s.io -l "kueue.x-k8s.io/job-uid=${JOBSET_UID}" \
     -o jsonpath='{range .items[0].status.conditions[*]}{.type}={.status}({.reason}) {end}' 2>/dev/null || true)"
@@ -537,12 +565,7 @@ while true; do
     log "following ${HEAD_POD} into ${HEAD_LOG}"
   fi
 
-  if [[ -z "${ADMITTED_TS}" ]] && (( QUEUE_TIMEOUT_MIN > 0 && NOW - START_TS > QUEUE_TIMEOUT_MIN * 60 )); then
-    die "not admitted after ${QUEUE_TIMEOUT_MIN} min"
-  fi
-  if [[ -n "${ADMITTED_TS}" ]] && (( NOW - ADMITTED_TS > (RUN_LIMIT_MIN + 20) * 60 )); then
-    die "JobSet still running $((RUN_LIMIT_MIN + 20)) min after admission"
-  fi
+  check_deadlines
   sleep "${POLL_S}"
 done
 

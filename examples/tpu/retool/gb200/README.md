@@ -2,9 +2,16 @@
 
 Concise reproduction guide for multi-turn code-interpreter **ReTool** ([arXiv:2504.11536](https://arxiv.org/abs/2504.11536)) reinforcement learning on **`Qwen/Qwen3-30B-A3B`** (`30.5B` total parameters, `3.3B` active per token, `48` layers, `128` routed experts, `top_k=8`) on **NVIDIA GB200 (`aarch64`, SM100, 184.31 GiB HBM3e/GPU)** on GKE.
 
-- **Detailed bilingual execution & audit log (PR #9)**: [`../REPRO_RESULTS_GB200_ZH.md`](../REPRO_RESULTS_GB200_ZH.md)
-- **Archived raw evidence & deterministic metric recomputation (`G2`)**: [`./evidence/g2-retool-rl-25step-01/`](./evidence/g2-retool-rl-25step-01/)
+- **Detailed bilingual execution & audit log (PR #9)**: [`exp/REPRO_RESULTS_GB200_ZH.md`](exp/REPRO_RESULTS_GB200_ZH.md)
+- **Archived raw evidence & deterministic metric recomputation (`G2`)**: [`./logs/g2-retool-rl-25step-01/`](logs/g2-retool-rl-25step-01/)
 - **Iso-accelerator-count TPU v7x vs. NVIDIA GB200 benchmark plan (PR #11)**: [`../ISO_CHIP_PERF_BENCHMARK_PLAN.md`](../ISO_CHIP_PERF_BENCHMARK_PLAN.md)
+
+### Directory guide
+
+- This directory contains the Dockerfile, launchers, verification tools, and this guide.
+- [`exp/`](./exp/) holds the original GB200 plan and detailed results report.
+- [`logs/`](./logs/) holds the historical G2 logs, environment checks, sample records, and metric recomputation script.
+- The dataset, tool, and sandbox implementations in [`../`](../) are shared with TPU.
 
 ---
 
@@ -79,7 +86,7 @@ To rebuild and push on a native `linux/arm64` builder (note that the build conte
 
 - **Model — `Qwen3-30B-A3B` Stage-1 Multi-Turn SFT Checkpoint (`global_step_372`)**:
   - **Source Path (GCSFuse `/data`)**: `/data/${INPUTS_OR_RUN_ROOT}/p2-retool-sft-01/checkpoint/global_step_372/huggingface` (`25` files, `61,084,185,820` bytes / `56.89 GiB`, exported in HuggingFace `.safetensors` format after 6 epochs / 372 steps of Stage-1 SFT on `Russwest0/ReTool-SFT` starting from `Qwen/Qwen3-30B-A3B` @ HF commit `ad44e777bcd18fa416d9da3bd8f70d33ebb85d39`).
-  - **Node-Local `/dev/shm` Staging & Expected `composite_sha256` Assertion**: Before starting Ray, [`run_ray_jobset_gb200.sh`](./run_ray_jobset_gb200.sh) invokes [`verify_g0_gb200.py`](./verify_g0_gb200.py) on both `head` and `worker-0` to copy all 25 files from `/data` to `/dev/shm/models/multiturn-sft-qwen3-30b-a3b-tpu7x` (~`49–62 s` at `1.0–1.2 GB/s`), cross-check every file against `--ref-dir`, and assert `--expect-composite-sha256` (`EXPECT_CHECKPOINT_SHA256`) across the **20 core files** (`16` `.safetensors` shards + `config.json`, `model.safetensors.index.json`, `tokenizer.json`, `tokenizer_config.json`, totaling `61,079,708,754` bytes; per-file hashes archived in [`g2-retool-rl-25step-01-head-g0-verify.json`](./evidence/g2-retool-rl-25step-01/env/g2-retool-rl-25step-01-head-g0-verify.json)):
+  - **Node-Local `/dev/shm` Staging & Expected `composite_sha256` Assertion**: Before starting Ray, [`run_ray_jobset_gb200.sh`](./run_ray_jobset_gb200.sh) invokes [`verify_g0_gb200.py`](./verify_g0_gb200.py) on both `head` and `worker-0` to copy all 25 files from `/data` to `/dev/shm/models/multiturn-sft-qwen3-30b-a3b-tpu7x` (~`49–62 s` at `1.0–1.2 GB/s`), cross-check every file against `--ref-dir`, and assert `--expect-composite-sha256` (`EXPECT_CHECKPOINT_SHA256`) across the **20 core files** (`16` `.safetensors` shards + `config.json`, `model.safetensors.index.json`, `tokenizer.json`, `tokenizer_config.json`, totaling `61,079,708,754` bytes; per-file hashes archived in [`g2-retool-rl-25step-01-head-g0-verify.json`](logs/g2-retool-rl-25step-01/env/g2-retool-rl-25step-01-head-g0-verify.json)):
     ```text
     composite_sha256 = 59247a00c13f2364a12aab5ab6b88b6d971d59ff643c57aad8ac4e55a71231b0
     ```
@@ -103,7 +110,7 @@ To rebuild and push on a native `linux/arm64` builder (note that the build conte
 | Component | Configured Path / Entrypoint | Runtime Behavior (`trainer.use_v1=True`) |
 | --- | --- | --- |
 | **Reward Scorer** | CLI passes top-level `custom_reward_function.path=pkg://examples.tpu.retool.retool_tpu` (`name=compute_score`) | Under `trainer.use_v1=True` (`TaskRunnerV1`), `RewardLoopWorker` reads `config.reward.custom_reward_function.path` (`None` unless nested `reward.custom_reward_function.path` is also passed) and falls back to `verl.utils.reward_score.default_compute_score` $\rightarrow$ `math_dapo.compute_score(..., strict_box_verify=False)` (pure binary outcome reward $\{-1.0, +1.0\}$, $\text{reward} = 2 \times \text{acc} - 1$). |
-| **Strict-Box vs. Runtime Scorer Verification** | [`recompute_g2_metrics.py`](./evidence/g2-retool-rl-25step-01/recompute_g2_metrics.py) | Verifies all `3,600` validation samples under both `strict_box_verify=False` (runtime scorer, `0/3600` diff vs. `head.log`) and `strict_box_verify=True` (ReTool strict `\boxed{}` scorer). Both show consistent gains: AIME 2024 **`+5.00 pp`** (`strict=False`) / **`+5.44 pp`** (`strict=True`), AIME 2025 **`+0.89 pp`** (both). |
+| **Strict-Box vs. Runtime Scorer Verification** | [`recompute_g2_metrics.py`](logs/g2-retool-rl-25step-01/recompute_g2_metrics.py) | Verifies all `3,600` validation samples under both `strict_box_verify=False` (runtime scorer, `0/3600` diff vs. `head.log`) and `strict_box_verify=True` (ReTool strict `\boxed{}` scorer). Both show consistent gains: AIME 2024 **`+5.00 pp`** (`strict=False`) / **`+5.44 pp`** (`strict=True`), AIME 2025 **`+0.89 pp`** (both). |
 | **Code Sandbox (`SandboxFusion`)** | [`sandbox_fusion_server.py`](../sandbox_fusion_server.py) + [`sandbox_fusion_tools.py`](../sandbox_fusion_tools.py) | **Current hardened server (`a2cbde47` / `tpu-main`)**: Default single-tenant mode auto-starts a 4-worker loopback FastAPI server (`http://127.0.0.1:18080/run_code`) that drops privileges fail-closed to `nobody:nogroup` (`65534:65534`), sets `CUDA_VISIBLE_DEVICES=""`, attempts to set `RLIMIT_AS` with a 4 GiB minimum (the `setrlimit` error is ignored) and uses process-group `SIGKILL` on timeout, and passes a 4-case functional check before training.<br>**Historical `G2` (`64ef634b`)**: Ran the in-Pod loopback server before `65534:65534` privilege drop and `--url` CLI support were added in PR #9 (`574f0b78`).<br>**Security boundary**: Even with `65534:65534` privilege drop, GB200 Pods run with `securityContext.privileged: true` (for NVIDIA DRA `ComputeDomain` IMEX channel injection) and mount writable GCSFuse `/data`, so local subprocesses share the container filesystem and kernel namespaces. In-Pod loopback mode must **only** be used for trusted single-tenant experiments; for untrusted prompts/models, set `SANDBOX_FUSION_HOST` or `SANDBOX_FUSION_URL` to an external sandboxed service (which automatically sets `SANDBOX_DISABLE_AUTO_START=1`). |
 
 ---
@@ -170,7 +177,7 @@ JOBENV_SAVE_FREQ="-1" \
 bash examples/tpu/retool/gb200/run_ray_jobset_gb200.sh
 ```
 
-#### Parameter Reference ([`run_qwen3_30b_a3b_dapo_torchtitan_gb200.sh`](./run_qwen3_30b_a3b_dapo_torchtitan_gb200.sh) & [`head.log`](./evidence/g2-retool-rl-25step-01/head.log))
+#### Parameter Reference ([`run_qwen3_30b_a3b_dapo_torchtitan_gb200.sh`](./run_qwen3_30b_a3b_dapo_torchtitan_gb200.sh) & [`head.log`](logs/g2-retool-rl-25step-01/head.log))
 
 - **Frozen invariants (aligned with TPU recipe [`../run_qwen3_30b_a3b_dapo_torchtitan.sh`](../run_qwen3_30b_a3b_dapo_torchtitan.sh))**:
   - `data.train_batch_size=64`, `actor.ppo_mini_batch_size=64`, `actor.ppo_epochs=1` $\rightarrow$ **ONE optimizer update per rollout step** ($\mu = 1$), `trainer.v1.separate_async.parameter_sync_step=1`
@@ -180,8 +187,8 @@ bash examples/tpu/retool/gb200/run_ray_jobset_gb200.sh
   - Sequence & multi-turn caps — `data.max_prompt_length=2048`, `data.max_response_length=8192` (`rollout.max_model_len=10240`), `max_turns=8` (`multi_turn.max_user_turns=8`, `multi_turn.max_assistant_turns=8` $\rightarrow$ up to `16` total messages per trajectory)
   - Sampling & Optimizer —
     - **Train rollout**: `temperature=1.0`, `top_p=1.0`, `top_k=-1`, `do_sample=True`
-    - **Validation rollout (`rollout.val_kwargs`, [`head.log#L573-L577`](./evidence/g2-retool-rl-25step-01/head.log#L573-L577))**: `n=30`, `temperature=1.0`, `top_p=0.6`, `top_k=-1`, `do_sample=False` (schema default). In `verl` V1 (`trainer.use_v1=True`), `AgentLoopWorkerTQ.generate_sequences` ([`verl/trainer/ppo/v1/agent_loop_tq.py`](../../../verl/trainer/ppo/v1/agent_loop_tq.py#L72-L76)) and `AgentLoopWorker.generate_sequences` ([`verl/experimental/agent_loop/agent_loop.py`](../../../verl/experimental/agent_loop/agent_loop.py#L603-L607)) construct vLLM `sampling_params` directly from `val_kwargs.temperature` (`1.0`), `val_kwargs.top_p` (`0.6`), and `val_kwargs.top_k` (`-1`) and spawn `val_kwargs.n` (`30`) parallel sessions per prompt without reading `val_kwargs.do_sample` (which is only consumed by legacy `ray_trainer.py` / `hf_rollout.py`). Because `temperature=1.0 > 0` and `top_p=0.6`, vLLM V1 performs stochastic nucleus sampling across all 30 validation trajectories per problem (`std@30 = 0.2552` on AIME 2024).
-    - **Optimizer ([`head.log#L168-L181`](./evidence/g2-retool-rl-25step-01/head.log#L168-L181))**: `actor.optim.lr=1.4e-6`, `lr_scheduler_type=constant` (`min_lr_factor=1.0`), `weight_decay=0.01`, `betas=[0.9, 0.999]`, TorchTitan `training.max_norm=1.0` (note: `actor.optim.clip_grad=0.088` is passed on CLI, while TorchTitan clips at `training.max_norm=1.0`)
+    - **Validation rollout (`rollout.val_kwargs`, [`head.log#L573-L577`](logs/g2-retool-rl-25step-01/head.log#L573-L577))**: `n=30`, `temperature=1.0`, `top_p=0.6`, `top_k=-1`, `do_sample=False` (schema default). In `verl` V1 (`trainer.use_v1=True`), `AgentLoopWorkerTQ.generate_sequences` ([`verl/trainer/ppo/v1/agent_loop_tq.py`](../../../../verl/trainer/ppo/v1/agent_loop_tq.py#L72-L76)) and `AgentLoopWorker.generate_sequences` ([`verl/experimental/agent_loop/agent_loop.py`](../../../../verl/experimental/agent_loop/agent_loop.py#L603-L607)) construct vLLM `sampling_params` directly from `val_kwargs.temperature` (`1.0`), `val_kwargs.top_p` (`0.6`), and `val_kwargs.top_k` (`-1`) and spawn `val_kwargs.n` (`30`) parallel sessions per prompt without reading `val_kwargs.do_sample` (which is only consumed by legacy `ray_trainer.py` / `hf_rollout.py`). Because `temperature=1.0 > 0` and `top_p=0.6`, vLLM V1 performs stochastic nucleus sampling across all 30 validation trajectories per problem (`std@30 = 0.2552` on AIME 2024).
+    - **Optimizer ([`head.log#L168-L181`](logs/g2-retool-rl-25step-01/head.log#L168-L181))**: `actor.optim.lr=1.4e-6`, `lr_scheduler_type=constant` (`min_lr_factor=1.0`), `weight_decay=0.01`, `betas=[0.9, 0.999]`, TorchTitan `training.max_norm=1.0` (note: `actor.optim.clip_grad=0.088` is passed on CLI, while TorchTitan clips at `training.max_norm=1.0`)
   - Async trainer & evaluation schedule — `trainer.use_v1=True`, `trainer.v1.trainer_mode=separate_async`, `trainer.v1.separate_async.num_warmup_batches=2`, `trainer.v1.sampler.max_off_policy_threshold=4`, `trainer.val_before_train=True`, `trainer.test_freq=25`, `trainer.save_freq=-1`
 - **System adaptations (`2 nodes × 4 GB200 = 8 GPUs`, `hybrid_engine=False`)**:
   - **Node 0 (`head` — TorchTitan Trainer, `NNODES_TRAINER=1, N_GPUS_TRAINER=4`)**: `torchtitan.data_parallel_shard_degree=4` (`FSDP2=4`), `tensor_parallel_size=1`, `expert_parallel_size=1`, `context_parallel_size=1`, `attn_type=flex`, `use_remove_padding=True`, `activation_checkpoint.mode=selective`, `spmd_backend=partial_dtensor`, `use_dynamic_bsz=True`, `ppo_max_token_len_per_gpu=16384`, `log_prob_max_token_len_per_gpu=16384`, `torchtitan.max_seq_len=16384`
@@ -202,7 +209,7 @@ bash examples/tpu/retool/gb200/run_ray_jobset_gb200.sh
     /data/${RUN_ROOT}/${RUN_NAME}/tensorboard
     ```
     (Verified in `g1-retool-rl-smoke-04`: `Saving tensorboard log to /data/xiaotongyang/retool-gb200/runs/g1-retool-rl-smoke-04/tensorboard.` $\rightarrow$ `tensorboard/events.out.tfevents.1793689701.g1-retool-rl-smoke-04-head.10162.0`, `12,762` bytes).
-  - **Historical `G2` (`g2-retool-rl-25step-01` at `64ef634b`)**: Ran before `TENSORBOARD_DIR` was exported in the launcher, so `_TensorboardAdapter` ([`verl/utils/tracking.py`](../../../verl/utils/tracking.py#L557-L560)) wrote to the container-local default relative path `tensorboard_log/verl_gb200_retool/qwen3-30b-a3b_retool_dapo_gb200` ([`head.log#L1940`](./evidence/g2-retool-rl-25step-01/head.log#L1940)). For `g2-retool-rl-25step-01`, all step-by-step scalar metrics and raw trajectories are persisted in `head.log`, `g2_25step_metrics.json`, `rollout/*.jsonl`, `validation/*.jsonl`, and `rollout_audit/*.jsonl`.
+  - **Historical `G2` (`g2-retool-rl-25step-01` at `64ef634b`)**: Ran before `TENSORBOARD_DIR` was exported in the launcher, so `_TensorboardAdapter` ([`verl/utils/tracking.py`](../../../../verl/utils/tracking.py#L557-L560)) wrote to the container-local default relative path `tensorboard_log/verl_gb200_retool/qwen3-30b-a3b_retool_dapo_gb200` ([`head.log#L1940`](logs/g2-retool-rl-25step-01/head.log#L1940)). For `g2-retool-rl-25step-01`, all step-by-step scalar metrics and raw trajectories are persisted in `head.log`, `g2_25step_metrics.json`, `rollout/*.jsonl`, `validation/*.jsonl`, and `rollout_audit/*.jsonl`.
 - **Rollout, Validation & Token-Level Mask Audit Dumps (enabled by default in [`run_ray_jobset_gb200.sh`](./run_ray_jobset_gb200.sh))**:
   - `${RUN_DIR}/head.log`: Full `verl.trainer.main_ppo` console log including launch command, Hydra resolved config, `step:0` / `step:25` AIME evaluations, and per-step metrics.
   - `${RUN_DIR}/rollout/{1..25}.jsonl`: All `512` generated multi-turn trajectories per training step (`12,800` total in `G2`).
@@ -210,9 +217,9 @@ bash examples/tpu/retool/gb200/run_ray_jobset_gb200.sh
   - `${RUN_DIR}/rollout_audit/{1..25}.jsonl`: Token-by-token `response_mask` audit (`8` multi-turn sessions/step, `200` sessions in `G2`) verifying `mask_length_matches=True` and asserting `0` `<tool_response>` tokens leak into `response_mask == 1`.
   - `${RUN_DIR}/env/`: Node precheck outputs (`*-precheck.json`, `*-g0-verify.json`, `*-nvidia-smi-L.txt`, `*-topo.txt`, `*-sandbox-4case.json`).
 - **Archived Evidence & One-Command Independent Recomputation (`G2`)**:
-  All raw `G2` logs, per-step metrics, and `3,600` validation sample records (`output_tail_300` + `output_sha256`) are checked into [`examples/tpu/retool/gb200/evidence/g2-retool-rl-25step-01/`](./evidence/g2-retool-rl-25step-01/). Run:
+  All raw `G2` logs, per-step metrics, and `3,600` validation sample records (`output_tail_300` + `output_sha256`) are checked into [`examples/tpu/retool/gb200/logs/g2-retool-rl-25step-01/`](logs/g2-retool-rl-25step-01/). Run:
   ```bash
-  python3 examples/tpu/retool/gb200/evidence/g2-retool-rl-25step-01/recompute_g2_metrics.py
+  python3 examples/tpu/retool/gb200/logs/g2-retool-rl-25step-01/recompute_g2_metrics.py
   ```
 - **How Step Time (`timing_s/step`) Decomposes**:
   Under `separate_async`, each training step logs `timing_s/step` along with:
@@ -250,7 +257,7 @@ bash examples/tpu/retool/gb200/run_ray_jobset_gb200.sh
 | **Overlapped Async Steps (Steps 3, 4, 6, 10, 12, 18, 20, 23, 25)** | **`0.04 – 4.11 s`** | `0.30 s` | `13.75 – 18.95 s` | `4.23 – 5.37 s` | **`18.55 – 24.63 s`** | Peak Step 25 (`629,878 tok` / `21.98 s`) | **`28,659.7 tok/s` (`3,582.5 tok/s/GPU`)** |
 | **All Steps 1–25 Training Wall-Clock (`W1`, excl. Step 0/25 evals)** | `20.51 s` (mean) | `0.30 s` (mean) | `18.41 s` (mean) | `4.35 s` (mean) | **`43.72 s`** (mean) | `13,825,419 tok` / **`1,104.5 s` (`18m 24s`)** | **`12,517.4 tok/s` (`1,564.7 tok/s/GPU`)** |
 
-- **End-to-End Wall-Clock Milestones ([`head.log`](./evidence/g2-retool-rl-25step-01/head.log) UTC timestamps)**:
+- **End-to-End Wall-Clock Milestones ([`head.log`](logs/g2-retool-rl-25step-01/head.log) UTC timestamps)**:
   - **Step 0 initial `update_weights`**: `4.13 s` (`23:50:01` $\rightarrow$ `23:50:05.530`)
   - **Step 0 AIME 2024/2025 (`n=30`, 1,800 trajectories) evaluation**: `180.1 s` (`3m 00s`, `23:50:05.950` $\rightarrow$ `23:53:06`)
   - **25-step RL training loop (`W1`)**: `1,104.5 s` (`18m 24s`, `23:53:06` $\rightarrow$ `00:11:30.538`)

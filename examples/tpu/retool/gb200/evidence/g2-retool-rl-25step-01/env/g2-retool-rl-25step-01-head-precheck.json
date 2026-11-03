@@ -1,0 +1,27 @@
+platform=Linux/aarch64 python=3.12.3
+uv.lock SHA256 verified: df508db0b957fa181c229fb75885cd3863cb651fd5233d0fa5af95e990bda0be
+git HEAD SHA verified: 64ef634b173c69ea31eff598caeee81d9a9caea1
+ray                    installed 2.55.1                 locked 2.55.1
+torch                  installed 2.13.0+cu130           locked 2.13.0+cu130
+vllm                   installed 0.32.0                 locked 0.32.0
+transformers           installed 5.16.1                 locked 5.16.1
+transferqueue          installed 0.1.11                 locked 0.1.11
+flash-attn             installed 2.8.3                  locked 2.8.3
+torchtitan             installed 0.3.0                  locked 0.3.0
+torch-checkpointing    installed 0.1.0                  locked 0.1.0
+full uv.lock check: verified 264 packages (mismatches=0)
+verl from /workspace/verl-pin/verl/__init__.py
+flash_attn 2.8.3 imports OK
+PPOTrainerSeparateAsync imports OK
+torchtitan 0.3.0 from /workspace/verl-pin/.venv/lib/python3.12/site-packages/torchtitan/__init__.py
+torchtitan 0.3.0: resolved torchtitan.components.optimizer.LRSchedulersContainer
+torchtitan 0.3.0: resolved torchtitan.models.qwen3.state_dict_adapter.Qwen3StateDictAdapter
+torchtitan MoE.Config (torchtitan.models.common.moe): slotted=True required_fields=['routed_experts', 'router'] has_load_balance_coeff=True has_aux_loss=False default_load_balance_coeff=0.001
+verl.workers.engine.torchtitan.utils.configure_qwen3_moe_for_rl: present
+CUDA runtime: devices=4 nccl=(2, 29, 7)
+  cuda:0 name='NVIDIA GB200' capability=10.0 total_memory=184.31 GiB (197.90 GB)
+  cuda:1 name='NVIDIA GB200' capability=10.0 total_memory=184.31 GiB (197.90 GB)
+  cuda:2 name='NVIDIA GB200' capability=10.0 total_memory=184.31 GiB (197.90 GB)
+  cuda:3 name='NVIDIA GB200' capability=10.0 total_memory=184.31 GiB (197.90 GB)
+  NVLink P2P peer access verified across all 4x3 GPU pairs
+GB200 TARGET-HOST PRECHECK OK (hardware/NCCL/venv verified; run G0 1-step MoE routing + weight-sync test next): arch=aarch64 ray 2.55.1 torch 2.13.0+cu130 (cuda 13.0) vllm 0.32.0 torchtitan 0.3.0 transformers 5.16.1

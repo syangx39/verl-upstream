@@ -1,4 +1,17 @@
 #!/usr/bin/env python3
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 """Verify Python/uv lock fidelity and target-host runtime preconditions for GB200 ReTool runs.
 
 This script intentionally separates two verification levels and labels them explicitly in output:
@@ -248,7 +261,8 @@ def check_torchtitan_surface(bad: list[str], require_rl_moe_helper: bool = False
                 bad.append(msg)
             else:
                 print(
-                    f"NOTE: {msg} (must disable moe.load_balance_coeff via 0.3-compatible helper before Qwen3-30B-A3B RL)"
+                    f"NOTE: {msg} (must disable moe.load_balance_coeff via 0.3-compatible helper "
+                    "before Qwen3-30B-A3B RL)"
                 )
     except Exception as exc:
         bad.append(f"verl-torchtitan-utils-import:{exc}")
@@ -296,6 +310,23 @@ def check_gpu_runtime(args: argparse.Namespace, bad: list[str]) -> None:
         if name_pat is not None and not name_pat.search(str(props.name)):
             bad.append(f"cuda:{idx}:name={props.name!r}!~{args.expect_gpu_regex!r}")
 
+    if args.require_gb200 and count >= 2 and callable(getattr(torch.cuda, "can_device_access_peer", None)):
+        disabled_pairs: list[str] = []
+        for i in range(count):
+            for j in range(count):
+                if i == j:
+                    continue
+                try:
+                    ok = bool(torch.cuda.can_device_access_peer(i, j))
+                except Exception:
+                    ok = False
+                if not ok:
+                    disabled_pairs.append(f"{i}->{j}")
+        if disabled_pairs:
+            bad.append(f"cuda:p2p-disabled:{','.join(disabled_pairs)}")
+        else:
+            print(f"  NVLink P2P peer access verified across all {count}x{count - 1} GPU pairs")
+
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -316,7 +347,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--require-torchtitan",
         action="store_true",
-        help="Assert TorchTitan package path, Qwen3 MoE state-dict adapter, MoE.Config schema, and scheduler container resolve",
+        help="Assert TorchTitan package path, Qwen3 MoE state-dict adapter, MoE.Config schema, "
+        "and scheduler container resolve",
     )
     parser.add_argument(
         "--require-rl-moe-helper",
@@ -331,7 +363,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--require-gb200",
         action="store_true",
-        help="Preset strict target-host thresholds for NVIDIA GB200 (aarch64, SM >= 10.0, HBM >= 165 GiB, name ~ GB200|B200, NCCL present)",
+        help="Preset strict target-host thresholds for NVIDIA GB200 (aarch64, SM >= 10.0, HBM >= 165 GiB, "
+        "name ~ GB200|B200, NCCL present)",
     )
     parser.add_argument("--min-gpus", type=int, default=1, help="Minimum visible CUDA device count (default: 1)")
     parser.add_argument("--min-sm", default=None, help="Minimum CUDA compute capability, e.g. 10.0 for Blackwell")
@@ -440,7 +473,8 @@ def main(argv: list[str] | None = None) -> None:
     verdict_scope = (
         "GB200 TARGET-HOST PRECHECK OK (hardware/NCCL/venv verified; run G0 1-step MoE routing + weight-sync test next)"
         if args.require_gb200
-        else "BUILD-TIME VENV LOCK OK (package versions & imports verified; target-host GPU/MoE/weight-sync check still required)"
+        else "BUILD-TIME VENV LOCK OK (package versions & imports verified; "
+        "target-host GPU/MoE/weight-sync check still required)"
     )
     print(
         f"{verdict_scope}: arch={platform.machine()} ray {ray.__version__} "

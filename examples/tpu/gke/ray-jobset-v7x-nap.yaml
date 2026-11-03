@@ -1,0 +1,158 @@
+# Per-run Ray cluster on the shared GKE TPU 7x (Ironwood) cluster `bodaborg-tpu7x-nap` (Kueue + JobSet, node
+# auto-provisioning, no KubeRay operator): ONE JobSet with a CPU `head` replicatedJob and one replicatedJob per TPU
+# slice. Nothing else is created, so deleting the JobSet removes the whole run.
+#
+# Rendered by `examples/tpu/gke/v7x_nap/render.py` (Python `string.Template`; values are exported by
+# `examples/tpu/gke/run_ray_jobset_v7x_nap.sh`). The TPU_REPLICATED_JOBS placeholder at the end receives one copy of
+# `ray-jobset-v7x-nap-slice.yaml` per slice: `trainer-<i>` slices register `tpu-group-0..T-1`, `rollout-<i>` slices
+# `tpu-group-T..`, the verl convention for `actor_rollout_ref.rollout.tpu_slices`.
+#
+# * Code: every pod extracts the `git archive` of commit `${CODE_SHA}` staged by the launcher at `${SRC_TARBALL}` and
+#   runs its bootstrap from it (`examples/tpu/gke/v7x_nap/`), so the run is pinned to one commit end to end.
+# * Head: `head_supervisor.py` starts Ray, waits for every TPU host, records the cluster, submits the job of
+#   `${RUN_DIR}/job_spec.json` with the extracted source as working_dir, mirrors the driver log and writes
+#   `verdict.json` (per head attempt under `${RUN_DIR}/attempts/`, the verdict also at the top). The JobSet succeeds
+#   or fails with the head (successPolicy, maxRestarts), which releases the TPU slices as soon as the job ends, even
+#   when the launcher is gone.
+# * Workers find the head through the JobSet's headless Service (`<jobset>-head-0-0.<jobset>`).
+# * Storage: the bucket `${GCS_BUCKET}` is mounted with GCS FUSE at `${DATA_MOUNT}` on every pod (the cluster's node
+#   pools run the GKE metadata server). `/dev/shm` is memory-backed: a TPU 7x host has ~47 GB of ephemeral disk,
+#   too little for a 61 GB checkpoint, and ~900 GiB of memory.
+# * Pods request no cpu/memory (only `google.com/tpu` on the TPU pods); the cluster's scheduling relies on it.
+apiVersion: jobset.x-k8s.io/v1alpha2
+kind: JobSet
+metadata:
+  name: ${RUN_NAME}
+  namespace: ${RAY_NAMESPACE}
+  labels:
+    kueue.x-k8s.io/queue-name: ${KUEUE_QUEUE}
+    verl-nap/managed: "true"
+    verl-nap/run: ${RUN_NAME}
+  annotations:
+    verl-nap/owner: "${RUN_OWNER}"
+    verl-nap/code-sha: "${CODE_SHA}"
+    verl-nap/launch-id: "${LAUNCH_ID}"
+spec:
+  ttlSecondsAfterFinished: ${JOBSET_TTL_SECONDS}
+  network:
+    enableDNSHostnames: true
+    publishNotReadyAddresses: true
+  failurePolicy:
+    maxRestarts: ${JOBSET_MAX_RESTARTS}
+    rules:
+      # The head exits non-zero only when the job itself failed (or could not start): rerunning it would repeat a
+      # failed run. Restarts (up to maxRestarts) are left to TPU pod failures, e.g. a reclaimed or failed node.
+      - name: head_failure_is_final
+        action: FailJobSet
+        targetReplicatedJobs:
+          - head
+  successPolicy:
+    operator: All
+    targetReplicatedJobs:
+      - head
+  replicatedJobs:
+    - name: head
+      replicas: 1
+      template:
+        spec:
+          parallelism: 1
+          completions: 1
+          backoffLimit: 0
+          template:
+            metadata:
+              labels:
+                verl-nap/managed: "true"
+                verl-nap/run: ${RUN_NAME}
+                verl-nap/role: head
+              annotations:
+                cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+                gke-gcsfuse/volumes: "true"
+                gke-gcsfuse/cpu-limit: "0"
+                gke-gcsfuse/memory-limit: "0"
+                gke-gcsfuse/ephemeral-storage-limit: "0"
+            spec:
+              priorityClassName: ${PRIORITY_CLASS}
+              serviceAccountName: ${SERVICE_ACCOUNT}
+              restartPolicy: Never
+              nodeSelector:
+                cloud.google.com/gke-nodepool: ${HEAD_NODEPOOL}
+              tolerations:
+                - key: cloud.google.com/gke-nodepool
+                  operator: Equal
+                  value: ${HEAD_NODEPOOL}
+                  effect: NoSchedule
+              containers:
+                - name: ray-head
+                  image: ${IMAGE}
+                  imagePullPolicy: IfNotPresent
+                  command: ["/bin/bash", "-c"]
+                  args:
+                    - >-
+                      mkdir -p /workspace/verl &&
+                      tar -xzf "${SRC_TARBALL}" -C /workspace/verl &&
+                      exec python3 -u /workspace/verl/examples/tpu/gke/v7x_nap/head_supervisor.py
+                  env:
+                    - name: POD_NAME
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: metadata.name
+                    - name: POD_UID
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: metadata.uid
+                    - name: NODE_NAME
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: spec.nodeName
+                    - name: TPU_ACCELERATOR_TYPE
+                      value: "${POD_TPU_ACCELERATOR_TYPE}"
+                    - name: RAY_memory_monitor_refresh_ms
+                      value: "0"
+                    - name: RAY_memory_usage_threshold
+                      value: "0.99"
+                    - name: VERL_NAP_ROLE
+                      value: head
+                    - name: VERL_NAP_RUN_NAME
+                      value: "${RUN_NAME}"
+                    - name: VERL_NAP_RUN_DIR
+                      value: "${RUN_DIR}"
+                    - name: VERL_NAP_CODE_SHA
+                      value: "${CODE_SHA}"
+                    - name: VERL_NAP_HEAD_NUM_CPUS
+                      value: "${HEAD_NUM_CPUS}"
+                    - name: VERL_NAP_HEAD_OBJECT_STORE_BYTES
+                      value: "${HEAD_OBJECT_STORE_BYTES}"
+                    - name: VERL_NAP_EXPECTED_SLICES
+                      value: "${EXPECTED_SLICES}"
+                    - name: VERL_NAP_REQUIRE_NODE_RANK
+                      value: "${REQUIRE_NODE_RANK}"
+                    - name: VERL_NAP_NODE_WAIT_TIMEOUT_S
+                      value: "${NODE_WAIT_TIMEOUT_S}"
+                    - name: VERL_NAP_DRIVER_TIMEOUT_S
+                      value: "${DRIVER_TIMEOUT_S}"
+                    - name: VERL_NAP_MAX_ATTEMPTS
+                      value: "${MAX_ATTEMPTS}"
+                    - name: VERL_NAP_GCS_BUCKET
+                      value: "${GCS_BUCKET}"
+                    - name: VERL_NAP_RUN_PREFIX
+                      value: "${RUN_PREFIX}"
+                  ports:
+                    - containerPort: 6379
+                    - containerPort: 8265
+                  volumeMounts:
+                    - name: gcs-volume
+                      mountPath: ${DATA_MOUNT}
+                    - name: dshm
+                      mountPath: /dev/shm
+              volumes:
+                - name: gcs-volume
+                  csi:
+                    driver: gcsfuse.csi.storage.gke.io
+                    volumeAttributes:
+                      bucketName: ${GCS_BUCKET}
+                      mountOptions: "${GCSFUSE_MOUNT_OPTIONS}"
+                - name: dshm
+                  emptyDir:
+                    medium: Memory
+                    sizeLimit: ${HEAD_DSHM_SIZE}
+${TPU_REPLICATED_JOBS}

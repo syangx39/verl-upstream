@@ -1,9 +1,11 @@
 # Reproduction plan: ReTool (Qwen3-30B-A3B) on TPU 7x
 
-Status: **rev 2, proposed** (2026-10-29). Not started. Owner: @syangx39.
+Status: **rev 3** (2026-10-29). Rev 2 was merged as the execution plan (#2). P0 is in progress; no TPU run yet.
+Owner: @syangx39.
 
-Rev 2 folds in the review of rev 1 and the strongest checks from the alternative plan in #1 (now closed). The
-changelog is at the end.
+Rev 2 folded in the review of rev 1 and the strongest checks from the alternative plan in #1 (now closed). Rev 3 fixes
+the stage gates: P0 preparation vs. later validation, R11 evidence, the R13 TransferQueue condition, and SFT-only
+gates. The changelog is at the end.
 
 This plan reproduces the ReTool recipe added in
 [jialei777/verl-upstream#108](https://github.com/jialei777/verl-upstream/pull/108) (this directory, see
@@ -32,7 +34,7 @@ We report three outcomes separately:
 A passing smoke test does not establish learning parity. Wherever reference evidence is missing, the comparison is
 reported as provisional.
 
-Out of scope for rev 2: performance tuning, more seeds, the 16K / 16-turn schedule, and the Qwen3-32B dense variant
+Out of scope for rev 3: performance tuning, more seeds, the 16K / 16-turn schedule, and the Qwen3-32B dense variant
 from [askhat-g/verl-recipe#1](https://github.com/askhat-g/verl-recipe/pull/1). All of them are P5.
 
 ## 2. What we reproduce
@@ -53,31 +55,40 @@ chip, so the v6e parallelism fits with headroom. We still keep it unchanged unti
 
 ## 3. Checks: gates and observations
 
-- **Gates** (R1, R2, R5, R10-R13) are pass/fail. A phase does not proceed until its gates pass.
+- **Gates** (R1, R2, R5a, R5b, R10-R13) are pass/fail. A phase does not proceed until its gates pass. Gates that need a
+  role only check that role in phases where it exists: SFT runs have trainer workers only.
 - **Observations** (R3, R4, R6-R9) are compared with the single-run v6e references using *initial ranges*. The ranges
   are not pass/fail. We fix the final thresholds before P4b, once we have the author's per-question outputs and actual
   evaluation config (section 9).
 
 | # | Check | Kind | Phase | Statistic | v6e reference | Initial criterion |
 |---|---|---|---|---|---|---|
-| R1 | TPU 7x numerics flag effective | gate | every run | allowlisted env dump of trainer **and** rollout workers (P0.4) | - | `LIBTPU_INIT_ARGS` contains `--xla_tpu_bf16_emission_mode=PROMOTE_F32` on both sides (D4) |
-| R2 | Topology | gate | P1 | startup logs | - | 4D mesh for 32 trainer devices (no single-device fallback); vLLM TP=32 / EP=32; trainer and rollout on distinct complete slices; trainer rank-to-host order matches the slice worker index (P0.5); Raiden sync completes |
+| R1 | TPU 7x numerics flag effective | gate | every run | allowlisted env dump (P0.4) of the trainer workers; in RL runs (P1a, P1c, P3, P4) also of the rollout workers | - | `LIBTPU_INIT_ARGS` contains `--xla_tpu_bf16_emission_mode=PROMOTE_F32` on every role that exists in the run (D4) |
+| R2 | Topology | gate | P1a, P1c | startup logs and live Ray nodes | - | 4D mesh for 32 trainer devices (no single-device fallback); vLLM TP=32 / EP=32; trainer and rollout on distinct complete slices; trainer rank-to-host order matches the topological order inside the slice (P0.5); Raiden sync completes |
 | R3 | SFT step-1 loss | observation | P1b | `train/loss` at step 1 | 0.7941 (#108's 3-step smoke; the full run reports ~0.78 at the start) | within +-0.02 is consistent. It becomes a gate only if initial weights, data and batch order are confirmed identical to the smoke |
 | R4 | SFT final losses | observation | P2 | mean `train/loss` over steps 363-372; `val/loss` at step 372 (in-sample) | ~0.25; 0.214 | within +-10% |
-| R5 | HF export | gate | P1b, P2 | `global_step_N/huggingface` | 16 bf16 shards, 56.9 GiB | shards, index, config and tokenizer complete. A fresh process reloads it; selected tensors and fixed-input logits match the in-memory model within a declared tolerance; tied weights handled; vLLM loads it on every rollout host |
+| R5a | SFT export integrity | gate | P1b, P2 | `global_step_N/huggingface` written by the SFT trainer | 16 bf16 shards, 56.9 GiB | shards, index, config and tokenizer complete; a fresh process reloads it; selected tensors and fixed-input logits match the in-memory model within a declared tolerance; tied weights handled |
+| R5b | RL-side load | gate | P1c, P3 | the export staged for an RL run | - | the staged copy on every trainer and rollout host matches the source hashes (P0.3); TorchTitan and the multi-host vLLM server load it; the first weight sync completes (R12) |
 | R6 | Step-0 AIME of our SFT model | observation | P3 | mean@30, maj@30, best@30 and per-question accuracy, AIME 2024 and 2025 | mean@30: 22.44%, 14.17% | mean@30 within +-4.5 pp |
 | R7 | Early RL numerics | observation | P3 | median `actor/ppo_kl` and `actor/rollout_corr/k3_kl`, steps 3-10 | pending v6e logs | within x0.5 to x2 of v6e |
 | R8 | RL by step 25 | observation | P3 | mean@30 at step 25 and change from step 0 | 30.00% (+7.56 pp), 18.33% (+4.16 pp) | AIME 2024 above step 0 and within +-5 pp of v6e; AIME 2025 within +-5 pp. A rise of a few pp on 30 questions is a signal, not evidence of learning parity |
 | R9 | Step time | observation | P2, P3 | median `timing_s/step`; stage medians (`gen`, `update_actor`, `update_weights`) over a declared steady-state window, plus p90 | SFT ~18.6 s; RL ~108 s | informational. Async stage timers overlap and are not summed. Slower than v6e needs an explanation |
-| R10 | Completeness | gate | P3 | eval dumps | - | steps 0 and 25 for both AIME sets, with all 30 samples per question saved (P0.10), mean / maj / best@30, tool-call stats. A missing point makes the result incomplete, not passed |
-| R11 | Tool trajectory audit | gate | P1c, P3 | representative raw messages and token IDs, tool calls, tool results, response masks, reward inputs and outputs | - | tool-result tokens are excluded from the loss (response mask), tool results reach the next turn and are not lost in multi-turn concatenation, and correct / incorrect / malformed / timeout cases score as the pinned `compute_score` defines. A timeout reaches the model as `no stdout here`. Tool error and timeout rates are reported |
+| R10 | Completeness | gate | P3 | eval dumps | - | steps 0 and 25 for both AIME sets; every question has 30 distinct sessions, counted by session / trajectory ID from the dump (P0.10), not by JSONL line count (a multi-turn session can produce several rows); mean / maj / best@30; tool-call stats. A missing point makes the result incomplete, not passed |
+| R11 | Tool trajectory audit | gate | P1c, P3 | the rollout audit dump (P0.10): raw token IDs with the response / loss mask, assistant and tool segments, tool calls and results, reward inputs and outputs, `num_turns`, trajectory ID | - | tool-result tokens are excluded from the loss (response mask), tool results reach the next turn and are not lost in multi-turn concatenation, and correct / incorrect / malformed / timeout cases score as the pinned `compute_score` defines. A timeout reaches the model as `no stdout here`. Tool error and timeout rates are reported. The standard `rollout_data_dir` JSONL holds decoded text without special tokens, IDs or masks, so it cannot satisfy R11 on its own |
 | R12 | Weight-sync version check | gate | P1c, P3 | after a completed Raiden sync | - | the rollout's policy version matches the trainer version it was synced from; selected tensor checksums match; later rollouts use the new version; observed staleness stays within `max_off_policy_threshold=4` |
 | R13 | Resume equivalence | gate | P4a | uninterrupted vs stopped-and-resumed control from the same checkpoint | - | see the list below the notes |
 
 R13 checks:
 
 - model, optimizer, scheduler, global step and dataloader cursor are restored;
-- the TransferQueue state is saved and restored, or its absence is recorded (P0.7);
+- in-flight and prefetched data are not lost, duplicated or changed in meaning. This holds in exactly one of two ways:
+  - the TransferQueue state is saved, restored and verified (P0.7); or
+  - the checkpoint is taken at a verified quiescent boundary (queue empty, no in-flight or prefetched trajectories) and
+    the A/B control passes.
+
+  Merely recording that the queue was not saved does not pass. Otherwise R13 is **BLOCKED / FAIL**, and runs over
+  several windows cannot be reported as one continuous P4b curve. Missing TransferQueue checkpoint support does not
+  affect the independent P1 and P3 runs;
 - in-flight trajectories are handled as documented (pending and running prompts are re-issued);
 - policy version and staleness after the resume;
 - the first update after the resume matches the control within a declared tolerance on the same batch: batch content,
@@ -105,7 +116,7 @@ Notes on statistics:
 | D5 | **Storage**: inputs (model, datasets) are staged once to a GCS prefix and mounted read-only. The model is copied to `/dev/shm` on every TPU host (`MODEL_PATH`) and verified by hash (P0.3). All outputs (HF exports, DCP checkpoints, TensorBoard, dumps, logs) go to a separate GCS output prefix. Host `/tmp` is never used for checkpoints, because a tpu7x node disk has less free space than one 57 GiB export |
 | D6 | **Run structure and resume**. See the details below the table |
 | D7 | **Recipe behavior as-is**. See the details below the table |
-| D8 | **Pinned inputs**: `Qwen/Qwen3-30B-A3B`; `JoeYing/ReTool-SFT`, preprocessed with verl-recipe's `retool_sft_preprocess.py` using the tool schema of [`sandbox_fusion_tool_config_tpu.yaml`](sandbox_fusion_tool_config_tpu.yaml); `BytedTsinghua-SIA/DAPO-Math-17k`; `Maxwell-Jia/AIME_2024`; `yentinglin/aime_2025`. HF revisions and file sha256 go into the run record |
+| D8 | **Pinned inputs**: `Qwen/Qwen3-30B-A3B`; `JoeYing/ReTool-SFT`, preprocessed with verl-recipe's `retool_sft_preprocess.py` using the tool schema of [`sandbox_fusion_tool_config_tpu.yaml`](sandbox_fusion_tool_config_tpu.yaml); `BytedTsinghua-SIA/DAPO-Math-17k`; `Maxwell-Jia/AIME_2024`; `yentinglin/aime_2025`. HF revisions and file sha256 go into the run record. Rev 3: staged from the recipe's default data root (`/data/jialei`, the bucket mounted by `ray-tpu-v7x16-2slice.yaml`), i.e. the exact files the scripts reference. The ReTool-SFT parquet has 2,000 rows with `messages` and `tools`, every row has at least one `code_interpreter` call, and it uses the same tool schema |
 | D9 | **Explicit SFT checkpoint for RL**: every RL run sets `MODEL_SRC_PATH` explicitly, and the load log and staged digest are checked. When the SFT index file is missing, the DAPO script silently falls back to the base model |
 
 **D6. Run structure and resume.**
@@ -135,41 +146,64 @@ Notes on statistics:
 
 ## 5. P0 deliverables
 
-| # | Deliverable | Why | Done when |
-|---|---|---|---|
-| P0.1 | **Launch path** for 2 x `2x2x4` on the shared TPU 7x GKE cluster (`bodaborg-tpu7x-nap`: Kueue + JobSet, node auto-provisioning) | The in-repo TPU 7x manifests ([`ray-tpu-v7x16-2slice.yaml`](../gke/ray-tpu-v7x16-2slice.yaml)) are KubeRay `RayCluster`s for a cluster with the KubeRay operator. The shared cluster runs Kueue-managed JobSets, like [`ray-jobset-v5p-nap.yaml`](../gke/ray-jobset-v5p-nap.yaml) | One of two options exists: a ReTool profile in our tpu7x launch tooling (render, submit, watch, collect), or a TPU 7x port of `ray-jobset-v5p-nap.yaml`. See the requirements below the table |
-| P0.2 | **Image** | Needs torch_tpu, torchtitan, vllm-torchtpu, tpu-sync-torch, TransferQueue, fastapi and uvicorn at versions that match the code SHA | #108's image (`verl-tpu:v20261001-tsync990787257`) or a rebuild from [`Dockerfile.tpu`](../gke/Dockerfile.tpu) pulls on the cluster; package versions recorded, including whether TransferQueue supports checkpoints (version 0.1.9 or later with `save_checkpoint` / `load_checkpoint`) |
-| P0.3 | **Inputs** (D8) | Pods should not depend on HF Hub access. `stage_model_local.py` decides "already staged" by file names and sizes only | Model and datasets staged under the input prefix in the directory layout the scripts expect (`dataset/<org>/<name>`, `assets/hf/Qwen3-30B-A3B`, `dataset/ReTool-SFT/data/train-00000-of-00001.parquet`); sha256 recorded. After staging, shard hashes are verified on every TPU host |
-| P0.4 | **Output persistence** | Pods disappear minutes after completion | `SAVE_PATH`, `CKPTS_DIR` and `TENSORBOARD_DIR` point to the output prefix. The driver log and an **allowlisted, redacted** dump of each worker's effective environment (`LIBTPU_INIT_ARGS`, `XLA_FLAGS`, `TPU_ACCELERATOR_TYPE`, ...) are mirrored to GCS during the run. No tokens or credentials are written |
-| P0.5 | **Host ordering** | Trainer ranks must follow the slice worker index. In our Qwen3-4B port, IP-string order caused a SparseCore halt in the first FSDP collective | Trainer rank-to-host order is logged in P1a and matches the worker index. If it doesn't, the host-order fix is applied |
-| P0.6 | **Numerics flag record** (R1) | The flag must reach both sides on every run | The P0.4 dump covers trainer and rollout workers, and the extractor checks it |
-| P0.7 | **Resumable RL config** (P4) | #108 saves `hf_model` only, so a run cannot resume. In async modes the trainer persists in-flight prompts only through a TransferQueue that supports checkpoints | `actor_rollout_ref.actor.checkpoint.save_contents=['model','optimizer','extra','hf_model']`, `trainer.resume_mode=auto`, DCP to the output prefix. TransferQueue checkpoint support is confirmed; without it, in-flight prompts are not persisted and that is recorded. Old step folders are pruned by us, because TorchTitan's `keep_latest_k` does not prune across `global_step_N` folders in the PPO trainer layout. Validated by P4a (R13) |
-| P0.8 | **Metrics extraction** | Section 3 checks | Per-step training metrics from TensorBoard and a per-question eval table from the P0.10 dumps; prints R1-R13 |
-| P0.9 | **Effective clipping** (D7) | The script value and the effective value can differ | TorchTitan's resolved `training.max_norm` is logged at engine init (small logging commit if it isn't already) |
-| P0.10 | **Trajectory and eval dumps** | R10, R11, per-question statistics | `trainer.validation_data_dir` saves all samples per question. `trainer.rollout_data_dir` saves training trajectories, sampled in long runs to bound storage. Both write to the output prefix |
+P0 has two kinds of items, so that later validations do not block the start:
+
+- **Preparation** items must be ready before P1a.
+- **Validation** items are only measurable on hardware. P0.5 is validated in P1a. P0.7 is validated in P4a and must
+  pass before P4b.
+
+| # | Deliverable | Needed by | Why | Done when |
+|---|---|---|---|---|
+| P0.1 | **Launch path** for 2 x `2x2x4` on the shared TPU 7x GKE cluster (`bodaborg-tpu7x-nap`: Kueue + JobSet, node auto-provisioning) | before P1a | The in-repo TPU 7x manifests ([`ray-tpu-v7x16-2slice.yaml`](../gke/ray-tpu-v7x16-2slice.yaml)) are KubeRay `RayCluster`s for a cluster with the KubeRay operator. The shared cluster runs Kueue-managed JobSets, like [`ray-jobset-v5p-nap.yaml`](../gke/ray-jobset-v5p-nap.yaml) | A TPU 7x JobSet launcher renders and passes a server-side dry run; requirements below the table |
+| P0.2 | **Image** | before P1a | Needs torch_tpu, torchtitan, vllm-torchtpu, tpu-sync-torch, TransferQueue, fastapi and uvicorn at versions that match the code SHA | #108's image (`verl-tpu:v20261001-tsync990787257`) or a rebuild from [`Dockerfile.tpu`](../gke/Dockerfile.tpu) is pullable by the cluster's nodes and pinned by digest; package versions recorded, including whether TransferQueue supports checkpoints (version 0.1.9 or later with `save_checkpoint` / `load_checkpoint`) |
+| P0.3 | **Inputs** (D8) | before P1a | Pods should not depend on HF Hub access. `stage_model_local.py` decides "already staged" by file names and sizes only | Model and datasets staged under the input prefix in the directory layout the scripts expect (`dataset/<org>/<name>`, `assets/hf/Qwen3-30B-A3B`, `dataset/ReTool-SFT/data/train-00000-of-00001.parquet`), with hashes recorded. Each run then verifies shard hashes on every TPU host after staging (part of R5b) |
+| P0.4 | **Output persistence** | before P1a | Pods disappear minutes after completion | `SAVE_PATH`, `CKPTS_DIR` and `TENSORBOARD_DIR` point to the output prefix. The driver log and an **allowlisted, redacted** dump of each worker's effective environment (`LIBTPU_INIT_ARGS`, `XLA_FLAGS`, `TPU_ACCELERATOR_TYPE`, ...) are mirrored to GCS during the run. No tokens or credentials are written |
+| P0.5 | **Host ordering** | validated in P1a (R2) | verl orders a slice's hosts by IP string; torch_tpu ranks them by physical position. In our Qwen3-4B port, IP order caused a SparseCore halt in the first FSDP collective | Before P1a: the launcher computes each TPU host's topological rank before Ray starts and exposes it as a Ray node label, and verl orders hosts by that label when every host carries it. In P1a: the logged trainer rank-to-host order matches the topological order |
+| P0.6 | **Numerics flag record** (R1) | before P1a | The flag must reach every role on every run | The P0.4 dump covers every TPU worker, and the extractor checks it per role |
+| P0.7 | **Resumable RL config** (P4) | validated in P4a (R13); needed before P4b | #108 saves `hf_model` only, so a run cannot resume. In async modes the trainer persists in-flight prompts only through a TransferQueue that supports checkpoints | `actor_rollout_ref.actor.checkpoint.save_contents=['model','optimizer','extra','hf_model']`, `trainer.resume_mode=auto`, DCP to the output prefix. Either the TransferQueue state is saved, restored and verified, or checkpoints are taken at a verified quiescent boundary (R13). Old step folders are pruned by us, because TorchTitan's `keep_latest_k` does not prune across `global_step_N` folders in the PPO trainer layout |
+| P0.8 | **Metrics extraction** | before P1a | Section 3 checks | Per-step training metrics from TensorBoard; a per-question eval table from the validation dump, grouped by session ID; prints R1-R13 |
+| P0.9 | **Effective clipping** (D7) | before P1a | The script value and the effective value can differ | TorchTitan's resolved `training.max_norm` is logged at engine init |
+| P0.10 | **Trajectory and eval dumps** | before P1a | R10, R11, per-question statistics | Three dumps on the output prefix. See the list below the table |
 
 P0.1 requirements:
 
 - Server-side dry run passes.
+- One CPU Ray head plus two `2x2x4` slices (trainer `tpu-group-0`, rollout `tpu-group-1`).
 - TPU pods select `gke-tpu-topology: 2x2x4` and the cluster's `2x2x4` placement policy.
+- Ray workers start with explicit resources `{"TPU": 8, "tpu-group-<n>": 1}` (8 logical devices per host). The pod's
+  `TPU_ACCELERATOR_TYPE` is a launcher parameter: the KubeRay manifest uses `tpu7x-32` to avoid a placement deadlock,
+  while the JobSet manifests of our Qwen3-4B port used `tpu7x`. P1a confirms which one works with this code.
+- Network: the head is reachable from every worker, and each worker strips the JobSet-injected multi-slice
+  (`MEGASCALE_*`) variables so that each slice forms its own mesh.
+- A memory-backed `/dev/shm` of at least 80 GiB is mounted on TPU pods; the GCS bucket is mounted with GCS FUSE.
 - JobSet names are at most 30 characters.
-- A memory-backed `/dev/shm` of at least 80 GiB is mounted on TPU pods.
-- Pod env sets `TPU_ACCELERATOR_TYPE=tpu7x-32` while the job sets `tpu7x` for verl, as in
-  `ray-tpu-v7x16-2slice.yaml`.
 - Queue admission does not prove that both slices were provisioned. Placement is checked from the live Ray nodes.
+
+P0.10 dumps:
+
+- `trainer.validation_data_dir`: every validation sample. It is regrouped by question and session ID, never counted by
+  rows.
+- `trainer.rollout_data_dir`: decoded training trajectories, sampled in long runs to bound storage.
+- **Rollout audit dump** (new instrumentation, for R11), for a deterministic sample of whole sessions per step:
+  - raw prompt and response token IDs with the response / loss mask;
+  - assistant and tool segments, decoded with special tokens;
+  - reward inputs and outputs, and `num_turns`;
+  - trajectory and session IDs.
+
+  Enabled with `+trainer.rollout_audit_dir=... +trainer.rollout_audit_sessions=N`.
 
 ## 6. Phases
 
 | Phase | What | Config (on top of section 11) | Exit criteria | Wall time after admission (estimate) |
 |---|---|---|---|---|
-| **P0** | Section 5 | - | P0.1-P0.10 done | 1-2 days |
-| **P1a** | Platform smoke with the in-repo TPU 7x MoE recipe. It separates TPU / Ray / MoE platform problems from problems in ReTool's multi-turn tool path | [`../grpo/run_qwen3_30b_a3b_torchtitan.sh`](../grpo/run_qwen3_30b_a3b_torchtitan.sh), 3 steps, 2 x `2x2x4` | R1, R2 | ~45 min |
-| **P1b** | ReTool SFT smoke | `TOTAL_TRAINING_STEPS=3 SAVE_FREQ=3 TEST_FREQ=3`, one `2x2x4` slice, its own `SAVE_PATH` | R1, R5 (3-step export); R3 recorded | ~45 min |
-| **P1c** | ReTool RL smoke from the P1b export (tests the SFT -> RL hand-off) | `TOTAL_TRAINING_STEPS=2 TRAIN_BATCH_SIZE=8 PPO_MINI_BATCH_SIZE=8 N_RESP_PER_PROMPT=4 VAL_BEFORE_TRAIN=False`, dumps on | R1, R2, R11, R12. Sandbox exercised **from the pod hosting the ExecutionWorker**: arithmetic, Python error and stderr, timeout and process cleanup, concurrent requests | ~60 min |
-| **P2** | Stage 1 SFT, full | 372 steps, script defaults | R5 gate; R4 and R9 recorded | ~1.5-2.5 h (v6e: 1.9 h of steps) |
-| **P3** | Stage 2 RL to step 25, **independent pilot** (D6) | script defaults from the P2 export (explicit `MODEL_SRC_PATH`), `TOTAL_TRAINING_STEPS=25 TEST_FREQ=25`, dumps on | R10, R11, R12 gates; R6-R9 recorded; `actor/lr` constant at 1.4e-6 | ~1.5-2.5 h |
+| **P0** | Section 5, preparation items | - | Preparation items ready: the launcher renders and passes a server-side dry run, the image is pullable and matches the code SHA, inputs are staged with hashes, output paths and the env dump are ready, and the instrumentation (P0.9, P0.10) is merged. P0.5 and P0.7 are validated later (P1a, P4a) | 1-2 days |
+| **P1a** | Platform smoke with the in-repo TPU 7x MoE recipe. It separates TPU / Ray / MoE platform problems from problems in ReTool's multi-turn tool path | [`../grpo/run_qwen3_30b_a3b_torchtitan.sh`](../grpo/run_qwen3_30b_a3b_torchtitan.sh), 3 steps, 2 x `2x2x4` | R1 (trainer and rollout), R2: actual placement, host ordering (P0.5), trainer and rollout devices, Raiden weight sync | ~45 min |
+| **P1b** | ReTool SFT smoke | `TOTAL_TRAINING_STEPS=3 SAVE_FREQ=3 TEST_FREQ=3`, one `2x2x4` slice, its own `SAVE_PATH` | R1 (trainer), R5a (3-step export); R3 recorded | ~45 min |
+| **P1c** | ReTool RL smoke from the P1b export (tests the SFT -> RL hand-off) | `TOTAL_TRAINING_STEPS=2 TRAIN_BATCH_SIZE=8 PPO_MINI_BATCH_SIZE=8 N_RESP_PER_PROMPT=4 VAL_BEFORE_TRAIN=False`, dumps on | R1 (trainer and rollout), R2, R5b, R11, R12. Sandbox exercised **from the pod hosting the ExecutionWorker**: arithmetic, Python error and stderr, timeout and process cleanup, concurrent requests | ~60 min |
+| **P2** | Stage 1 SFT, full | 372 steps, script defaults | R1 (trainer), R5a; R4 and R9 recorded | ~1.5-2.5 h (v6e: 1.9 h of steps) |
+| **P3** | Stage 2 RL to step 25, **independent pilot** (D6) | script defaults from the P2 export (explicit `MODEL_SRC_PATH`), `TOTAL_TRAINING_STEPS=25 TEST_FREQ=25`, dumps on | R1 (trainer and rollout), R5b, R10, R11, R12 gates; R6-R9 recorded; `actor/lr` constant at 1.4e-6 | ~1.5-2.5 h |
 | **P4a** | Resume control on a small diagnostic workload | P0.7 config from the same SFT checkpoint. Run A goes uninterrupted to step 2k. Run B saves and stops at step k, then resumes to step 2k. Async scheduling means trajectories can differ, so compare the restored state and the first post-resume update on the same batch | R13 | ~2 x 45 min |
-| **P4b** | Resumable RL, new run from the SFT checkpoint | P0.7 config, segments chained by resume (e.g. to step 50, then 100), then optionally 400 steps | per-segment R1 and R12; curve continuous across boundaries; staleness within config | several windows |
+| **P4b** | Resumable RL, new run from the SFT checkpoint. Starts only after P4a passes R13; with R13 BLOCKED, segments are reported as separate runs, not one curve | P0.7 config, segments chained by resume (e.g. to step 50, then 100), then optionally 400 steps | per-segment R1 and R12; curve continuous across boundaries; staleness within config | several windows |
 | **P5** | Optional | 16K / 16-turn / n=16 schedule; Qwen3-32B dense; tuning (CP=1, `DEFER_AND_FUSE`, rollout memory utilization, multi-replica rollout); ablations (`PROMOTE_F32` off, `clip_grad` wired into TorchTitan, `enable_thinking=False` in SFT) | as agreed | as needed |
 
 The wall times are estimates derived from v6e numbers. We replace them with P1 / P2 measurements.
@@ -204,7 +238,8 @@ Quotas, limits and reservations change daily. Re-check them before every submiss
 
 These block exact inputs or tighter thresholds:
 
-1. The exact SFT parquet. The README cites a ReTool-SFT dataset that is not public on the HF Hub.
+1. Confirmation that the reference runs used the SFT parquet at the recipe's default data root, which we staged (D8).
+   The README cites a ReTool-SFT dataset that is not public on the HF Hub.
 2. Full v6e logs (TensorBoard) and the resolved configs for SFT and both RL runs.
 3. Per-question evaluation outputs (all samples) and the actual evaluation config for steps 0 and 25.
 4. v6e reference values for `actor/grad_norm`, `actor/ppo_kl` and `actor/rollout_corr/*` (R7).
@@ -223,7 +258,7 @@ These block exact inputs or tighter thresholds:
 | Stale or partial model copy accepted by the staging cache (names and sizes only) | hash check on every TPU host (P0.3) |
 | RL silently starts from the base model | explicit `MODEL_SRC_PATH`, load log and staged digest checked (D9) |
 | Wall-clock limits, reclaims, preemption | reservation windows for P2-P4b; resumable RL (P0.7) |
-| A resume loses state (optimizer, data cursor, in-flight prompts) or changes semantics | P3 is an independent pilot; P4a control experiment (R13) before P4b; TransferQueue checkpoint support confirmed (P0.2, P0.7) |
+| A resume loses, duplicates or changes in-flight data, or loses other state (optimizer, data cursor) | P3 is an independent pilot. P4a control experiment (R13) before P4b. R13 passes only with a verified TransferQueue save / restore or a verified quiescent boundary; otherwise it is BLOCKED and segments are reported separately |
 | DCP checkpoint size (~370 GB with fp32 optimizer state at 30.5B) and retention | write to the output prefix; prune old step folders ourselves (P0.7) |
 | Image not pullable, or version skew with the code SHA | P0.2; record versions; rebuild from `Dockerfile.tpu` |
 | Our SFT data differs from the v6e run | D8 regeneration plus checksum; R3 and R4 compared; diff against the author's parquet once received |
@@ -262,7 +297,8 @@ CKPTS_DIR="${OUT}/checkpoint/qwen3-30b-a3b-retool-dapo-tpu7x-p3" \
 TOTAL_TRAINING_STEPS=25 TEST_FREQ=25 \
   bash examples/tpu/retool/run_qwen3_30b_a3b_dapo_torchtitan.sh \
     trainer.validation_data_dir="${OUT}/dumps/p3/validation" \
-    trainer.rollout_data_dir="${OUT}/dumps/p3/rollout"
+    trainer.rollout_data_dir="${OUT}/dumps/p3/rollout" \
+    +trainer.rollout_audit_dir="${OUT}/dumps/p3/rollout_audit" +trainer.rollout_audit_sessions=4
 
 # P4a / P4b: resumable RL, a new run from the same SFT checkpoint. Later overrides win, so these replace the
 # script's save_contents=['hf_model'] and resume_mode=disable. Keep CKPTS_DIR fixed across the segments of one run
@@ -280,6 +316,21 @@ TOTAL_TRAINING_STEPS="${SEGMENT_END_STEP}" \
 ```
 
 ## Changelog
+
+**rev 3 (2026-10-29)**, from the review of rev 2:
+
+- **P0 gates (section 5, P0 row).** P0 is split into preparation items, needed before P1a, and validation items. Host
+  ordering (P0.5) is validated in P1a. Resume (P0.7) is validated in P4a and gates P4b. P1a no longer depends on P4a.
+- **R11 evidence (P0.10).** New rollout audit instrumentation with raw token IDs, response / loss mask, segments,
+  reward I/O, `num_turns` and trajectory IDs. The standard JSONL dumps are not sufficient on their own. R10 counts
+  sessions by ID, not JSONL rows.
+- **R13.** Passes only with a verified TransferQueue save / restore, or a verified quiescent checkpoint boundary plus
+  the A/B control. Otherwise it is BLOCKED / FAIL, and multi-window runs are not reported as one continuous curve.
+- **SFT-only gates.** R1 checks the roles that exist in the run. R5 is split into R5a (SFT export integrity: P1b, P2)
+  and R5b (RL-side staging, hash check, multi-host vLLM load: P1c, P3).
+- **Launcher requirements (P0.1).** Explicit Ray resources, the pod-level `TPU_ACCELERATOR_TYPE` as a parameter to
+  confirm in P1a, `MEGASCALE_*` stripping, and a GCS FUSE mount.
+- **Inputs (D8).** Staged from the recipe's default data root.
 
 **rev 2 (2026-10-29)**, from the review of rev 1 and the closed alternative plan #1:
 
@@ -299,7 +350,7 @@ TOTAL_TRAINING_STEPS="${SEGMENT_END_STEP}" \
 - **Checks adopted from #1.**
   - tool trajectory audit (R11);
   - weight-sync policy-version check (R12);
-  - stricter HF export verification (R5);
+  - stricter HF export verification (R5, now R5a);
   - sandbox tests from the ExecutionWorker pod (P1c);
   - shard-hash check after staging (P0.3);
   - explicit `MODEL_SRC_PATH` (D9);

@@ -302,6 +302,11 @@ class TorchTitanEngine(BaseEngine):
             # verl uses its own loss function and ignores this one.
             loss=CrossEntropyLoss.Config(),
         )
+        logger.warning(
+            "TorchTitan grad clipping uses training.max_norm=%s; optim.clip_grad=%s is not passed to TorchTitan",
+            self.config.training.max_norm,
+            self.optimizer_config.clip_grad,
+        )
         if device_name == "tpu" and self.engine_config.use_torch_compile:
             configure_torch_compile_for_tpu()
         self.trainer = Trainer(self.config)

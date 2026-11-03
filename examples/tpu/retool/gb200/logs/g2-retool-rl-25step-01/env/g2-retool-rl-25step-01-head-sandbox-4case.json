@@ -1,0 +1,57 @@
+{
+  "status": "PASS",
+  "endpoint": "http://127.0.0.1:18080/run_code",
+  "case1_arithmetic": {
+    "status": "Success",
+    "message": "",
+    "compile_result": null,
+    "run_result": {
+      "status": "Finished",
+      "execution_time": 0.011641532997600734,
+      "return_code": 0,
+      "stdout": "338350\n",
+      "stderr": ""
+    },
+    "elapsed_s": 0.0329
+  },
+  "case2_exception_stderr": {
+    "status": "Failed",
+    "message": "",
+    "compile_result": null,
+    "run_result": {
+      "status": "Finished",
+      "execution_time": 0.011330366018228233,
+      "return_code": 1,
+      "stdout": "",
+      "stderr": "Traceback (most recent call last):\n  File \"/tmp/sandbox_exec_u4auoxxg/solution.py\", line 1, in <module>\n    print(1 / 0)\n          ~~^~~\nZeroDivisionError: division by zero\n"
+    },
+    "elapsed_s": 0.0129
+  },
+  "case3_timeout_cleanup": {
+    "status": "Failed",
+    "message": "TimeLimitExceeded",
+    "compile_result": null,
+    "run_result": {
+      "status": "TimeLimitExceeded",
+      "execution_time": 1.502740369993262,
+      "return_code": -9,
+      "stdout": "",
+      "stderr": "TimeoutError: execution exceeded 1.5s\n"
+    },
+    "elapsed_s": 1.5051
+  },
+  "case4_concurrent_8": {
+    "all_succeeded": true,
+    "outputs": [
+      "1",
+      "4",
+      "9",
+      "16",
+      "25",
+      "36",
+      "49",
+      "64"
+    ],
+    "max_elapsed_s": 0.0214
+  }
+}

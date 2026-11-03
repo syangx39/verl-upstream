@@ -14,6 +14,7 @@
 # limitations under the License.
 """Ray-managed SandboxFusion code execution tool with auto-started loopback server on port 18080."""
 
+import json
 import logging
 import os
 import subprocess
@@ -89,9 +90,19 @@ class ExecutionWorker:
 
     @staticmethod
     def _is_sandbox_healthy(port: int) -> bool:
+        payload = json.dumps({"code": "print(6*7)", "run_timeout": 5}).encode("utf-8")
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/run_code",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
         try:
-            with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=1.0) as resp:
-                return resp.status == 200
+            with urllib.request.urlopen(req, timeout=3.0) as resp:
+                if resp.status != 200:
+                    return False
+                body = json.loads(resp.read().decode("utf-8"))
+                return body.get("status") == "Success"
         except (urllib.error.URLError, OSError, ValueError):
             return False
 

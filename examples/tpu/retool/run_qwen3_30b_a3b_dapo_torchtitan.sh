@@ -157,6 +157,18 @@ if [[ -z "${RELEASE_SYNC_BUFFERS:-}" ]]; then
     fi
 fi
 VERIFY_PARITY="${VERIFY_PARITY:-off}"
+RAIDEN_PARITY_EXPECTED_CHECKED_PER_RANK="${RAIDEN_PARITY_EXPECTED_CHECKED_PER_RANK:-435}"
+if [[ -z "${RAIDEN_PARITY_DUMP_DIR:-}" ]]; then
+    if [[ -n "${VERL_NAP_RUN_DIR:-}" ]]; then
+        RAIDEN_PARITY_DUMP_DIR="${VERL_NAP_RUN_DIR}/env"
+    elif [[ -n "${RUN_DIR:-}" ]]; then
+        RAIDEN_PARITY_DUMP_DIR="${RUN_DIR}/env"
+    else
+        RAIDEN_PARITY_DUMP_DIR="${default_local_dir}/parity"
+    fi
+fi
+export RAIDEN_PARITY_EXPECTED_CHECKED_PER_RANK
+export RAIDEN_PARITY_DUMP_DIR
 ROLLOUT_GPU_MEMORY_UTILIZATION="${ROLLOUT_GPU_MEMORY_UTILIZATION:-0.62}"
 ROLLOUT_MAX_NUM_SEQS="${ROLLOUT_MAX_NUM_SEQS:-256}"
 ROLLOUT_MAX_NUM_BATCHED_TOKENS="${ROLLOUT_MAX_NUM_BATCHED_TOKENS:-4096}"
@@ -182,6 +194,8 @@ LOGGER_LIST="${LOGGER_LIST:-['console','tensorboard']}"
 python3 -m verl.trainer.main_ppo \
     "+ray_kwargs.ray_init.runtime_env.env_vars.PYTHONPATH=${PYTHONPATH}" \
     "+ray_kwargs.ray_init.runtime_env.env_vars.SANDBOX_FUSION_PORT='${SANDBOX_FUSION_PORT}'" \
+    "+ray_kwargs.ray_init.runtime_env.env_vars.RAIDEN_PARITY_DUMP_DIR='${RAIDEN_PARITY_DUMP_DIR}'" \
+    "+ray_kwargs.ray_init.runtime_env.env_vars.RAIDEN_PARITY_EXPECTED_CHECKED_PER_RANK='${RAIDEN_PARITY_EXPECTED_CHECKED_PER_RANK}'" \
     trainer.use_v1=True \
     trainer.v1.trainer_mode=separate_async \
     trainer.v1.separate_async.num_warmup_batches="${NUM_WARMUP_BATCHES}" \
@@ -267,6 +281,8 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.checkpoint_engine.backend="${CHECKPOINT_BACKEND}" \
     +actor_rollout_ref.rollout.checkpoint_engine.engine_kwargs.raiden.release_buffers_after_sync="${RELEASE_SYNC_BUFFERS}" \
     +actor_rollout_ref.rollout.checkpoint_engine.engine_kwargs.raiden.verify_parity="${VERIFY_PARITY}" \
+    +actor_rollout_ref.rollout.checkpoint_engine.engine_kwargs.raiden.expected_checked_per_rank="${RAIDEN_PARITY_EXPECTED_CHECKED_PER_RANK}" \
+    +actor_rollout_ref.rollout.checkpoint_engine.engine_kwargs.raiden.parity_dump_dir="${RAIDEN_PARITY_DUMP_DIR}" \
     actor_rollout_ref.rollout.multi_turn.enable=True \
     actor_rollout_ref.rollout.multi_turn.max_user_turns="${max_turns}" \
     actor_rollout_ref.rollout.multi_turn.max_assistant_turns="${max_turns}" \

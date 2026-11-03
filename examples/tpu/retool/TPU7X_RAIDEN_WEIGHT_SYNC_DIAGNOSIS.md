@@ -48,16 +48,16 @@
 | **[`verl-project/verl-hardware-plugin#89`](https://github.com/verl-project/verl-hardware-plugin/pull/89)** (`cf1cb234`) | `verl-project/verl-hardware-plugin` (Merged) | **3-D MoE 专家分片直接导出与安装**（*`[TPU] perf: direct tpu-sync install of Qwen3 MoE experts (EP or TP-sliced) with local expert-shard export`*）：将 MoE 专家按 3-D `[E, I, H]` / `[E, H, I]` 导出并在 rollout 端走 `qwen3_moe direct` 安装。 | **位于独立的 `verl-hardware-plugin` 仓库**（修改路径为 `verl_hardware_plugin/accelerators/tpu/...`），依赖该仓库的插件架构实现，**不能直接 cherry-pick 到当前 `verl-upstream` 分支**；若需引入需单独评估跨仓库移植及依赖。 |
 | **[`jialei777/verl-upstream#116`](https://github.com/jialei777/verl-upstream/pull/116)** (`32b5133e`) | `jialei777/verl-upstream` (Open, 标有 **`DO NOT MERGE`**) | **2-D Folded Expert Stack 的临时 Workaround**（*`DO NOT MERGE: Temporary workaaround Raiden weight sync for MoE models on torch-tpu >= 2026-09-24`*）：当使用 2-D 折叠专家栈（`[E_local * F, D]`）且 `torch_tpu`（`>= 2026-09-24` / `0.1.2.dev20261006`）中 TPU$\rightarrow$TPU `clone()` 共享源 3-D base storage buffer 时，通过 `adapt_for_raw_transfer` 探测并走 host round-trip 重新分配 2-D 存储。 | 属于针对 **2-D 折叠路径**的临时规避方案，且与 `#89`（3-D 原生导出）分属不同路径。**不应预先盲目合入**：应先保持当前 P1c 代码仅切换运行时镜像测试，只有当新版镜像确实报 `UnpackTorchTensor: ... leading (block) dimension ... does not match its base storage buffer` 时，再评估移植 `#116` 的必要部分。 |
 
-### 2.2 容器镜像内 `torch-tpu` 与 `tpu-sync-torch` 版本核对
+### 2.2 容器镜像内 `torch-tpu` 与 `tpu-sync-torch` 版本核对（OCI Config 实测对账）
 
-此前草稿中关于“新版镜像包含 `torch-tpu >= 0.2.0`”的表述与实际镜像审计存在冲突，经核对各处记录如下：
+此前草稿中关于“新版镜像包含 `torch-tpu >= 0.2.0`”的表述与实际镜像审计存在冲突；同时 PR #7 `Stage P0.2` 表格曾将两个镜像的 `torch-tpu` 均记为 `0.1.1.dev20260912075415`。经直接提取两个镜像的 OCI Config 构建历史（`ARG TORCH_TPU_VERSION` / `ARG TPU_SYNC_VERSION` 及构建时 `importlib.metadata` 校验层），真实版本对照如下：
 
-| 信息来源 | 记录的 `torch-tpu` 版本 | 记录的 `tpu-sync-torch` 版本 | 说明 |
-| :--- | :--- | :--- | :--- |
-| **PR #7 镜像环境审计（`Stage P0.2`）** | `0.1.1.dev20260912075415` | `0.1.2` / `0.0.1.dev20261001220631` | 当前 P1a / P1c 运行所使用的旧版镜像环境 |
-| **`jialei777/verl-upstream#116` 代码注释 (`raiden_checkpoint_engine.py:206`)** | `0.1.2.dev20261006`（含 `torch_tpu 449c975e1`, 2026-09-24） | `0.0.1.dev20261006025601`（`verl-tpu:v20261006-tsync1006`） | 均为 `0.1.x.dev*` 开发构建，**并非 `torch-tpu >= 0.2.0`** |
+| 镜像标签与不可变 Digest | `torch` 版本 | `torch-tpu` 真实版本 | `tpu-sync-torch` 真实版本 | 说明 |
+| :--- | :--- | :--- | :--- | :--- |
+| **`verl-tpu:v20261001-tsync990787257`** (`@sha256:dcece4bc3813359450f48d4523e5bd78e3139dc441a88b5c2e4d638caa054cbe`) | `2.13.0+cpu` | `0.1.1.dev20260912075415` | `0.0.1.dev20261001220631` | `p1a-moe-smoke-12`、`p1c-retool-rl-03` 与 `p1c-retool-rl-05` 实际运行所使用的旧版镜像 |
+| **`verl-tpu:v20261006-tsync1006`** (`@sha256:d92a2b3d6667584d67ea51874a721228a96c799263ab40f4aee168680476f64e`) | `2.13.0+cpu` | **`0.1.2.dev20261006000518`** | **`0.0.1.dev20261006025601`** | 仓库 `tests/special_tpu/gke/tpu-ci-image.env` 固定的新版镜像，**同时升级了 `torch-tpu` 与 `tpu-sync-torch`**（均为 `0.1.x.dev*` 开发构建，并非 `>= 0.2.0`） |
 
-> **执行要求**：在启动受控 P1c 验证前，必须先固定目标镜像的不可变 `@sha256:...` digest，并在容器内通过 Python 实测打印 `torch_tpu.__version__` / `torch_tpu.__file__` 与 `tpu_sync` 版本，以实测值为准记录进报告。
+> **关键发现**：`verl-tpu:v20261006-tsync1006`（`@sha256:d92a2b3d...`）同时包含 `torch-tpu==0.1.2.dev20261006000518` 与 `tpu-sync-torch==0.0.1.dev20261006025601`。此外，在当前代码（`c2e17624`）中，Trainer 端在 `export_local_shards` 中对 2-D 折叠专家栈执行了 `local.reshape(local_shape).clone()`，Sampler 端在 `tpu_utils.py` 中直接按 2-D `local_shape`（`[3072, 2048]` / `[24576, 768]`）分配独立的 `torch.empty` staging 张量（并未在 3-D base storage 上创建 2-D 视图），因此直接以 `c2e17624` 搭配 `@sha256:d92a2b3d...` 运行阶段一受控实验即可同时检验新版 `tpu-sync-torch` 与 `torch-tpu`。
 
 ---
 
@@ -87,38 +87,46 @@
 
 ---
 
-## 4. 待验证的工作假设（Working Hypotheses）
+## 4. 待验证的工作假设与源码级佐证（Working Hypotheses & Code-Level Evidence）
 
-基于 `p1c-retool-rl-03`（Step 1 使用同步前预热轨迹时 `rollout_ppl=1.1322, ppl_ratio=0.9923, grad_norm=0.7330` 正常，Step 2–3 使用同步后权重时 `rollout_ppl=249.33` 乱码）与 `p1c-retool-rl-05`（Step 0 `10,414` 个张量 mismatch 且后续大量张量 `recv_absmean=0`），我们提出以下三个待验证假设，按优先级排序：
+基于 `p1c-retool-rl-03`（Step 1 使用同步前预热轨迹时 `rollout_ppl=1.1322, ppl_ratio=0.9923, grad_norm=0.7330` 正常，Step 2–3 使用同步后权重时 `rollout_ppl=249.33` 乱码）、`p1c-retool-rl-05`（Step 0 `10,414` 个张量 mismatch 且后续大量张量 `recv_absmean=0`）以及对 `p1a-moe-smoke-12` 和 `tpu_sync` C++ 源码的交叉核对，我们梳理出以下三个待受控运行最终确认的假设（按优先级排序）：
 
-1. **工作假设 H1（主假设：`tpu-sync-torch` P2P 传输提前返回或 Host Staging Buffer 未写满）**：
-   - **机制推测**：在 `p1c-retool-rl-05` 中，Trainer 与 Sampler 均按 `(-global_numel, name)` 顺序注册 `579` 个传输张量（前 `2` 个为词表嵌入 `lm_head/embed_tokens`，`idx=2..145` 为 48 层 × 3 个 2-D 折叠 MoE 专家栈，其中 `idx=71, 72, 73` 恰好对应 `layers.3` 的 `down_proj, gate_proj, up_proj`；`idx=146..578` 为 433 个较小的稠密张量）。`rank 0` 上 `layers.3...w13_weight`（由 `idx=72` `gate_proj` 与 `idx=73` `up_proj` 拼接而成）出现 `recv_absmean ≈ 0.5 × ref_absmean`、且后续张量全零，高度吻合“按注册顺序传输到约 `idx=72/73`（~29.4 GiB）时传输提前结束，后续 Host Staging Buffer 保持初始全零”的特征。
-   - **如何验证**：
-     - 在 `install_raiden_weights()` 调用 `self._raiden_ws.h2d()` **之前**，直接检查 `self._raiden_cpu_staging`（或对应的 host buffer）中 `idx=72, 73, 74` 的非零比例/L1 范数，即可 100% 区分全零是发生在 **H2D 之前（H1）** 还是 **H2D 之中/之后（H2/H3）**；
-     - 同时在不改业务代码的前提下，将运行时镜像切换到包含新版 `tpu-sync-torch` 的镜像进行受控对比。
+1. **工作假设 H1（主假设：旧版 `tpu-sync-torch==0.0.1.dev20261001220631` 中 `PushWeightsReshardedLocal` 并发合并 D2H 竞态导致 Follower 线程推送未初始化的全零 Host Staging Buffer）**：
+   - **C++ 源码级机制佐证（`WeightSynchronizerBase::PushWeightsReshardedLocal`）**：
+     - 在 `Qwen3-30B-A3B`（Sampler `TP=32, EP=32`）下，不同参数具有不同的目标等价类（32 路 TP/EP 切分的专家与线性层、`num_kv_heads=4` 在 32 个 TP rank 上 8 路复制的 `k_proj/v_proj`、以及 32 路全复制的 Norm 与路由门控 `mlp.gate`）。因此 `BroadcastEngine` 会对同一个传输 `uuid` 向源端 Trainer Worker 并发发送多个 `StartTransferRequest` RPC。
+     - 在旧版 `tpu-sync-torch==0.0.1.dev20261001220631` 的 `WeightSynchronizerBase::PushWeightsReshardedLocal` 中，首个到达的 **Leader RPC 线程**在调用 `D2hLayer(l, uuid)` **之前**即把 `uuid` 插入 `completed_d2h_uuids_` 并释放锁；随后微秒级到达的 **Follower RPC 线程**检查 `completed_d2h_uuids_.insert(uuid).second` 得到 `already_completed = true`（日志分支 `Coalescing D2H copy (already completed for uuid ...)`），从而**完全跳过了 `d2h_layer_futures[l].Await()`**，直接将 Host Staging Buffer（`shard_info.host_ptr`）推送给远端 Sampler。
+     - 在 **Step 0**（`WeightSynchronizer` 首次创建、Host Staging Buffer 由 `memset(0)` 初始化为全零）时，Trainer 与 Sampler 均按 `(-global_numel, name)` 顺序注册 `579` 个传输张量（前 `2` 个为词表嵌入，`idx=2..145` 按字典序排列 `layers.0, 1, 10..19, 2, 20..29, 3, 30..39, 4, 40..47, 5..9` 的 3 个 MoE 专家栈，其中 `idx=71, 72, 73` 恰好对应第 25 层 `layers.3` 的 `down_proj, gate_proj, up_proj`；`idx=146..578` 为 433 个稠密与 Norm 张量）。当 Follower 线程在 `idx=72/73`（`layers.3.mlp.experts.routed_experts.w13_weight`）追上并超越 Leader 线程尚未完成的 `D2hLayer` + `DetileBuffer` 时，`layers.3...w13_weight` 出现半截非零、半截全零（`recv_absmean = 0.009274` vs `ref_absmean = 0.01824`），而排在其后的 `layers.30..39, 4, 40..47, 5..9` 及 `qkv_proj` 因 Leader 尚未完成 D2H，被 Follower 线程直接推送了初始全零的 Host Staging Buffer（`recv_absmean = 0`）。
+   - **来自 `p1a-moe-smoke-12` 的历史日志交叉印证**：
+     - 回查同样运行在旧镜像 `@sha256:dcece4bc...` 上但未开启 `VERIFY_PARITY` 的 `p1a-moe-smoke-12`（`p1a_12_driver.log`）可见：**Step 0 初始同步后生成的预热批次（供 `step:1` 和 `step:2` 使用）同样发生了权重损坏**（`training_ppl = 6443.22` / `5379.75`，`rollout_corr/kl = 3.14`，GSM8K `critic/score/mean = 0.0`，生成长度 100% 撞满 `1024`）；因所有回答得分为 `0`，`step:1` 梯度范数 `actor/grad_norm = 0.0`（Trainer 权重未变）。
+     - 而在 **`step:1` 结束触发的第二次 Raiden 权重同步（Step 1 Sync）** 中，由于复用了同一个 `self._trainer_raiden_ws`（`bind_weights`），且其持久化 Host Staging Buffer 已在 Step 0 结束前被 Leader 线程完整写入了初始权重，第二次同步后生成的 `step:3` 轨迹立即恢复完全正常（**`training_ppl = 1.0964`, `rollout_ppl = 1.0943`, `rollout_corr/kl = 0.0017`, `critic/score/mean = 0.7578`, GSM8K 验证集准确率 `58.59%`**）。这与“Step 0 首次同步时 Follower 线程读取了尚未完成 D2H 的全零 Host Staging Buffer”完全吻合。
+   - **新版 `tpu-sync-torch==0.0.1.dev20261006025601` 中的对应修复**：
+     - 在 `verl-tpu:v20261006-tsync1006`（`@sha256:d92a2b3d...`）包含的 `tpu-sync-torch==0.0.1.dev20261006025601` 中，`PushWeightsReshardedLocal` 新增了逐层 D2H 完成状态同步结构 `UuidD2hState`（Follower 线程在推送每个 layer group 前必须通过 `d2h_state->mu.Await(...)` 等待 Leader 线程将该层的 `d2h_state->layer_ready[target_layer]` 或 `all_ready` 置为 `true`）。
+   - **如何最终验证**：
+     - 保持代码 commit `c2e176240dcff0a25911b0576880e46624f7249b` 与全部超参不变，仅将镜像切换为 `verl-tpu:v20261006-tsync1006`（`@sha256:d92a2b3d6667584d67ea51874a721228a96c799263ab40f4aee168680476f64e`）并开启 `VERIFY_PARITY=all` 运行 **`p1c-retool-rl-06`**。
 2. **工作假设 H2（`_raiden_ws.h2d()` 主机到设备 DMA 拷贝异常）**：
-   - **机制推测**：Host Staging Buffer 已完整收到非零权重，但 `_raiden_ws.h2d()` 在批量拷贝 579 个张量（或特定对齐/大小的张量）到 TPU HBM 时在 `idx=73` 附近发生截断或清零。
-   - **如何验证**：同上，对比 `self._raiden_ws.h2d()` 执行前后的 CPU staging 张量与 TPU staging 张量 `self._raiden_staging[k]`。
+   - **机制推测**：Host Staging Buffer 已完整收到非零权重，但 `_raiden_ws.h2d()` 在批量拷贝 579 个张量到 TPU HBM 时在 `idx=73` 附近发生截断或清零。
+   - **如何验证**：若新版镜像仍复现 mismatch，对比 `self._raiden_ws.h2d()` 执行前后的 CPU Host Buffer 与 TPU staging 张量 `self._raiden_staging[k]`。
 3. **工作假设 H3（H2D 之后的 TPU 端张量视图拆包 / 转置异常）**：
    - **机制推测**：`self._raiden_staging[k]` 在 TPU HBM 中非零，但在 `_raiden_fused_expert_weights()` 或 `to_target_layout()` 执行 `view / cat / transpose / contiguous` 时因 XLA/PjRt 视图或延迟执行问题读到全零。
-   - **如何验证**：在 `check_exact` 失败时同时打印源 `self._raiden_staging[k].float().abs().mean()` 与转换后 `new13 / adapted` 的 `abs().mean()`。
+   - **如何验证**：若新版镜像仍复现 mismatch，在 `check_exact` 失败时同时打印源 `self._raiden_staging[k].float().abs().mean()` 与转换后 `new13 / adapted` 的 `abs().mean()`。
 
 ---
 
-## 5. 下一步分阶段受控验证计划（Staged Execution Plan）
+## 5. 下一步分阶段受控验证计划与当前执行状态（Staged Execution Plan & Live Status）
 
 遵循“**先固定代码只验证新版运行时镜像，按需再评估补丁，严格定义 Parity Gate**”的原则，分两步推进：
 
-### 阶段一：环境审计与受控 Runtime 镜像验证（不预先 Cherry-pick `#110` 或 `#116`）
+### 阶段一：环境审计与受控 Runtime 镜像验证（已启动 `p1c-retool-rl-06`，未 Cherry-pick `#110` 或 `#116`）
 
-1. **固定镜像 Digest 并审计真实包版本**：
-   - 选定待测新版 TPU 镜像并固定不可变 `@sha256:...` digest；
-   - 在 Pod 启动预检中实测记录：`torch_tpu` 版本与路径、`tpu_sync`（`tpu-sync-torch`）版本与路径、P1c 运行代码 Git SHA、Step-372 SFT checkpoint SHA（`59247a00...`）以及双 `2×2×4` Slice 拓扑（每侧 `16 physical chips / 32 TensorCore devices`，总计 `32 physical chips / 64 TensorCore devices`）。
-2. **保持当前 P1c 代码不变，仅切换镜像运行受控 P1c（开启 `VERIFY_PARITY=all`）**：
-   - 先不合入 `#110` 或 `#116`，直接检验新版镜像下的行为：
-     - **情形 A**：若新版镜像直接通过 Step-0 `exact` 校验与 Step 1–2 训练，则证实问题由旧镜像 runtime 引起，且无需合入 `#116` workaround；
-     - **情形 B**：若新版镜像在 Step-0 绑定 2-D 折叠专家栈时明确抛出 `UnpackTorchTensor: Tensor ... leading (block) dimension ... does not match its base storage buffer`，则进入**阶段二**，仅针对性评估移植 `#116` 的必要部分；
-     - **情形 C**：若仍复现 Step-0 部分全零 mismatch，则采集 H2D 前后的 staging buffer 诊断日志与全 32 ranks 的 `exact_result` 明细，精准区分 H1 / H2 / H3。
+1. **已固定镜像 Digest 与受控运行配置（`p1c-retool-rl-06`）**：
+   - **Run Name**: `p1c-retool-rl-06`（JobSet 已创建并进入队列等待调度，与 `p1c-retool-rl-05` 保持完全相同的代码 commit 与超参，**唯一变量为容器镜像**）：
+     - **代码 Git SHA**: `c2e176240dcff0a25911b0576880e46624f7249b`（未合入 `#110` 或 `#116`）；
+     - **容器镜像 Digest**: `us-west2-docker.pkg.dev/tpu-pytorch/raycluster/verl-tpu@sha256:d92a2b3d6667584d67ea51874a721228a96c799263ab40f4aee168680476f64e`（`verl-tpu:v20261006-tsync1006`，含 `torch-tpu==0.1.2.dev20261006000518` 与 `tpu-sync-torch==0.0.1.dev20261006025601`）；
+     - **拓扑与校验开关**: `2 × 2×2×4` Slice（Trainer `16 physical chips / 32 TensorCore devices`, `dp_shard=8, cp=4`；Rollout `16 physical chips / 32 TensorCore devices`, `TP=32, EP=32`），`VERIFY_PARITY=all`，`TOTAL_TRAINING_STEPS=3`，`NUM_WARMUP_BATCHES=1`，`TRAIN_BATCH_SIZE=8`，`PPO_MINI_BATCH_SIZE=8`，`N_RESP_PER_PROMPT=4`。
+2. **受控实验结果判定分支**：
+   - **情形 A**：若 `p1c-retool-rl-06` 直接通过 Step-0 `exact` 校验（32 个 Sampler ranks 上 `435 / 435` 项 `0 mismatched, 0 unresolved`）并正常完成 Step 1–3 训练，则证实问题确由旧镜像 `tpu-sync-torch==0.0.1.dev20261001220631` 的 `PushWeightsReshardedLocal` 并发 D2H 竞态引起，且当前 `c2e17624` 的 2-D 独立分配路径无需合入 `#116` workaround；
+   - **情形 B**：若新版镜像在 Step-0 绑定 2-D 折叠专家栈时明确抛出 `UnpackTorchTensor: Tensor ... leading (block) dimension ... does not match its base storage buffer`，则进入**阶段二**，仅针对性评估移植 `#116` 的必要部分；
+   - **情形 C**：若仍复现 Step-0 部分全零 mismatch，则采集 H2D 前后的 staging buffer 诊断日志与全 32 ranks 的 `exact_result` 明细，精准区分 H1 / H2 / H3。
 
 ### 阶段二：按需评估补丁移植与通过门槛（Gate Criteria）
 

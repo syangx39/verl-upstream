@@ -12,19 +12,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-# Copyright 2026 Google LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 """Unit tests for GB200 launcher UID-preconditioned cleanup, external sandbox wiring, and fail-closed privilege drop."""
 
 import asyncio
@@ -493,6 +480,33 @@ exit 0
                 self.assertNotEqual(res.returncode, 0)
                 self.assertIn(expected_err, res.stderr)
                 self.assertEqual(_MockKubeProxyHandler.deletes, [])
+
+
+class TestG0ManifestCompositeHashCheck(unittest.TestCase):
+    """Verify verify_g0_gb200.verify_checkpoint_manifest checks --expect-composite-sha256."""
+
+    def test_verify_checkpoint_manifest_expected_composite_sha256(self):
+        from examples.tpu.retool.gb200 import verify_g0_gb200
+
+        with tempfile.TemporaryDirectory() as td:
+            model_dir = Path(td)
+            for name in ("config.json", "tokenizer.json", "tokenizer_config.json", "model.safetensors.index.json"):
+                (model_dir / name).write_text("{}", encoding="utf-8")
+            for idx in range(1, 17):
+                (model_dir / f"model-{idx:05d}-of-00016.safetensors").write_bytes(f"shard-{idx}".encode())
+
+            rep = verify_g0_gb200.verify_checkpoint_manifest(model_dir)
+            actual = rep["composite_sha256"]
+            self.assertIsNone(rep["expected_composite_sha256"])
+            self.assertIsNone(rep["composite_sha256_match"])
+
+            rep_ok = verify_g0_gb200.verify_checkpoint_manifest(model_dir, expect_composite_sha256=actual)
+            self.assertEqual(rep_ok["expected_composite_sha256"], actual)
+            self.assertTrue(rep_ok["composite_sha256_match"])
+
+            rep_bad = verify_g0_gb200.verify_checkpoint_manifest(model_dir, expect_composite_sha256="0" * 64)
+            self.assertEqual(rep_bad["expected_composite_sha256"], "0" * 64)
+            self.assertFalse(rep_bad["composite_sha256_match"])
 
 
 if __name__ == "__main__":

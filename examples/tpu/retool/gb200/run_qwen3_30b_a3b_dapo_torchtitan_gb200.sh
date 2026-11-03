@@ -136,6 +136,7 @@ aime_2025="${AIME_2025:-${DATA_ROOT}/dataset/yentinglin/aime_2025}"
 MODEL_SRC_PATH="${MODEL_SRC_PATH:-/data/runs/p2-retool-sft-01/checkpoint/global_step_372/huggingface}"
 model_path="${MODEL_PATH:-/dev/shm/models/multiturn-sft-qwen3-30b-a3b-tpu7x}"
 STAGE_MODEL="${STAGE_MODEL:-1}"
+EXPECT_CHECKPOINT_SHA256="${EXPECT_CHECKPOINT_SHA256:-59247a00c13f2364a12aab5ab6b88b6d971d59ff643c57aad8ac4e55a71231b0}"
 
 if [[ "${RUN_G0_CHECK:-1}" == "1" ]]; then
     G0_REPORT_JSON="${G0_REPORT_JSON:-/tmp/g0_verify_report.json}"
@@ -143,10 +144,15 @@ if [[ "${RUN_G0_CHECK:-1}" == "1" ]]; then
     if [[ "${STAGE_MODEL}" == "1" ]]; then
         STAGE_ARGS=(--stage-from "${MODEL_SRC_PATH}")
     fi
+    G0_EXPECT_ARGS=()
+    if [[ -n "${EXPECT_CHECKPOINT_SHA256}" ]]; then
+        G0_EXPECT_ARGS=(--expect-composite-sha256 "${EXPECT_CHECKPOINT_SHA256}")
+    fi
     python3 "${SCRIPT_DIR}/verify_g0_gb200.py" \
         "${STAGE_ARGS[@]}" \
         --model-dir "${model_path}" \
         --ref-dir "${MODEL_SRC_PATH}" \
+        "${G0_EXPECT_ARGS[@]}" \
         --output-json "${G0_REPORT_JSON}"
 fi
 
@@ -244,12 +250,20 @@ LOGGER_LIST="${LOGGER_LIST:-['console','tensorboard']}"
 
 DUMP_ARGS=()
 if [[ -n "${RUN_DIR:-}" ]]; then
+    if [[ -z "${TENSORBOARD_DIR:-}" ]]; then
+        TENSORBOARD_DIR="${RUN_DIR}/tensorboard"
+    fi
     DUMP_ARGS+=(
         "trainer.rollout_data_dir=${RUN_DIR}/rollout"
         "trainer.validation_data_dir=${RUN_DIR}/validation"
         "+trainer.rollout_audit_dir=${RUN_DIR}/rollout_audit"
         "+trainer.rollout_audit_sessions=${ROLLOUT_AUDIT_SESSIONS:-8}"
     )
+fi
+if [[ -n "${TENSORBOARD_DIR:-}" ]]; then
+    export TENSORBOARD_DIR
+    mkdir -p "${TENSORBOARD_DIR}"
+    DUMP_ARGS+=("+ray_kwargs.ray_init.runtime_env.env_vars.TENSORBOARD_DIR='${TENSORBOARD_DIR}'")
 fi
 
 python3 -m verl.trainer.main_ppo \

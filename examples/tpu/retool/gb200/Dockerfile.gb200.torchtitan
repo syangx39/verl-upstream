@@ -9,17 +9,18 @@
 # Build on a native linux/arm64 builder from examples/tpu/retool/gb200/ and archive the full build log:
 #   (
 #     set -euo pipefail
+#     cd examples/tpu/retool/gb200
 #     docker buildx build --platform linux/arm64 --progress=plain \
 #       --build-arg VERL_REPO=https://github.com/syangx39/verl-upstream.git \
-#       --build-arg VERL_PIN=<GPU_CODE_SHA> \
+#       --build-arg VERL_PIN=a2cbde47ba729d0cba7e881da1692df20d8e05e4 \
 #       -f Dockerfile.gb200.torchtitan -t retool-gb200-torchtitan:latest --load . 2>&1 | tee build_arm64.log
 #   )
 FROM verlai/verl@sha256:6d7c328b1e7aedd2dece2f939a827704295b13f4bb75f2f17a962a91a19376b9
 
 ARG VERL_REPO=https://github.com/syangx39/verl-upstream.git
-ARG VERL_PIN=3fdf2b548882a8aeccf0842c2150d9c9f1790a55
+ARG VERL_PIN=a2cbde47ba729d0cba7e881da1692df20d8e05e4
 # Optional expected SHA256 of uv.lock; if provided, build fails immediately if uv.lock differs.
-ARG EXPECT_LOCK_SHA256=""
+ARG EXPECT_LOCK_SHA256="df508db0b957fa181c229fb75885cd3863cb651fd5233d0fa5af95e990bda0be"
 # Set to 1 if the lock's flash-attn wheel URL is x86_64-only and 404s on aarch64:
 # sync without flash-attn first, then force a true source build (--no-binary flash-attn +
 # FLASH_ATTENTION_FORCE_BUILD=TRUE so setup.py cannot silently fetch a prebuilt wheel) against +cu130 torch.
@@ -74,7 +75,9 @@ RUN .venv/bin/python /workspace/verify_venv_lock.py /workspace/verl-pin \
       --expect-git-sha "$(cat /workspace/VERL_PIN)" \
       --expect-lock-sha256 "$(cat /workspace/UV_LOCK_SHA256)" \
       --require-async \
-      --require-torchtitan
+      --require-torchtitan \
+      --require-rl-moe-helper \
+ && .venv/bin/python /workspace/verl-pin/examples/tpu/retool/sandbox_fusion_server.py --help | grep -q -- '--url'
 
 LABEL verl.pin="${VERL_PIN}" \
       verl.repo="${VERL_REPO}" \

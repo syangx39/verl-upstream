@@ -1,6 +1,8 @@
-# ReTool on TPU (`Qwen3-30B-A3B` MoE)
+# ReTool on TPU & NVIDIA GB200 (`Qwen3-30B-A3B` MoE)
 
 Self-contained TPU recipe for **ReTool** ([arXiv:2504.11536](https://arxiv.org/abs/2504.11536)) with `Qwen/Qwen3-30B-A3B` (`30.5B` total parameters, `3.3B` active per token, `128` routed experts, `top_k=8`) using the **TorchTitan** trainer (`SimpleFSDP=8`, Ulysses `CP=4`, `EP=1`, `TPU_EAGER_MODE=DEFER_NEVER`, `SplashAttention`, MegaBlox Pallas `grouped_mm`) and **vLLM** multi-turn async rollout (`TP=32, EP=32`) with **Raiden** direct P2P weight synchronization.
+
+> **NVIDIA GB200 (`aarch64`, SM100) Reproduction Guide**: For the concise 2-node (`8 × GB200 GPU`) TorchTitan `FSDP2=4` + vLLM V1 `TP=4` + NCCL reproduction instructions, frozen invariants, and 25-step AIME 2024/2025 benchmark summary, see **[`gb200/README.md`](./gb200/README.md)** (full execution log in [`REPRO_RESULTS_GB200_ZH.md`](./REPRO_RESULTS_GB200_ZH.md)).
 
 ## Hardware Topology (`2 x TPU v6e-32` Slices)
 

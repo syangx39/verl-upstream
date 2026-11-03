@@ -493,7 +493,7 @@ class TestG0ManifestCompositeHashCheck(unittest.TestCase):
             for name in ("config.json", "tokenizer.json", "tokenizer_config.json", "model.safetensors.index.json"):
                 (model_dir / name).write_text("{}", encoding="utf-8")
             for idx in range(1, 17):
-                (model_dir / f"model-{idx:05d}-of-00016.safetensors").write_bytes(f"shard-{idx}".encode("utf-8"))
+                (model_dir / f"model-{idx:05d}-of-00016.safetensors").write_bytes(f"shard-{idx}".encode())
 
             rep = verify_g0_gb200.verify_checkpoint_manifest(model_dir)
             actual = rep["composite_sha256"]

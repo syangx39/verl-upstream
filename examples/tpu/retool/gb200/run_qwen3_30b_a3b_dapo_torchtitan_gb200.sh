@@ -38,15 +38,22 @@ if ! python3 "${RETOOL_DIR}/sandbox_fusion_server.py" --host "${SANDBOX_FUSION_H
         --host "${SANDBOX_FUSION_HOST}" \
         --port "${SANDBOX_FUSION_PORT}" \
         --workers "${SANDBOX_FUSION_WORKERS}" > /tmp/sandbox_fusion_server.log 2>&1 &
+    SANDBOX_READY=0
     for _ in $(seq 1 20); do
         if python3 "${RETOOL_DIR}/sandbox_fusion_server.py" --host "${SANDBOX_FUSION_HOST}" --port "${SANDBOX_FUSION_PORT}" --check >/dev/null 2>&1; then
+            SANDBOX_READY=1
             break
         fi
         sleep 0.5
     done
+    if [[ "${SANDBOX_READY}" != "1" ]]; then
+        echo "ERROR: local sandbox_fusion_server failed healthcheck on ${SANDBOX_FUSION_HOST}:${SANDBOX_FUSION_PORT}" >&2
+        exit 1
+    fi
 fi
 
-# 2. Run 4-case SandboxFusion functional verification (arithmetic, stderr, timeout+cleanup, concurrency)
+# 2. Run 4-case SandboxFusion FUNCTIONAL API verification (arithmetic, stderr, timeout+cleanup, concurrency).
+# NOTE: These 4 cases verify HTTP/subprocess functional compatibility only, NOT security or container isolation.
 SANDBOX_CHECK_JSON="${SANDBOX_CHECK_JSON:-/tmp/sandbox_4case_check.json}"
 python3 - <<'PY' "${SANDBOX_FUSION_HOST}" "${SANDBOX_FUSION_PORT}" "${SANDBOX_CHECK_JSON}"
 from concurrent.futures import ThreadPoolExecutor

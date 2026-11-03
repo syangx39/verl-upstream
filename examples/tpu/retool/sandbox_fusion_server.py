@@ -31,9 +31,18 @@ import uvicorn
 from fastapi import FastAPI, Request, Response
 from pydantic import BaseModel, Field
 
-# NOTE / TODO(security): This server executes model-generated Python snippets inside an isolated GKE TPU
-# training pod and binds strictly to loopback (127.0.0.1) so it is unreachable outside the local pod.
-# For multi-tenant or external network exposure, add bearer-token authentication and container/nsjail isolation.
+# SECURITY & ISOLATION BOUNDARY:
+# - This server executes model-generated Python snippets using local Python subprocesses (`create_subprocess_exec`)
+#   bound strictly to loopback (`127.0.0.1`). When started as root (e.g. inside a container), it drops child
+#   process privileges to `nobody:nogroup` (65534:65534), clears supplementary groups, hides GPUs via
+#   `CUDA_VISIBLE_DEVICES=""`, and applies `RLIMIT_AS` + process-group `SIGKILL` timeouts.
+# - HOWEVER, local subprocesses still share the container's filesystem mount table (including any world-writable
+#   mounts such as `/data` with `0777` mode) and kernel namespaces. In particular, when the training pod runs
+#   with `securityContext.privileged: true` (as required by NVIDIA DRA `ComputeDomain` IMEX channel injection on
+#   GB200), in-Pod subprocess execution is NOT a security boundary against untrusted or adversarial code.
+# - Use this loopback helper ONLY in single-tenant, trusted benchmark environments. For untrusted models/prompts
+#   or shared environments, deploy SandboxFusion in a dedicated, non-privileged sandbox container (`nsjail`/`gVisor`)
+#   without shared storage or host device mounts.
 app = FastAPI(title="SandboxFusion Local Server", docs_url=None, redoc_url=None, openapi_url=None)
 
 ALLOWED_LANGUAGES = frozenset({"python", "python3"})
@@ -73,7 +82,7 @@ class RunCodeRequest(BaseModel):
     fetch_files: list[str] = Field(default_factory=list)
 
 
-def _make_preexec_fn(memory_limit_mb: int):
+def _make_preexec_fn(memory_limit_mb: int, drop_uid_gid: Optional[tuple[int, int]] = None):
     def _preexec():
         os.setsid()
         if memory_limit_mb and memory_limit_mb > 0:
@@ -82,6 +91,14 @@ def _make_preexec_fn(memory_limit_mb: int):
             try:
                 resource.setrlimit(resource.RLIMIT_AS, (limit_bytes, limit_bytes))
             except (ValueError, OSError):
+                pass
+        if drop_uid_gid is not None:
+            uid, gid = drop_uid_gid
+            try:
+                os.setgroups([])
+                os.setgid(gid)
+                os.setuid(uid)
+            except OSError:
                 pass
 
     return _preexec
@@ -109,15 +126,30 @@ async def run_code(req: RunCodeRequest) -> dict[str, Any]:
 
     async with _get_semaphore():
         with tempfile.TemporaryDirectory(prefix="sandbox_exec_") as tmp_dir:
+            drop_uid_gid: Optional[tuple[int, int]] = None
+            if os.geteuid() == 0 and os.environ.get("SANDBOX_DROP_PRIVILEGES", "1") == "1":
+                drop_uid_gid = (65534, 65534)
+                try:
+                    os.chown(tmp_dir, 65534, 65534)
+                    os.chmod(tmp_dir, 0o700)
+                except OSError:
+                    drop_uid_gid = None
+
             script_path = os.path.join(tmp_dir, "solution.py")
             with open(script_path, "w", encoding="utf-8") as f:
                 f.write(req.code)
+            if drop_uid_gid is not None:
+                try:
+                    os.chown(script_path, 65534, 65534)
+                except OSError:
+                    pass
 
             env = {
                 "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
                 "HOME": tmp_dir,
                 "TMPDIR": tmp_dir,
                 "PYTHONIOENCODING": "utf-8",
+                "CUDA_VISIBLE_DEVICES": "",
                 "OPENBLAS_NUM_THREADS": "1",
                 "OMP_NUM_THREADS": "1",
                 "MKL_NUM_THREADS": "1",
@@ -135,7 +167,7 @@ async def run_code(req: RunCodeRequest) -> dict[str, Any]:
                 stderr=asyncio.subprocess.PIPE,
                 cwd=tmp_dir,
                 env=env,
-                preexec_fn=_make_preexec_fn(req.memory_limit_MB),
+                preexec_fn=_make_preexec_fn(req.memory_limit_MB, drop_uid_gid),
             )
             try:
                 stdout_bytes, stderr_bytes = await asyncio.wait_for(

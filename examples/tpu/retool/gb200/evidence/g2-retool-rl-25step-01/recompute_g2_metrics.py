@@ -8,7 +8,7 @@ from pathlib import Path
 import statistics
 import sys
 
-REPO_ROOT = Path(__file__).resolve().parents[5]
+REPO_ROOT = Path(__file__).resolve().parents[6]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -32,18 +32,19 @@ def verify_validation_samples(path: Path, expected_step: int, metrics_step: dict
             with_tool += 1
         total_tools += r["tool_response_count"]
 
-    # Optional: if verl.utils.reward_score.math_dapo is importable, verify pred/acc extraction from output_tail_300
-    raw_tail_verified = False
-    try:
-        from verl.utils.reward_score import math_dapo  # type: ignore
+    # Verify pred/acc extraction from output_tail_300 using verl/utils/reward_score/math_dapo.py (stdlib-only module)
+    import importlib.util
 
-        for r in rows:
-            res = math_dapo.compute_score(r["output_tail_300"], str(r["gts"]), strict_box_verify=False)
-            pred = res["pred"] if res["pred"] is not None else ""
-            assert pred == r["pred"] and bool(res["acc"]) == bool(r["acc"]), f"Mismatch on {r['uid']}: {res} vs {r}"
-        raw_tail_verified = True
-    except ImportError:
-        pass
+    math_dapo_path = REPO_ROOT / "verl" / "utils" / "reward_score" / "math_dapo.py"
+    spec = importlib.util.spec_from_file_location("math_dapo", math_dapo_path)
+    assert spec is not None and spec.loader is not None
+    math_dapo = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(math_dapo)
+    for r in rows:
+        res = math_dapo.compute_score(r["output_tail_300"], str(r["gts"]), strict_box_verify=False)
+        pred = res["pred"] if res["pred"] is not None else ""
+        assert pred == r["pred"] and bool(res["acc"]) == bool(r["acc"]), f"Mismatch on {r['uid']}: {res} vs {r}"
+    raw_tail_verified = True
 
     out: dict[str, dict] = {}
     for ds in ("aime_2024", "aime_2025"):

@@ -103,6 +103,7 @@ def _sha256_file(path: Path) -> tuple[str, int, str]:
 def verify_checkpoint_manifest(
     model_dir: Path,
     ref_dir: Path | None = None,
+    expect_composite_sha256: str | None = None,
     workers: int = 8,
 ) -> dict[str, Any]:
     t0 = time.time()
@@ -126,6 +127,9 @@ def verify_checkpoint_manifest(
     manifest_json = json.dumps(manifest, sort_keys=True).encode("utf-8")
     composite_sha256 = hashlib.sha256(manifest_json).hexdigest()
 
+    expected_composite = expect_composite_sha256.strip().lower() if expect_composite_sha256 else None
+    composite_sha256_match = (composite_sha256 == expected_composite) if expected_composite is not None else None
+
     ref_match = None
     ref_composite_sha256 = None
     mismatches: list[str] = []
@@ -147,6 +151,8 @@ def verify_checkpoint_manifest(
         "num_safetensors_shards": len(shards),
         "total_bytes": sum(r[1] for r in rows),
         "composite_sha256": composite_sha256,
+        "expected_composite_sha256": expected_composite,
+        "composite_sha256_match": composite_sha256_match,
         "ref_composite_sha256": ref_composite_sha256,
         "ref_match": ref_match,
         "mismatches": mismatches,
@@ -378,6 +384,12 @@ def main() -> int:
         help="Optional source checkpoint directory to stage into --model-dir before verifying.",
     )
     parser.add_argument(
+        "--expect-composite-sha256",
+        type=str,
+        default=None,
+        help="Optional expected composite SHA-256 over the 20 checkpoint manifest entries; fails if mismatched.",
+    )
+    parser.add_argument(
         "--output-json",
         type=Path,
         default=None,
@@ -389,9 +401,18 @@ def main() -> int:
     if args.stage_from is not None:
         stage_report = stage_checkpoint_local(args.stage_from, args.model_dir)
 
-    manifest_report = verify_checkpoint_manifest(args.model_dir, args.ref_dir)
+    manifest_report = verify_checkpoint_manifest(
+        args.model_dir,
+        args.ref_dir,
+        expect_composite_sha256=args.expect_composite_sha256,
+    )
     if args.ref_dir is not None and not manifest_report["ref_match"]:
         raise RuntimeError(f"Checkpoint manifest mismatch against {args.ref_dir}: {manifest_report['mismatches']}")
+    if args.expect_composite_sha256 and not manifest_report["composite_sha256_match"]:
+        raise RuntimeError(
+            f"Checkpoint composite_sha256 mismatch: expected {manifest_report['expected_composite_sha256']}, "
+            f"got {manifest_report['composite_sha256']}"
+        )
 
     moe_report = verify_moe_config_and_step(args.model_dir)
     report = {

@@ -47,6 +47,8 @@ SANDBOX_FUSION_URL="${SANDBOX_FUSION_URL:-${JOBENV_SANDBOX_FUSION_URL:-http://${
 
 RUN_DIR="/data/${RUN_ROOT}/${RUN_NAME}"
 INPUTS_DIR="/data/${INPUTS_ROOT}"
+TENSORBOARD_DIR="${TENSORBOARD_DIR:-${JOBENV_TENSORBOARD_DIR:-${RUN_DIR}/tensorboard}}"
+EXPECT_CHECKPOINT_SHA256="${EXPECT_CHECKPOINT_SHA256:-${JOBENV_EXPECT_CHECKPOINT_SHA256:-59247a00c13f2364a12aab5ab6b88b6d971d59ff643c57aad8ac4e55a71231b0}}"
 
 EXTRA_ARGS=()
 for arg in "$@"; do
@@ -59,7 +61,7 @@ JOBENV_YAML=""
 while IFS='=' read -r name val; do
     if [[ "${name}" == JOBENV_* ]]; then
         env_key="${name#JOBENV_}"
-        if [[ "${env_key}" == "SANDBOX_FUSION_HOST" || "${env_key}" == "SANDBOX_FUSION_PORT" || "${env_key}" == "SANDBOX_FUSION_URL" ]]; then
+        if [[ "${env_key}" == "SANDBOX_FUSION_HOST" || "${env_key}" == "SANDBOX_FUSION_PORT" || "${env_key}" == "SANDBOX_FUSION_URL" || "${env_key}" == "TENSORBOARD_DIR" || "${env_key}" == "EXPECT_CHECKPOINT_SHA256" ]]; then
             continue
         fi
         escaped_val="${val//\"/\\\"}"
@@ -356,6 +358,10 @@ spec:
       value: "${SANDBOX_FUSION_PORT}"
     - name: SANDBOX_FUSION_URL
       value: "${SANDBOX_FUSION_URL}"
+    - name: TENSORBOARD_DIR
+      value: "${TENSORBOARD_DIR}"
+    - name: EXPECT_CHECKPOINT_SHA256
+      value: "${EXPECT_CHECKPOINT_SHA256}"
 ${JOBENV_YAML}    resources:
       claims:
       - name: compute-domain-channel
@@ -398,10 +404,15 @@ ${JOBENV_YAML}    resources:
 
       MODEL_SRC="\${MODEL_SRC_PATH:-/data/runs/p2-retool-sft-01/checkpoint/global_step_372/huggingface}"
       MODEL_DST="\${MODEL_PATH:-/dev/shm/models/multiturn-sft-qwen3-30b-a3b-tpu7x}"
+      G0_EXPECT_ARGS=()
+      if [[ -n "\${EXPECT_CHECKPOINT_SHA256:-}" ]]; then
+        G0_EXPECT_ARGS=(--expect-composite-sha256 "\${EXPECT_CHECKPOINT_SHA256}")
+      fi
       python3 examples/tpu/retool/gb200/verify_g0_gb200.py \
         --stage-from "\${MODEL_SRC}" \
         --model-dir "\${MODEL_DST}" \
         --ref-dir "\${MODEL_SRC}" \
+        "\${G0_EXPECT_ARGS[@]}" \
         --output-json "${RUN_DIR}/env/${LAUNCH_ID}-\${HOST_TAG}-g0-verify.json"
       cp -f "${RUN_DIR}/env/${LAUNCH_ID}-\${HOST_TAG}-g0-verify.json" "${RUN_DIR}/env/\${HOST_TAG}-g0-verify.json"
 
@@ -409,6 +420,9 @@ ${JOBENV_YAML}    resources:
       mkdir -p /root/.cache
       if [[ -f "\${CACHE_DIR}/flashinfer_cache_sm100a.tar.gz" ]]; then
         tar -xzf "\${CACHE_DIR}/flashinfer_cache_sm100a.tar.gz" -C /root/.cache || true
+        find /root/.cache/flashinfer -name "*.o" -exec touch -c {} + 2>/dev/null || true
+        sleep 1
+        find /root/.cache/flashinfer -name "*.so" -exec touch -c {} + 2>/dev/null || true
       fi
       if [[ -f "\${CACHE_DIR}/vllm_cache_sm100a.tar.gz" ]]; then
         tar -xzf "\${CACHE_DIR}/vllm_cache_sm100a.tar.gz" -C /root/.cache || true
@@ -550,6 +564,10 @@ spec:
       value: "${SANDBOX_FUSION_PORT}"
     - name: SANDBOX_FUSION_URL
       value: "${SANDBOX_FUSION_URL}"
+    - name: TENSORBOARD_DIR
+      value: "${TENSORBOARD_DIR}"
+    - name: EXPECT_CHECKPOINT_SHA256
+      value: "${EXPECT_CHECKPOINT_SHA256}"
 ${JOBENV_YAML}    resources:
       claims:
       - name: compute-domain-channel
@@ -571,7 +589,7 @@ ${JOBENV_YAML}    resources:
     - |
       set -xeuo pipefail
       HOST_TAG="\$(hostname)"
-      mkdir -p "${RUN_DIR}/env" "${RUN_DIR}/rollout" "${RUN_DIR}/validation" "${RUN_DIR}/rollout_audit"
+      mkdir -p "${RUN_DIR}/env" "${RUN_DIR}/rollout" "${RUN_DIR}/validation" "${RUN_DIR}/rollout_audit" "${TENSORBOARD_DIR}"
       rm -f "${RUN_DIR}/exit_code.txt"
       if [[ -n "\${EXPECT_GIT_SHA:-}" && "\$(git rev-parse HEAD)" != "\${EXPECT_GIT_SHA}" ]]; then
         git fetch --depth=1 https://github.com/syangx39/verl-upstream.git "\${EXPECT_GIT_SHA}"
@@ -594,10 +612,15 @@ ${JOBENV_YAML}    resources:
 
       MODEL_SRC="\${MODEL_SRC_PATH:-/data/runs/p2-retool-sft-01/checkpoint/global_step_372/huggingface}"
       MODEL_DST="\${MODEL_PATH:-/dev/shm/models/multiturn-sft-qwen3-30b-a3b-tpu7x}"
+      G0_EXPECT_ARGS=()
+      if [[ -n "\${EXPECT_CHECKPOINT_SHA256:-}" ]]; then
+        G0_EXPECT_ARGS=(--expect-composite-sha256 "\${EXPECT_CHECKPOINT_SHA256}")
+      fi
       python3 examples/tpu/retool/gb200/verify_g0_gb200.py \
         --stage-from "\${MODEL_SRC}" \
         --model-dir "\${MODEL_DST}" \
         --ref-dir "\${MODEL_SRC}" \
+        "\${G0_EXPECT_ARGS[@]}" \
         --output-json "${RUN_DIR}/env/${LAUNCH_ID}-\${HOST_TAG}-g0-verify.json"
       cp -f "${RUN_DIR}/env/${LAUNCH_ID}-\${HOST_TAG}-g0-verify.json" "${RUN_DIR}/env/\${HOST_TAG}-g0-verify.json"
 
@@ -605,6 +628,9 @@ ${JOBENV_YAML}    resources:
       mkdir -p /root/.cache
       if [[ -f "\${CACHE_DIR}/flashinfer_cache_sm100a.tar.gz" ]]; then
         tar -xzf "\${CACHE_DIR}/flashinfer_cache_sm100a.tar.gz" -C /root/.cache || true
+        find /root/.cache/flashinfer -name "*.o" -exec touch -c {} + 2>/dev/null || true
+        sleep 1
+        find /root/.cache/flashinfer -name "*.so" -exec touch -c {} + 2>/dev/null || true
       fi
       if [[ -f "\${CACHE_DIR}/vllm_cache_sm100a.tar.gz" ]]; then
         tar -xzf "\${CACHE_DIR}/vllm_cache_sm100a.tar.gz" -C /root/.cache || true

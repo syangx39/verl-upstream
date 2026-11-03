@@ -151,6 +151,36 @@ class TestSandboxPrivilegeDrop(unittest.TestCase):
             self.assertIn("PrivilegeDropError", res["message"])
             mock_spawn.assert_not_called()
 
+    def test_resolve_drop_uid_gid_adopts_restricted_executable_owner(self):
+        fake_stat = os.stat_result((0o040750, 1, 1, 1, 1000, 100, 4096, 0, 0, 0))
+        world_stat = os.stat_result((0o040755, 1, 1, 1, 0, 0, 4096, 0, 0, 0))
+
+        def _stat_side_effect(p):
+            if p == "/home/ray":
+                return fake_stat
+            return world_stat
+
+        with (
+            mock.patch("os.geteuid", return_value=0),
+            mock.patch("sys.executable", "/home/ray/anaconda3/bin/python"),
+            mock.patch("os.path.realpath", return_value="/home/ray/anaconda3/bin/python"),
+            mock.patch("os.stat", side_effect=_stat_side_effect),
+            mock.patch.dict(os.environ, {"SANDBOX_ALLOW_ROOT_EXEC": "0"}, clear=True),
+        ):
+            self.assertEqual(sandbox_fusion_server._resolve_drop_uid_gid(), (1000, 100))
+
+    def test_run_code_handles_subprocess_exec_permission_error_without_500(self):
+        req = sandbox_fusion_server.RunCodeRequest(code="print(123)", language="python", run_timeout=5.0)
+        with (
+            mock.patch("os.geteuid", return_value=1000),
+            mock.patch("asyncio.create_subprocess_exec", side_effect=PermissionError(13, "Permission denied")),
+        ):
+            res = asyncio.run(sandbox_fusion_server.run_code(req))
+            self.assertEqual(res["status"], "Failed")
+            self.assertEqual(res["message"], "ExecutionError")
+            self.assertEqual(res["run_result"]["return_code"], -1)
+            self.assertIn("PermissionError", res["run_result"]["stderr"])
+
 
 class TestSandboxEndpointResolution(unittest.TestCase):
     """Verify external SANDBOX_FUSION_HOST / SANDBOX_FUSION_URL disables local server auto-start."""

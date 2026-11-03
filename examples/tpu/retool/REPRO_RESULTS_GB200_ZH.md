@@ -1,6 +1,7 @@
 # ReTool（Qwen3-30B-A3B）：NVIDIA GB200 复现进展、结果与 TPU v7x 对照记录
 
 状态：**GB200 全部阶段已完成（Stage 0.1–0.3 / G0 / G1 / G2 25-Step 均 PASS，2026-11-03 更新）**
+精简版英文复现指南（Quickstart & Repro Guide）：[`gb200/README.md`](./gb200/README.md)
 对应计划：[`REPRO_PLAN_GB200_ZH.md`](./REPRO_PLAN_GB200_ZH.md)（PR #8 已合入 `tpu-main` `10f16720`）
 对照 TPU 基线：[`REPRO_RESULTS_TPU7X.md`](https://github.com/syangx39/verl-upstream/blob/retool-tpu7x-exp-results/examples/tpu/retool/REPRO_RESULTS_TPU7X.md)（PR #7）
 负责人：@syangx39

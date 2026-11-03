@@ -1,131 +1,136 @@
-# TPU v7x ReTool RL（P1c）Raiden 初始权重同步 Tensor Mismatch 诊断报告
+# TPU v7x ReTool RL（Stage P1c）Raiden 初始权重同步 Tensor Mismatch 现象取证、待验证假设与受控验证计划
 
-## 1. 问题概述（Executive Summary）
-
-在 TPU v7x 双 Slice（`2 × 4x4 = 32` 芯片/Slice，共 64 芯片：32 芯片 TorchTitan Trainer + 32 芯片 vLLM Rollout Sampler）上运行 **Qwen3-30B-A3B MoE 多轮 ReTool RL Smoke（Stage P1c）** 时，初始 `update_weights(0)`（Step-0 Raiden P2P 权重同步）在 `2.65 s` 内返回完成，但开启 `VERIFY_PARITY=all`（`RaidenParityCheck` 逐张量精确比对与全局范数校验）后捕获到确定性的 **部分传输截断（Partial Transfer Truncation / Zero-Filled Staging Buffers）**：
-
-- **前 `73 / 579` 个传输张量（对应 vLLM 侧 `110 / 435` 个参数张量，约 `29.4 GiB`）100% 逐位一致（`max|diff| = 0.0`）**：包括 `lm_head.weight`、`model.embed_tokens.weight`、`layers.0, 1, 10..19, 2, 20..29` 共 23 层的全部 MoE 专家权重（`w13_weight` 与 `w2_weight`），以及 `layers.3.mlp.experts.routed_experts.w2_weight`（wire index `71`）和 `layers.3.mlp.experts.routed_experts.w13_weight` 的前半部分 `gate_proj.weight`（wire index `72`）。
-- **从第 `74` 个传输张量（wire index `73`：`model.layers.3.mlp.experts.up_proj.weight`）开始，后续 `506 / 579` 个传输张量（对应 vLLM 侧 `325 / 435` 个参数张量）在 Sampler 端主机暂存缓冲区（Host Staging Buffer）中全部为 `0.0`**：
-  - `layers.3.mlp.experts.routed_experts.w13_weight` 因前半 `gate_proj`（`idx=72`）正常接收、后半 `up_proj`（`idx=73`）全零，导致 `recv_absmean = 0.009274 ≈ 0.5 × ref_absmean (0.01824)`；
-  - 其余 24 层 MoE 专家权重（`layers.30..39, 4, 40..47, 5..9`，`idx=74..145`）以及全部 `433` 个 Dense 权重（`idx=146..578`，包括所有层的 `q_proj / k_proj / v_proj / o_proj`、MoE router `gate.weight` 与 RMSNorm）在 `_raiden_ws.h2d()` 执行时均为 `0.0`。
-
-### 核心结论：这是 Runtime Bug 还是漏合了 Upstream Patch？
-
-**两者兼有（Both）：**
-1. **底层 `tpu-sync`（Raiden）运行时 Bug（主因）**：P1c 运行所使用的基础镜像搭载的是 10 月 1 日构建的 `tpu-sync-torch==0.0.1.dev20261001220631`。该版本在多主机 Direct-Push 路径（`can_fast_path_direct=True`）及接收端完成计数上存在已知缺陷，`transfer_future.wait()` 在仅完成约前 `73` 个大张量（~29.4 GiB）的数据搬运时即提前返回，导致 Sampler 在后续 `506` 个张量尚未写入主机暂存缓冲区时便执行了 `install_raiden_weights`（`_raiden_ws.h2d()`）。这些缺陷已在后续 `tpu-sync-torch==0.0.1.dev20261006025601`（对应 `verl-tpu:v20261006-tsync1006` 镜像）中修复（移除 broken `direct_schedules` 快路径并统一走 `BroadcastEngine`、修复多层 Host Buffer 容量计算及接收端 per-layer chunk 完成计数）。
-2. **缺少两个上游补丁（Missing Upstream Patches）**：我们的分支基于 `a27db71c`（2026-10-03），尚未合入此后提交的两个关键补丁：
-   - **`verl-project/verl-hardware-plugin#89` / `jialei777/verl-upstream#110`**（*Export MoE expert stacks as 3-D `[E, I, H]` for Raiden weight sync*）：将 MoE 专家栈从 2-D 折叠导出（`[E * rows, cols]` + `.reshape(local_shape).clone()`）改为原生 3-D `[E, I, H]` 导出，消除每张芯片约 `3.8 GiB` 的额外 2-D clone 缓冲并对齐 `tpu-sync` 原生 3-D 分片语义。
-   - **`jialei777/verl-upstream#116`**（*Clone non-matching-block-dim tensors via CPU in `adapt_for_raw_transfer`*）：在升级到新版 `torch-tpu`（`>= 0.2.0`）后，`tensor.reshape(...).clone()` 在 TPU 设备上通过 `CopyTpuToTpu` 复用原 3-D 底层存储布局，会触发 `tpu-sync` 的 `UnpackTorchTensor: Tensor 'layer_0_shard_0' leading (block) dimension (6144) does not match its base storage buffer (4)` 报错；`#116`（或 `#110/#89` 的原生 3-D 导出）是切换到新版镜像的必要补丁。
+状态：**现象已取证 / 根因假设待受控实验验证（Working Hypothesis — 2026-11-03 修订）**
+关联 PR：
+- TPU v7x 实验进展记录：PR #7（[`REPRO_RESULTS_TPU7X.md`](https://github.com/syangx39/verl-upstream/pull/7)）
+- NVIDIA GB200 实验结果记录：PR #9（[`REPRO_RESULTS_GB200_ZH.md`](https://github.com/syangx39/verl-upstream/pull/9)）
+- 同物理加速器数量（Iso-Accelerator-Count）性能对照占位：PR #11（[`ISO_CHIP_PERF_BENCHMARK_PLAN.md`](https://github.com/syangx39/verl-upstream/pull/11)）
 
 ---
 
-## 2. 复现实验现象与 P1a vs P1c 对比
+## 1. 问题概述与证据边界（Executive Summary & Scope of Evidence）
 
-### 2.1 运行配置对比
+在 Google Cloud TPU v7x（Ironwood）双 Slice 拓扑上运行 **Qwen3-30B-A3B MoE 多轮 ReTool RL Smoke（Stage P1c）** 时，开启 `VERIFY_PARITY=all` 的诊断运行（`p1c-retool-rl-05`）在初始 `update_weights(0)`（Step-0 Raiden 权重同步）阶段触发了确定性的 `RaidenParityError`：
 
-| 维度 | Stage P1a（`p1a-moe-smoke-12`） | Stage P1c（`p1c-retool-rl-03`） | Stage P1c + Parity（`p1c-retool-rl-05`） |
+- **硬件拓扑更正与对账（与 PR #7 一致）**：
+  - 单颗 TPU v7x 物理芯片包含 **2 个逻辑 TensorCore 设备**（每逻辑核 `96 GiB` HBM，单物理芯片共 `192 GiB` HBM）；每台 `ct7x-standard-4t` 主机搭载 **4 颗物理芯片 = 8 个逻辑 TensorCore 设备**。
+  - `Stage P1c` 采用两个 `2×2×4` Slice（每个 Slice 为 **4 台主机 × 4 颗物理芯片 = 16 颗物理芯片 / 32 个逻辑 TensorCore 设备**）：
+    - **Trainer Slice（`1 × 2×2×4`）**：**16 颗物理芯片 / 32 个逻辑 TensorCore 设备**（`NNODES_TRAINER=4, N_CHIPS_TRAINER=8` 逻辑设备/主机，`dp_shard=8, cp=4`，共 32 个 Trainer ranks）；
+    - **Rollout Slice（`1 × 2×2×4`）**：**16 颗物理芯片 / 32 个逻辑 TensorCore 设备**（`NNODES_ROLLOUT=4, N_CHIPS_ROLLOUT=8` 逻辑设备/主机，vLLM `TP=32, EP=32`，共 32 个 Sampler ranks）；
+    - **双 Slice 合计**：**32 颗物理 TPU v7x 芯片 / 64 个逻辑 TensorCore 设备**（此前版本误写为“每侧 32 颗物理芯片”，特此更正）。
+- **已确认的故障现象（Confirmed Symptom）**：
+  - 在 `p1c-retool-rl-05` 中，Step-0 初始权重同步（`RaidenController P2P = 2.2080 s`, `Sampler H2D DMA = 0.4275 s`）完成后，`RaidenParityCheck.report_exact` 报告：
+    ```text
+    verl.checkpoint_engine.raiden_checkpoint_engine.RaidenParityError: [RAIDEN PARITY EXACT | Step 0] 32 sampler ranks, [435] tensors checked per rank, 10414 mismatched, 0 unresolved
+    ```
+  - 在日志打印出的 `rank 0` 前 60 条 mismatch 明细中（受 `RaidenParityCheck.MAX_DETAIL_LINES = 60` 截断限制）：
+    - `model.layers.3.mlp.experts.routed_experts.w13_weight` 出现半截非零、半截全零（`max|diff|=0.5195, ref_absmean=0.01824, recv_absmean=0.009274`）；
+    - 随后打印的 `layers.30..47, 4..9` 的 MoE `w13_weight / w2_weight` 以及 `layers.0, 1, 10..18` 的 `self_attn.qkv_proj.weight` 全部表现为 **`recv_absmean = 0`**（全零）。
+- **证据边界说明（为什么具体根因仍属于待验证假设 Working Hypothesis）**：
+  - 在现有代码 [`verl/workers/rollout/vllm_rollout/tpu_utils.py#L604-L730`](../verl/workers/rollout/vllm_rollout/tpu_utils.py#L604-L730) 中，`parity.check_exact(...)` 发生在 **`self._raiden_ws.h2d()`（`L606`）之后**，以及 **MoE 专家权重拆包/融合（`_raiden_fused_expert_weights`，`L671–L684`）或 Dense 权重拼接/转置（`to_target_layout`，`L707–L728`）过程中**。
+  - 因此，仅凭现有日志摘录，尚不能单独断定全零数据究竟产生于：
+    1. **假设 H1（H2D 之前 Host Staging Buffer 已全零 / P2P 传输未完成即返回）**；
+    2. **假设 H2（`_raiden_ws.h2d()` 主机到 TPU HBM DMA 拷贝阶段在中途截断或清零）**；或
+    3. **假设 H3（H2D 之后的 TPU 张量视图拆包 / 转置 / 布局转换阶段产生全零）**。
+  - 同样，“旧版 `tpu-sync` 命中 `direct_schedules` 导致 `.wait()` 提前返回”以及“切换新版运行时镜像即可修复该现象”属于**值得优先验证的工作假设（Working Hypotheses）**，尚未被调度器内部日志或新旧镜像对照实验最终证实。
+
+---
+
+## 2. 上游补丁关系与镜像包版本核实（Fact Corrections）
+
+### 2.1 上游 PR 真实内容与跨仓库依赖核对（不盲目直接 Cherry-pick `#110` 和 `#116`）
+
+此前草稿将 `jialei777/verl-upstream#110` 与 `verl-project/verl-hardware-plugin#89` 混为一谈，并建议直接同时 cherry-pick `#110` 与 `#116`。经逐一核对上游 PR 源码，真实对应关系如下：
+
+| 上游 PR | 所属仓库与状态 | 真实修改内容 | 与本问题的关系及处理原则 |
 | :--- | :--- | :--- | :--- |
-| **任务与序列长度** | 单轮 GSM8K Smoke（`max_prompt=512, max_resp=512`） | 多轮 ReTool Math RL（`max_prompt=2048, max_resp=16384`） | 多轮 ReTool Math RL（`max_prompt=2048, max_resp=16384`） |
-| **模型与起点** | `Qwen/Qwen3-30B-A3B` | P2 Step-372 SFT Checkpoint（30B-A3B） | P2 Step-372 SFT Checkpoint（30B-A3B） |
-| **Trainer 并行拓扑** | 1-D FSDP：`dp_shard=32, cp=1` | 2-D FSDP + Ring Attention：`dp_shard=8, cp=4` | 2-D FSDP + Ring Attention：`dp_shard=8, cp=4` |
-| **Trainer Eager 模式** | `TPU_EAGER_MODE=DEFER_AND_FUSE` | `TPU_EAGER_MODE=DEFER_NEVER` | `TPU_EAGER_MODE=DEFER_NEVER` |
-| **Sampler 并行拓扑** | 1 Replica × 32 Chips（`TP=32, EP=32`） | 1 Replica × 32 Chips（`TP=32, EP=32`） | 1 Replica × 32 Chips（`TP=32, EP=32`） |
-| **`VERIFY_PARITY` 设置** | `off`（默认关闭） | `off`（默认关闭） | `all`（开启 `exact + norm` 校验） |
-| **Step-0 初始权重同步耗时** | `2.60 s` | `2.73 s` | `2.65 s`（P2P 传输 `2.2080 s` + H2D `0.4275 s`） |
-| **Step-0 同步后行为** | Step 1–2 Warmup Rollout 同样乱码（`ppl_ratio=31.53 / 32.18, score=0.0`），Step 1 训练后 Step 3 恢复（`ppl_ratio=1.0020, score=0.7578`） | Step 1（使用预热在 Step-0 同步前生成的 Rollout）完全正常（`ppl_ratio=0.9923`），Step 2–3（使用同步后权重）乱码（`rollout_ppl=249.3, score=-1.0`） | 在 Step-0 `update_weights(0)` 阶段直接拦截并抛出 `RaidenParityError` |
+| **[`jialei777/verl-upstream#110`](https://github.com/jialei777/verl-upstream/pull/110)** (`93058928`) | `jialei777/verl-upstream` (Open) | **Rollout Pause 与吞吐性能优化**（*`feat: 2.1x faster Qwen3-30B-A3B TPU GRPO step`*）：将 `_abort_replicas_for_sync` 推迟到 Trainer 端权重导出准备完成之后（使 rollout 暂停时间从 ~12s 降至 ~1.9s），将 `MAX_NUM_SEQS` 调至 128，并新增 `keep_prefix_cache_on_sync`。 | **不是 3-D MoE 专家导出补丁**。不能把它当作 `#89` 来 cherry-pick。 |
+| **[`verl-project/verl-hardware-plugin#89`](https://github.com/verl-project/verl-hardware-plugin/pull/89)** (`cf1cb234`) | `verl-project/verl-hardware-plugin` (Merged) | **3-D MoE 专家分片直接导出与安装**（*`[TPU] perf: direct tpu-sync install of Qwen3 MoE experts (EP or TP-sliced) with local expert-shard export`*）：将 MoE 专家按 3-D `[E, I, H]` / `[E, H, I]` 导出并在 rollout 端走 `qwen3_moe direct` 安装。 | **位于独立的 `verl-hardware-plugin` 仓库**（修改路径为 `verl_hardware_plugin/accelerators/tpu/...`），依赖该仓库的插件架构实现，**不能直接 cherry-pick 到当前 `verl-upstream` 分支**；若需引入需单独评估跨仓库移植及依赖。 |
+| **[`jialei777/verl-upstream#116`](https://github.com/jialei777/verl-upstream/pull/116)** (`32b5133e`) | `jialei777/verl-upstream` (Open, 标有 **`DO NOT MERGE`**) | **2-D Folded Expert Stack 的临时 Workaround**（*`DO NOT MERGE: Temporary workaaround Raiden weight sync for MoE models on torch-tpu >= 2026-09-24`*）：当使用 2-D 折叠专家栈（`[E_local * F, D]`）且 `torch_tpu`（`>= 2026-09-24` / `0.1.2.dev20261006`）中 TPU$\rightarrow$TPU `clone()` 共享源 3-D base storage buffer 时，通过 `adapt_for_raw_transfer` 探测并走 host round-trip 重新分配 2-D 存储。 | 属于针对 **2-D 折叠路径**的临时规避方案，且与 `#89`（3-D 原生导出）分属不同路径。**不应预先盲目合入**：应先保持当前 P1c 代码仅切换运行时镜像测试，只有当新版镜像确实报 `UnpackTorchTensor: ... leading (block) dimension ... does not match its base storage buffer` 时，再评估移植 `#116` 的必要部分。 |
 
-### 2.2 为什么 P1a 看起来“通过”了，而 P1c 暴露了问题？
+### 2.2 容器镜像内 `torch-tpu` 与 `tpu-sync-torch` 版本核对
 
-回溯 `p1a-moe-smoke-12` 与 `p1c-retool-rl-03` 的逐步指标可以发现，**Step-0 初始 Raiden 权重同步实际上在 P1a 和 P1c 中都发生了不完整传输**：
+此前草稿中关于“新版镜像包含 `torch-tpu >= 0.2.0`”的表述与实际镜像审计存在冲突，经核对各处记录如下：
 
-1. **在 `p1a-moe-smoke-12` 中**：
-   - 当时 `VERIFY_PARITY` 默认关闭（`off`），且 `NUM_WARMUP_BATCHES=2` 在 `update_weights(0)` **之后**启动异步生成。
-   - 因此 `p1a-moe-smoke-12` 的 Step 1 和 Step 2 实际上都使用了被 Step-0 Raiden 同步破坏的 Sampler 权重：`rollout_corr/ppl_ratio` 高达 `31.530` 和 `32.180`，`rollout_corr/kl` 为 `3.1396` 和 `3.1676`，奖励 `critic/score/mean = 0.0000`，导致 `actor/grad_norm = 0.0000`。
-   - 到了 Step 1 训练结束后的第二次同步 `update_weights(1)`（此时双端 `WeightSynchronizer` 已完成首次内存页初始化与连接建立，且 P1a 为 1-D `dp_shard=32, cp=1`），同步成功完成，Step 3 恢复正常（`rollout_corr/ppl_ratio = 1.0020`，`critic/score/mean = 0.7578`）。
-2. **在 `p1c-retool-rl-03` 中**：
-   - 在 Attempt 2（`NUM_WARMUP_BATCHES=1`）中，预热 Batch 在 Step-0 `update_weights(0)` 覆盖 vLLM 权重之前就已经由 HF 初始权重生成完毕：
-     - **Step 1 完全正常**：`rollout_ppl = 1.1322`、`training_ppl = 1.1235`、`ppl_ratio = 0.9923`、`kl = -0.0080`，触发 `18` 次沙箱代码工具调用，Multi-turn response/tool mask 0 违规，`actor/grad_norm = 0.7330`。这证明 **vLLM 多轮采样、SandboxFusion 工具调用、TorchTitan `SimpleFSDP=8, CP=4` 前反向训练本身全部工作正常**。
-     - **Step 2–3 权重被破坏**：一旦使用经 Raiden 同步后的 Sampler 权重生成新轨迹，vLLM 立即输出乱码（`rollout_ppl = 249.33`，`ppl_ratio = 0.0156`，奖励全部为 `-1.0`）。
+| 信息来源 | 记录的 `torch-tpu` 版本 | 记录的 `tpu-sync-torch` 版本 | 说明 |
+| :--- | :--- | :--- | :--- |
+| **PR #7 镜像环境审计（`Stage P0.2`）** | `0.1.1.dev20260912075415` | `0.1.2` / `0.0.1.dev20261001220631` | 当前 P1a / P1c 运行所使用的旧版镜像环境 |
+| **`jialei777/verl-upstream#116` 代码注释 (`raiden_checkpoint_engine.py:206`)** | `0.1.2.dev20261006`（含 `torch_tpu 449c975e1`, 2026-09-24） | `0.0.1.dev20261006025601`（`verl-tpu:v20261006-tsync1006`） | 均为 `0.1.x.dev*` 开发构建，**并非 `torch-tpu >= 0.2.0`** |
+
+> **执行要求**：在启动受控 P1c 验证前，必须先固定目标镜像的不可变 `@sha256:...` digest，并在容器内通过 Python 实测打印 `torch_tpu.__version__` / `torch_tpu.__file__` 与 `tpu_sync` 版本，以实测值为准记录进报告。
 
 ---
 
-## 3. `p1c-retool-rl-05`（`VERIFY_PARITY=all`）逐张量精确取证
+## 3. `p1c-retool-rl-05` 故障数据对账与 `VERIFY_PARITY=all` 机制核实
 
-在 `p1c-retool-rl-05` 中开启 `VERIFY_PARITY=all`（来自 `verl-project/verl-hardware-plugin#85`）后，`update_raiden_weights(global_steps=0)` 输出了完整的遥测与逐张量对比日志：
+### 3.1 为什么日志汇总显示 `10,414` 个 Mismatch（而非 `325 × 32 = 10,400`）？
 
-### 3.1 Raiden 编排器阶段耗时
+1. **原始日志精确输出（`p1c_05_driver.log:12283`）**：
+   ```text
+   verl.checkpoint_engine.raiden_checkpoint_engine.RaidenParityError: [RAIDEN PARITY EXACT | Step 0] 32 sampler ranks, [435] tensors checked per rank, 10414 mismatched, 0 unresolved
+   ```
+2. **与 `325 × 32 = 10,400` 差 14 个的原因**：
+   - 在 [`verl/checkpoint_engine/raiden_checkpoint_engine.py#L414-L427`](../verl/checkpoint_engine/raiden_checkpoint_engine.py#L414-L427) 中，`RaidenParityCheck.report_exact` 计算全集群总不匹配数 `num_mismatched = sum(r["num_mismatched"] for r in results)`（即 **`10,414`**，跨 `32 × 435 = 13,920` 个检查项，平均每 rank **`325.4375`** 个 mismatch，即 `10,414 = 32 × 325 + 14`）。
+   - 然而，`report_exact` 在构造异常文本时执行了 `detail_text = "\n".join(details[: cls.MAX_DETAIL_LINES])`（其中 `MAX_DETAIL_LINES = 60`），且在 Sampler Worker 侧 `exact_result()`（`L454`）中同样对 `self.mismatched` 做了 `[:60]` 截断。
+   - 因为 `rank 0` 自身的 mismatch 数已超过 60 个，日志打印出的 60 行明细全部来自 `rank 0`，**并未打印出全部 32 个 rank 各自的 `r["num_mismatched"]` 数值**。
+   - 此前草稿根据 `rank 0` 上首个失败张量 `model.layers.3.mlp.experts.routed_experts.w13_weight` 推算 `435 - 110 = 325` 并假定所有 32 个 rank 均为 `325`，会得出 `32 × 325 = 10,400`，比真实总数 `10,414` 少 **14 个**（说明 32 个 Sampler rank 之间的截断位置存在轻微差异，部分 rank 比 `rank 0` 多出 1 个或数个不匹配张量）。
+   - **修正措施**：在报告中严格使用日志实测总计 **`10,414 / 13,920`**，并在下一次受控运行中将 `[ (r["rank"], r["checked"], r["num_mismatched"], len(r["unresolved"])) for r in results ]` 完整归档后再写逐 rank 精确数字。
 
-```text
-Trainer Rank 0: registering 578 sharded and 1 full tensors
-[RAIDEN CONTROLLER] All 32 Trainer and 32 Sampler units verified and registered.
-[RAIDEN TELEMETRY | Orchestrator] Step 0 Completed in 21.84s:
-  * Sampler Quiesce/Pause  : 0.0000s
-  * Trainer Raiden Init    : 13.7112s
-  * Sampler Raiden Init    : 5.4735s
-  * Raiden Barrier Check   : 0.0005s
-  * RaidenController P2P   : 2.2080s
-  * Sampler H2D DMA        : 0.4275s
-```
+### 3.2 现有 `VERIFY_PARITY=all` 代码的实际检查能力边界
 
-### 3.2 传输顺序与精确截断点（Wire Index `72 -> 73`）
+检视 [`verl/checkpoint_engine/raiden_checkpoint_engine.py#L332-L606`](../verl/checkpoint_engine/raiden_checkpoint_engine.py#L332-L606) 可确认，当前 `VERIFY_PARITY=all` 由两个阶段组成，其覆盖范围和判定条件如下：
 
-`RaidenCheckpointEngine.send_weights()` 与 `vLLMRaidenWorkerExtension.init_raiden_sync_on_worker()` 均按 `(-global_numel, name)` 对 `579` 个传输张量（Wire Tensors）排序注册：
-
-| Wire Index 范围 | 张量类别与名称（按 `(-global_numel, name)` 排序） | 单张量全局形状（2-D 折叠模式） | 单张量全局大小 | Sampler 接收结果（全 32 Ranks） |
-| :--- | :--- | :--- | :--- | :--- |
-| `idx = 0..1` | `lm_head.weight`, `model.embed_tokens.weight` | `[151936, 2048]` | `622.3 MB` × 2 | **PASS**（`max\|diff\| = 0.0`） |
-| `idx = 2..70` | 23 个 MoE 层（字典序 `layers.0, 1, 10..19, 2, 20..29`）的 `down_proj`、`gate_proj`、`up_proj` | `[98304, 2048]` 或 `[24576, 768]` | `402.7 MB` × 69 | **PASS**（对应 46 个 vLLM `w13/w2` 张量，`max\|diff\| = 0.0`） |
-| `idx = 71` | `model.layers.3.mlp.experts.down_proj.weight` | `[98304, 2048]` | `402.7 MB` | **PASS**（`layers.3...w2_weight` `max\|diff\| = 0.0`） |
-| `idx = 72` | `model.layers.3.mlp.experts.gate_proj.weight` | `[98304, 2048]` | `402.7 MB` | **PASS**（写入 `layers.3...w13_weight` 前半部分正常） |
-| **`idx = 73`（截断点）** | **`model.layers.3.mlp.experts.up_proj.weight`** | **`[98304, 2048]`** | **`402.7 MB`** | **FAIL（全 0）**：导致 `layers.3...w13_weight` 后半全 0，`recv_absmean = 0.009274` vs `ref_absmean = 0.01824` |
-| `idx = 74..145` | 其余 24 个 MoE 层（字典序 `layers.30..39, 4, 40..47, 5..9`）的 `down_proj`、`gate_proj`、`up_proj` | `[98304, 2048]` | `402.7 MB` × 72 | **FAIL（全 0）**：`recv_absmean = 0.000000` |
-| `idx = 146..578` | 全部 48 层的 Dense 权重（`q_proj`, `o_proj`, `k_proj`, `v_proj`, `mlp.gate.weight`, `RMSNorm`） | `[4096, 2048]` 等 | 共 `433` 个张量 | **FAIL（全 0）**：`recv_absmean = 0.000000` |
-
-全局范数汇总（`verify_norms`）同样印证了这一截断比例：
-- **Trainer 全局参数量与范数**：`numel = 30,532,122,624`，`L1 = 278,864,458.65`，`L2 = 2,711.61`
-- **Sampler 接收后范数**：`numel = 30,532,122,624`，`L1 = 135,517,090.30`（正好约为前 `73 / 146` 个大张量的 L1 范数总和），`L2 = 1,890.02`
+| 阶段 / 步数 | 触发函数 | 实际比对内容与通过条件 | 局限性与注意事项 |
+| :--- | :--- | :--- | :--- |
+| **Step 0（初始同步）** | `exact_install_kwargs` (`not global_steps`) $\rightarrow$ `check_exact` + `report_exact` | 在 `install_raiden_weights` 中（`_raiden_ws.h2d()` 及拆包/拼接/转置之后、覆盖 vLLM 参数之前），将每个 Sampler rank 收到的张量与 vLLM 从初始 HF checkpoint 加载的对应参数做逐元素 `max\|ref - new\| == 0.0` 比对。在当前 2-D 折叠 MoE 路径下，每 rank 检查 `435` 个 vLLM 参数张量（`48 × 2 = 96` 个 MoE `w13/w2` + `48 × 7 = 336` 个每层稠密/路由/Norm 参数 + `3` 个全局 `embed_tokens / norm / lm_head`）。 | **仅在 Step 0 运行一次**（因为 Step 1 起 Trainer 权重已经过梯度更新，不再等于 vLLM 初始加载的磁盘 checkpoint）。此外，若未来改用 3-D direct install（`verl-hardware-plugin#89`），检查项会按 expert region 计数，不再是固定 `435`。 |
+| **Step 1 及后续步（`global_steps > 0`）** | `verify_norms` $\rightarrow$ `_compare_replica_norms` (`L520–L605`) | 汇总 Trainer 所有 rank 导出的逐张量 `(numel, l1, l2_sq)` 与每个 Sampler Replica 聚合后的逐张量统计。**实际判定通过的条件（`L579, L588`）仅检查 `numel`（`delta_numel == 0`）与 `L1` 范数（`delta_l1 <= 1e-3 * max(\|t_agg_l1\|, 1.0)`）**；全局 `L2` 范数虽然被计算并打印在日志中（`L593–L594`），但**未参与 `mismatches` 或最终 `if` 通过判定**。 | **Norm 通过 $\neq$ Bit-Exact（逐位一致）**：一方面 Step 1+ 未做 Trainer 与 Sampler 的逐元素比对；另一方面范数检查对张量内部元素顺序错位/切片置换不敏感（见源码注释 `L338–L339`）。若需要证明 Step 1+ 逐元素一致，必须额外实现 Trainer 当前权重与 Sampler 权重的逐元素对照。 |
 
 ---
 
-## 4. 根因剖析（Root Cause Analysis）
+## 4. 待验证的工作假设（Working Hypotheses）
 
-### 4.1 根因一：`tpu-sync-torch==0.0.1.dev20261001220631` 的 Direct-Push 与完成计数缺陷
+基于 `p1c-retool-rl-03`（Step 1 使用同步前预热轨迹时 `rollout_ppl=1.1322, ppl_ratio=0.9923, grad_norm=0.7330` 正常，Step 2–3 使用同步后权重时 `rollout_ppl=249.33` 乱码）与 `p1c-retool-rl-05`（Step 0 `10,414` 个张量 mismatch 且后续大量张量 `recv_absmean=0`），我们提出以下三个待验证假设，按优先级排序：
 
-在 8 台 Trainer 主机（32 芯片）→ 8 台 Sampler 主机（1 个 Replica × 32 芯片）的拓扑下：
-- Sampler 的 32 个 worker 分别持有不同的 `(TP, EP)` 分片，因此在 `ReshardPlanner` 中被划分为 `32` 个等价类（每个等价类长度 `max_eq_class_len = 1 <= n_seed`）。
-- 在 10 月 1 日构建的 `tpu-sync-torch==0.0.1.dev20261001220631` 中，这会命中 `can_fast_path_direct = True` 的旧版 `direct_schedules` 路径，且在多主机 chunk 折叠/聚合（`coalesced_transfers`）与接收端 `expected_block_count` / `expected_layer_chunk_counts` 跟踪之间存在不一致，同时 `RaidenController.start_transfer` 在 Direct-Push 模式下未等待接收端所有层的 `OnDataReceived` 确认即返回。
-- 结果是：在 `2.2080 s` 的网络传输窗口内，仅前 `73` 个排在最前面的大张量（约 `29.4 GiB`，对应约 `13.3 GB/s` 聚合传输速率）完成了写入，随后编排器立即触发 `install_raiden_weights`（`_raiden_ws.h2d()`）并调用 `release_raiden_sync_buffers()` 释放了 Trainer 侧绑定张量，导致后续 `506` 个张量在 Sampler 端保持为全零初始态。
-- **修复版本**：在 `tpu-sync-torch==0.0.1.dev20261006025601`（打包在 `verl-tpu:v20261006-tsync1006` 镜像中）中：
-  1. 移除了有缺陷的 `can_fast_path_direct` / `direct_schedules` 分支，将所有权重同步统一收敛到 `BroadcastEngine` 流水线调度；
-  2. 修复了 PyTorch `WeightSynchronizer` 多层 Host Buffer 按层容量查询（此前误用第 0 层 `slice_byte_size()`）以及非 `(8, 128)` 对齐分片的 `skip_tiling` 判定；
-  3. 补全了接收端 `expected_layer_chunk_counts` 的注册与完成等待。
-
-### 4.2 根因二：P1c（`CP=4, FSDP=8`）下的分片导出与上游缺失补丁
-
-在 P1c 中，为了容纳 16K 多轮工具交互序列，Trainer 启用了 `context_parallel_size=4, data_parallel_shard_size=8`。在 `verl/workers/engine/torchtitan/transformer_impl.py` 中，TPU 默认使用 `spmd_backend="default"`，TorchTitan 的 `apply_simple_fsdp` 将权重分片在扁平化的 1-D `"fsdp"` mesh（大小 `dp_shard * cp = 32`）上，唯独启用了 `_split_qkv_on_save` 的 `q_proj / k_proj / v_proj` 在导出 hook 中返回 2-D `(dp_shard=8, cp=4)` mesh，从而在 `export_local_shards()` 中触发跨芯片 all-gather 并作为 replicated 张量注册（这也是日志中显示 `registering 578 sharded and 1 full tensors` 或部分张量走 full-tensor 路径的原因）。
-
-此外，我们的分支（基于 `a27db71c`）缺少此后在上游合入的两个关键 PR：
-
-1. **MoE 专家栈 3-D `[E, I, H]` 原生导出（`verl-project/verl-hardware-plugin#89` / `jialei777/verl-upstream#110`）**：
-   - 当前分支的 `expert_stack_wire()` 将 3-D MoE 专家栈 `[128, 768, 2048]` 折叠为 2-D `[98304, 2048]`，并在每次同步时执行 `local.reshape(local_shape).clone()`，在每张芯片上额外分配约 `3.8 GiB` 的 2-D 拷贝缓冲。
-   - 合入 `#89` / `#110` 后，Trainer 与 Sampler 直接以 3-D `[128, 768, 2048]` / `[128, 2048, 768]` 注册给 Raiden，无需在 Trainer 端 `.reshape().clone()`，也无需在 Sampler 端做二次 2-D 拆包。
-2. **新版 `torch-tpu` 下折叠张量视图的底层存储块维度检查（`jialei777/verl-upstream#116`）**：
-   - 当切换到包含新版 `tpu-sync` 的镜像（同时包含 `torch-tpu >= 0.2.0`）时，TPU 上的 `tensor.reshape(2D).clone()` 会通过 `CopyTpuToTpu` 继承源 3-D 张量的底层 PjRt 存储描述符（leading dim 仍为 `4` 个本地专家，而非折叠后的 `4 × 1536 = 6144`）。
-   - 这会导致 `tpu-sync` 的 `UnpackTorchTensor` 抛出：
-     ```text
-     RuntimeError: UnpackTorchTensor: Tensor 'layer_0_shard_0' leading (block) dimension (6144) does not match its base storage buffer (4)
-     ```
-   - `jialei777/verl-upstream#116` 在 `adapt_for_raw_transfer()` 中通过 `.cpu().to(t.device)` 强制分配匹配 2-D 形状的新设备存储；而同时合入 `#110`（`verl-hardware-plugin#89`）直接导出 3-D 专家栈则从源头避免了 2-D 折叠视图。
+1. **工作假设 H1（主假设：`tpu-sync-torch` P2P 传输提前返回或 Host Staging Buffer 未写满）**：
+   - **机制推测**：在 `p1c-retool-rl-05` 中，Trainer 与 Sampler 均按 `(-global_numel, name)` 顺序注册 `579` 个传输张量（前 `2` 个为词表嵌入 `lm_head/embed_tokens`，`idx=2..145` 为 48 层 × 3 个 2-D 折叠 MoE 专家栈，其中 `idx=71, 72, 73` 恰好对应 `layers.3` 的 `down_proj, gate_proj, up_proj`；`idx=146..578` 为 433 个较小的稠密张量）。`rank 0` 上 `layers.3...w13_weight`（由 `idx=72` `gate_proj` 与 `idx=73` `up_proj` 拼接而成）出现 `recv_absmean ≈ 0.5 × ref_absmean`、且后续张量全零，高度吻合“按注册顺序传输到约 `idx=72/73`（~29.4 GiB）时传输提前结束，后续 Host Staging Buffer 保持初始全零”的特征。
+   - **如何验证**：
+     - 在 `install_raiden_weights()` 调用 `self._raiden_ws.h2d()` **之前**，直接检查 `self._raiden_cpu_staging`（或对应的 host buffer）中 `idx=72, 73, 74` 的非零比例/L1 范数，即可 100% 区分全零是发生在 **H2D 之前（H1）** 还是 **H2D 之中/之后（H2/H3）**；
+     - 同时在不改业务代码的前提下，将运行时镜像切换到包含新版 `tpu-sync-torch` 的镜像进行受控对比。
+2. **工作假设 H2（`_raiden_ws.h2d()` 主机到设备 DMA 拷贝异常）**：
+   - **机制推测**：Host Staging Buffer 已完整收到非零权重，但 `_raiden_ws.h2d()` 在批量拷贝 579 个张量（或特定对齐/大小的张量）到 TPU HBM 时在 `idx=73` 附近发生截断或清零。
+   - **如何验证**：同上，对比 `self._raiden_ws.h2d()` 执行前后的 CPU staging 张量与 TPU staging 张量 `self._raiden_staging[k]`。
+3. **工作假设 H3（H2D 之后的 TPU 端张量视图拆包 / 转置异常）**：
+   - **机制推测**：`self._raiden_staging[k]` 在 TPU HBM 中非零，但在 `_raiden_fused_expert_weights()` 或 `to_target_layout()` 执行 `view / cat / transpose / contiguous` 时因 XLA/PjRt 视图或延迟执行问题读到全零。
+   - **如何验证**：在 `check_exact` 失败时同时打印源 `self._raiden_staging[k].float().abs().mean()` 与转换后 `new13 / adapted` 的 `abs().mean()`。
 
 ---
 
-## 5. 修复与验证计划（Remediation Plan）
+## 5. 下一步分阶段受控验证计划（Staged Execution Plan）
 
-1. **Cherry-pick 上游补丁**：
-   - Cherry-pick `jialei777/verl-upstream#110`（对应 `verl-project/verl-hardware-plugin#89`）：将 MoE 专家权重改为 3-D `[E, I, H]` 原生 Raiden 导出；
-   - Cherry-pick `jialei777/verl-upstream#116`：在 `adapt_for_raw_transfer` 中对底层存储 leading dim 不匹配的视图走 CPU 中转克隆，确保在 `torch-tpu 0.2.0` 下兼容所有 reshape 视图。
-2. **升级 TPU 运行时镜像**：
-   - 将 P1c JobSet 镜像从 `verl-tpu:v20261001-tsync990787257`（`tpu-sync-torch==0.0.1.dev20261001220631`）切换至包含修复后 `tpu-sync` 的 `verl-tpu:v20261006-tsync1006`（`tpu-sync-torch==0.0.1.dev20261006025601`）。
-3. **验证标准（Gate Criteria）**：
-   - 开启 `VERIFY_PARITY=all` 运行 `P1c`，确认 Step 0、Step 1、Step 2 的 `RaidenParityCheck`（`435 / 435` 个 vLLM 张量 exact check + distributed L1/L2 norm check）100% 通过；
-   - 确认 Step 1–2 的 `rollout_corr/ppl_ratio` 保持在 `~1.0` 附近，随后推进 `P3`（25-step 正式训练与 AIME 2024/2025 评估）。
+遵循“**先固定代码只验证新版运行时镜像，按需再评估补丁，严格定义 Parity Gate**”的原则，分两步推进：
+
+### 阶段一：环境审计与受控 Runtime 镜像验证（不预先 Cherry-pick `#110` 或 `#116`）
+
+1. **固定镜像 Digest 并审计真实包版本**：
+   - 选定待测新版 TPU 镜像并固定不可变 `@sha256:...` digest；
+   - 在 Pod 启动预检中实测记录：`torch_tpu` 版本与路径、`tpu_sync`（`tpu-sync-torch`）版本与路径、P1c 运行代码 Git SHA、Step-372 SFT checkpoint SHA（`59247a00...`）以及双 `2×2×4` Slice 拓扑（每侧 `16 physical chips / 32 TensorCore devices`，总计 `32 physical chips / 64 TensorCore devices`）。
+2. **保持当前 P1c 代码不变，仅切换镜像运行受控 P1c（开启 `VERIFY_PARITY=all`）**：
+   - 先不合入 `#110` 或 `#116`，直接检验新版镜像下的行为：
+     - **情形 A**：若新版镜像直接通过 Step-0 `exact` 校验与 Step 1–2 训练，则证实问题由旧镜像 runtime 引起，且无需合入 `#116` workaround；
+     - **情形 B**：若新版镜像在 Step-0 绑定 2-D 折叠专家栈时明确抛出 `UnpackTorchTensor: Tensor ... leading (block) dimension ... does not match its base storage buffer`，则进入**阶段二**，仅针对性评估移植 `#116` 的必要部分；
+     - **情形 C**：若仍复现 Step-0 部分全零 mismatch，则采集 H2D 前后的 staging buffer 诊断日志与全 32 ranks 的 `exact_result` 明细，精准区分 H1 / H2 / H3。
+
+### 阶段二：按需评估补丁移植与通过门槛（Gate Criteria）
+
+1. **按需补丁评估（Conditional Patch Porting）**：
+   - 仅当阶段一触发 2-D folded expert stack 的 `UnpackTorchTensor` 错误时，才评估从 [`jialei777/verl-upstream#116`](https://github.com/jialei777/verl-upstream/pull/116) 移植最小必要的 host-rebind 处理；
+   - [`verl-project/verl-hardware-plugin#89`](https://github.com/verl-project/verl-hardware-plugin/pull/89) 的 3-D direct install 方案因涉及跨仓库依赖，单独评估，不与 `#116` 混用。
+2. **明确定义的 `Stage P1c` 通过门槛（Gate Criteria）**：
+   - **Step 0（`exact` 逐位校验门槛）**：在 `VERIFY_PARITY=all` 下，全部 **32 个 Sampler ranks** 的全部预期检查项（当前 2-D 折叠路径下为 `435 / 435` 项/rank；若未来采用 3-D direct install 则按对应 expert region 检查项计数）必须 **`exact` 100% 通过（`0 mismatched, 0 unresolved`）**；
+   - **Step 1–2（`norm` 范数校验 + 训练/推理闭环健康度门槛）**：
+     - 通过现有 `verify_norms` 校验（全模型 `numel` 与逐张量/全局 `L1` 范数在 `1e-3` 相对容差内一致；**注：报告中须明确注明 Step 1–2 的 `norm` 通过仅验证 `numel` 与 `L1` 范数一致，不等于逐元素 bit-exact**）；
+     - 同步后生成的 Rollout 困惑度比值 `actor/rollout_corr/ppl_ratio` 稳定在 `~1.0` 正常区间（无乱码或 PPL 暴涨）；
+     - 连续完成真实梯度更新（`actor/grad_norm > 0`），触发多轮 SandboxFusion 代码工具调用，且 `rollout_audit` 的 Token 级 `response_mask` 违规数为 **`0`**。
+3. **证据归档与推进 `Stage P3`**：
+   - 完整保存 `Stage P1c` 的原始控制台日志、Hydra resolved config、容器包版本清单与逐 rank parity 明细；
+   - 在 `Stage P1c` 满足上述全部门槛后，再启动 **`Stage P3`（TPU v7x 25-step 正式 RL 训练 + Step 0/25 AIME 2024/2025 `n=30` 评估）**。

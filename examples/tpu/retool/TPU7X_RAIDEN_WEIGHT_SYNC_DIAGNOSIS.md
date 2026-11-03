@@ -76,11 +76,11 @@
    - 此前草稿根据 `rank 0` 上首个失败张量 `model.layers.3.mlp.experts.routed_experts.w13_weight` 推算 `435 - 110 = 325` 并假定所有 32 个 rank 均为 `325`，会得出 `32 × 325 = 10,400`，比真实总数 `10,414` 少 **14 个**（说明 32 个 Sampler rank 之间的截断位置存在轻微差异，部分 rank 比 `rank 0` 多出 1 个或数个不匹配张量）。
    - **修正措施（文档与代码双侧补齐）**：
      1. 在报告中严格使用 `p1c-retool-rl-05` 日志实测总计 **`10,414 / 13,920`**；
-     2. 已入队的 `p1c-retool-rl-06` 绑定的是提交前的基线代码 `CODE_REF=c2e17624`（其 `report_exact` 尚未强制断言不重复的 32 个 rank ID 及 `[435]` 检查数，也未将未截断的逐 rank 明细自动落盘），因此对 `-06` 的运行结果**必须人工核对日志摘要行是否精确为 `32 sampler ranks, [435] tensors checked per rank, 0 mismatched, 0 unresolved`**；
-     3. 同时，**本 PR 已在 [`verl/checkpoint_engine/raiden_checkpoint_engine.py`](../verl/checkpoint_engine/raiden_checkpoint_engine.py) 与 [`verl/workers/rollout/vllm_rollout/tpu_utils.py`](../verl/workers/rollout/vllm_rollout/tpu_utils.py) 中补齐三项采集与校验能力**（供后续运行直接使用）：
-        - **强制覆盖率与无重复 Rank 断言**：`report_exact` 校验返回的 `distinct_ranks` 数量无重复、与预期 `expected_ranks`（32 个 Sampler ranks）一致，且所有 rank 的 `checked` 张量数一致且 `> 0`，并在日志摘要中直接打印 `ranks=[0..31]`；
-        - **未截断逐 Rank 全量明细自动落盘**：`exact_result` 保留完整的 `all_mismatched` 列表，`report_exact` 在返回或抛出异常前自动将全部 32 个 rank 的完整结果写入 `${RAIDEN_PARITY_DUMP_DIR:-/tmp}/raiden_exact_parity_step_<step>.json`；
-        - **零值比例（`zero_frac`）与 H2D 后 / 融合前 Staging Buffer 诊断**：`check_exact` 新增记录 `zero_frac`（及 `w13_weight` 前后半段各自的 `absmean`/`zero_frac`），`install_raiden_weights` 在 MoE `w13_weight` / `w2_weight` 出现 mismatch 时同时记录融合前 `self._raiden_staging` 中 `gate_proj`、`up_proj`、`down_proj` 的 `absmean` 与 `zero_frac`，从而直接区分“H2D 后的 staging buffer 本身已为零”还是“后续 `_raiden_fused_expert_weights` 融合/转置阶段引入零值”。
+     2. 已入队的 `p1c-retool-rl-06` 绑定的是提交前的基线代码 `CODE_REF=c2e17624`（保留“仅切换容器镜像”的严格单变量对照，因此**不包含**本 PR 新增的 `(replica, rank)` `0..31` 集合断言、`expected_checked_per_rank=435` 断言、JSON 持久化归档或 staging 诊断），故让 `-06` 继续排队完成，并在其结束后**人工核对 `head.log` 中的 Step-0 摘要行是否精确为 `32 sampler ranks, [435] tensors checked per rank, 0 mismatched, 0 unresolved`**；
+     3. 同时，**本 PR 已在 [`verl/checkpoint_engine/raiden_checkpoint_engine.py`](../verl/checkpoint_engine/raiden_checkpoint_engine.py)、[`verl/workers/rollout/vllm_rollout/tpu_utils.py`](../verl/workers/rollout/vllm_rollout/tpu_utils.py) 与 [`examples/tpu/retool/run_qwen3_30b_a3b_dapo_torchtitan.sh`](run_qwen3_30b_a3b_dapo_torchtitan.sh) 中补齐三项采集与校验能力**（供后续基于本 PR commit 启动的运行如 `p1c-retool-rl-07` 直接使用）：
+        - **强制完整 `(replica, rank)` 集合与张量覆盖率断言**：在 `update_raiden_weights` 实际调用路径中向 `report_exact` 传入每个 replica 的预期 worker 数 `expected_workers_per_replica` 与 `expected_checked_per_rank=435`（同时在 Sampler Worker 侧 `exact_result` 中记录该 worker 实际应安装的模型参数总数 `expected_checked`），强制校验每个 replica 返回的 rank ID 集合精确为 `0..W_r-1`（如 `0..31`，拒绝 `100..131` 或重复/缺失 rank）且每个 rank 检查的张量数精确等于 `435`（拒绝 `checked=1` 等部分检查）；
+        - **未截断逐 Rank 全量明细持久化归档与写失败 Fail-Closed**：`run_qwen3_30b_a3b_dapo_torchtitan.sh` 将 `RAIDEN_PARITY_DUMP_DIR` 指向共享运行目录（`${VERL_NAP_RUN_DIR}/env` 或 `${default_local_dir}/parity`）并通过 `+ray_kwargs.ray_init.runtime_env.env_vars.RAIDEN_PARITY_DUMP_DIR` 与 `+actor_rollout_ref.rollout.checkpoint_engine.engine_kwargs.raiden.parity_dump_dir` 传入 Ray 进程；`report_exact` 将全部 32 个 rank 的完整结果写入 `${RAIDEN_PARITY_DUMP_DIR}/raiden_exact_parity_step_<step>.json`，若目录创建或文件写入失败则直接记入 `coverage_errors` 并抛出 `RaidenParityError`（Fail-Closed，绝不在归档失败时静默返回 `PASS`）；
+        - **仅在 Mismatch 时惰性触发的 Staging Buffer 诊断及明确归因边界**：`install_raiden_weights` 将融合前 `self._raiden_staging` 中的 `gate / up / down` 引用传给 `check_exact(..., staging_tensors=...)`，**仅当 `diff != 0.0`（且 `VERL_RAIDEN_DIAG_STAGING != "0"`）时才计算 `absmean` 与 `zero_frac` 并调用 `.item()`**，在无 mismatch 的正常同步中**零额外归约与零同步开销**。注意归因边界：由于 `self._raiden_staging` 是在 `self._raiden_ws.h2d()` **之后**读取的，若 `self._raiden_staging` 非零而融合后张量为零可定位 **H3**（`install_raiden_weights` 内部融合/转置异常）；若 `self._raiden_staging` 已为零则可排除 **H3**（证明损坏发生在 `install_raiden_weights` 拆包之前），**但仅凭该指标本身尚不能单独区分 H1（Trainer D2H / Follower 发送竞态）与 H2（Host gRPC 传输或 Sampler `h2d()` DMA 拷贝截断）**。
 
 ### 3.2 现有 `VERIFY_PARITY=all` 代码的实际检查能力边界
 
@@ -111,10 +111,10 @@
      - 保持代码 commit `c2e176240dcff0a25911b0576880e46624f7249b` 与全部超参不变，仅将镜像切换为 `verl-tpu:v20261006-tsync1006`（`@sha256:d92a2b3d6667584d67ea51874a721228a96c799263ab40f4aee168680476f64e`）并开启 `VERIFY_PARITY=all` 运行 **`p1c-retool-rl-06`**。
 2. **工作假设 H2（`_raiden_ws.h2d()` 主机到设备 DMA 拷贝异常）**：
    - **机制推测**：Host Staging Buffer 已完整收到非零权重，但 `_raiden_ws.h2d()` 在批量拷贝 579 个张量到 TPU HBM 时在 `idx=73` 附近发生截断或清零。
-   - **如何验证**：若新版镜像仍复现 mismatch，对比 `self._raiden_ws.h2d()` 执行前后的 CPU Host Buffer 与 TPU staging 张量 `self._raiden_staging[k]`。
+   - **如何验证与归因边界**：由於 `tpu_utils.py` 中的 `self._raiden_staging` 位于 TPU HBM 且在 `self._raiden_ws.h2d()` **之后**读取，观察到 `self._raiden_staging[k]` 为零只能证明全零发生在 `install_raiden_weights` 拆包/融合之前（即排除 H3），**不能单独区分 H1 与 H2**。若新版镜像仍复现 mismatch 且 `self._raiden_staging[k]` 为零，需进一步对比 `self._raiden_ws.h2d()` 执行前的 CPU Host Buffer 或 C++ `tpu-sync` D2H/传输日志以区分 H1 与 H2。
 3. **工作假设 H3（H2D 之后的 TPU 端张量视图拆包 / 转置异常）**：
    - **机制推测**：`self._raiden_staging[k]` 在 TPU HBM 中非零，但在 `_raiden_fused_expert_weights()` 或 `to_target_layout()` 执行 `view / cat / transpose / contiguous` 时因 XLA/PjRt 视图或延迟执行问题读到全零。
-   - **如何验证**：若新版镜像仍复现 mismatch，在 `check_exact` 失败时同时打印源 `self._raiden_staging[k].float().abs().mean()` 与转换后 `new13 / adapted` 的 `abs().mean()`。
+   - **如何验证**：若新版镜像仍复现 mismatch，通过本 PR 在 `check_exact`（仅 `diff != 0.0` 时触发）中记录的 `staging_gate_absmean / staging_up_absmean / staging_down_absmean` 与转换后 `new13 / new2` 的 `recv_absmean` 对比：若 `staging_*_absmean > 0` 而 `recv_absmean == 0`（或半零），即可直接定位为 H3。
 
 ---
 
@@ -126,13 +126,13 @@
 
 1. **已固定镜像 Digest 与受控运行配置（`p1c-retool-rl-06`）**：
    - **Run Name**: `p1c-retool-rl-06`（JobSet 已创建并进入队列等待调度，与 `p1c-retool-rl-05` 保持完全相同的代码 commit 与超参，**唯一变量为容器镜像**）：
-     - **代码 Git SHA**: `c2e176240dcff0a25911b0576880e46624f7249b`（未合入 `#110` 或 `#116`）；
+     - **代码 Git SHA**: `c2e176240dcff0a25911b0576880e46624f7249b`（未合入 `#110` 或 `#116`；**运行边界说明**：为保留“只换镜像”的严格单变量对照，`p1c-retool-rl-06` 固定在旧 commit `c2e17624`，**不包含**本 PR 新增的 `0..31` rank 集合断言、`expected_checked_per_rank=435` 断言、共享目录 JSON 归档及 mismatch-only staging 诊断；建议保持 `-06` 继续排队运行）；
      - **容器镜像 Digest**: `us-west2-docker.pkg.dev/tpu-pytorch/raycluster/verl-tpu@sha256:d92a2b3d6667584d67ea51874a721228a96c799263ab40f4aee168680476f64e`（`verl-tpu:v20261006-tsync1006`，含 `torch-tpu==0.1.2.dev20261006000518` 与 `tpu-sync-torch==0.0.1.dev20261006025601`）；
      - **拓扑与校验开关**: `2 × 2×2×4` Slice（Trainer `16 physical chips / 32 TensorCore devices`, `dp_shard=8, cp=4`；Rollout `16 physical chips / 32 TensorCore devices`, `TP=32, EP=32`），`VERIFY_PARITY=all`，`TOTAL_TRAINING_STEPS=3`，`NUM_WARMUP_BATCHES=1`，`TRAIN_BATCH_SIZE=8`，`PPO_MINI_BATCH_SIZE=8`，`N_RESP_PER_PROMPT=4`。
 2. **受控实验结果判定分支与归因边界**：
-   - **情形 A**：若 `p1c-retool-rl-06` 通过 Step-0 `exact` 校验（核实日志摘要行确为 `32 sampler ranks, [435] tensors checked per rank, 0 mismatched, 0 unresolved`）并正常完成 Step 1–3 训练（`verify_norms` 通过、同步后 `ppl_ratio ~ 1.0`、`grad_norm > 0`、多轮工具调用与 `rollout_audit` 掩码 0 违规），则证明**切换到新版镜像组合（`torch-tpu==0.1.2.dev20261006000518` + `tpu-sync-torch==0.0.1.dev20261006025601`）已解决本次观察到的 `P1c` 权重损坏问题，结果支持假设 H1**，且当前 `c2e17624` 的 2-D 独立分配路径无需合入 `#116` workaround 即可进入 `Stage P1c` 完整验收与 `Stage P3`。（**归因边界说明**：由于新版镜像同时升级了 `torch-tpu` 与 `tpu-sync-torch`，仅凭 `-06` 通过尚不能在单变量意义上单独证明 D2H 竞态是唯一根因；若需做严格单包归因，还需固定 `torch-tpu` 仅单独升级 `tpu-sync-torch` wheel 或在 C++/Host Buffer 层插桩验证。）
+   - **情形 A**：若 `p1c-retool-rl-06` 通过 Step-0 `exact` 校验（因 `-06` 运行在旧 commit `c2e17624`，须人工核实 `head.log` 摘要行确为 `32 sampler ranks, [435] tensors checked per rank, 0 mismatched, 0 unresolved`）并正常完成 Step 1–3 训练（`verify_norms` 通过、同步后 `ppl_ratio ~ 1.0`、`grad_norm > 0`、多轮工具调用与 `rollout_audit` 掩码 0 违规），则证明**切换到新版镜像组合（`torch-tpu==0.1.2.dev20261006000518` + `tpu-sync-torch==0.0.1.dev20261006025601`）已解决本次观察到的 `P1c` 权重损坏问题，结果支持假设 H1**，且当前 `c2e17624` 的 2-D 独立分配路径无需合入 `#116` workaround 即可进入 `Stage P1c` 完整验收与 `Stage P3`。（**归因边界说明**：由于新版镜像同时升级了 `torch-tpu` 与 `tpu-sync-torch`，仅凭 `-06` 通过尚不能在单变量意义上单独证明 D2H 竞态是唯一根因；若需做严格单包归因，还需固定 `torch-tpu` 仅单独升级 `tpu-sync-torch` wheel 或在 C++/Host Buffer 层插桩验证。）
    - **情形 B**：若新版镜像在 Step-0 绑定 2-D 折叠专家栈时明确抛出 `UnpackTorchTensor: Tensor ... leading (block) dimension ... does not match its base storage buffer`，则进入**阶段二**，仅针对性评估移植 `#116` 的必要部分；
-   - **情形 C**：若仍复现 Step-0 部分全零 mismatch，则使用本 PR 新增的未截断逐 rank JSON 落盘与 `self._raiden_staging`（融合前 `gate_proj / up_proj / down_proj`）诊断日志，精准区分零值产生于 H2D 前/中（H1/H2）还是 H2D 后的融合/转置阶段（H3）。
+   - **情形 C**：若 `p1c-retool-rl-06`（固定在旧 commit `c2e17624`）仍复现 Step-0 mismatch（或后续运行需要启用自动化完整覆盖断言与诊断归档），由于 `-06` 本身不包含本 PR 新增代码，**须使用包含本 PR 代码的 commit 单独启动一次新运行（`p1c-retool-rl-07`）**，通过持久化到 `${RAIDEN_PARITY_DUMP_DIR}/raiden_exact_parity_step_0.json` 的未截断逐 rank 明细以及仅在 mismatch 时触发的 `self._raiden_staging`（H2D 后、融合前 `gate / up / down`）统计，先区分故障发生在 **`install_raiden_weights` 之前（H1 或 H2，`staging_*_absmean == 0`）** 还是 **H2D 后的融合/转置阶段（H3，`staging_*_absmean > 0` 但 `recv_absmean == 0`）**；若确认 `staging_*_absmean == 0`（排除 H3），再结合 Host Staging Buffer / C++ `tpu-sync` 日志进一步区分 H1 与 H2。
 
 ### 阶段二：按需评估补丁移植与通过门槛（Gate Criteria）
 

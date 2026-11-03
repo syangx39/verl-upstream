@@ -354,8 +354,21 @@ class RaidenParityCheck:
     MODES = ("off", "norm", "exact", "all")
     MAX_DETAIL_LINES = 60
 
-    def __init__(self, mode: Any = "off") -> None:
+    def __init__(
+        self,
+        mode: Any = "off",
+        expected_checked_per_rank: Optional[int] = None,
+        dump_dir: Optional[str] = None,
+    ) -> None:
         self.mode = self.parse_mode(mode)
+        if expected_checked_per_rank is None:
+            env_expected = os.environ.get("RAIDEN_PARITY_EXPECTED_CHECKED_PER_RANK", "").strip()
+            if env_expected:
+                expected_checked_per_rank = int(env_expected)
+        self.expected_checked_per_rank = (
+            int(expected_checked_per_rank) if expected_checked_per_rank is not None else None
+        )
+        self.dump_dir = dump_dir
         self.checked = 0
         self.mismatched: list[str] = []
 
@@ -373,8 +386,18 @@ class RaidenParityCheck:
 
     @classmethod
     def from_config(cls, engine_kwargs) -> "RaidenParityCheck":
-        """Read ``engine_kwargs.raiden.verify_parity``, the same key the trainer's RaidenCheckpointEngine receives."""
-        return cls((engine_kwargs.get("raiden") or {}).get("verify_parity", False))
+        """Read ``engine_kwargs.raiden.*`` parity settings, with env-var fallbacks."""
+        raiden_cfg = ((engine_kwargs or {}).get("raiden") or {}) if isinstance(engine_kwargs, dict) else {}
+        raw_expected = raiden_cfg.get("expected_checked_per_rank")
+        expected_checked = (
+            int(raw_expected) if raw_expected is not None and str(raw_expected).strip() != "" else None
+        )
+        dump_dir = raiden_cfg.get("parity_dump_dir") or None
+        return cls(
+            raiden_cfg.get("verify_parity", False),
+            expected_checked_per_rank=expected_checked,
+            dump_dir=dump_dir,
+        )
 
     @property
     def norm(self) -> bool:
@@ -395,6 +418,19 @@ class RaidenParityCheck:
         return {"exact_parity": True} if self.exact and not global_steps else {}
 
     @classmethod
+    def _resolve_dump_dir(cls, dump_dir: Optional[str] = None) -> str:
+        if dump_dir and str(dump_dir).strip():
+            return str(dump_dir).strip()
+        env_dump = os.environ.get("RAIDEN_PARITY_DUMP_DIR", "").strip()
+        if env_dump:
+            return env_dump
+        for run_env in ("VERL_NAP_RUN_DIR", "RUN_DIR"):
+            run_dir = os.environ.get(run_env, "").strip()
+            if run_dir:
+                return os.path.join(run_dir, "env")
+        return "/tmp"
+
+    @classmethod
     def report_exact(
         cls,
         global_steps: Optional[int],
@@ -402,15 +438,22 @@ class RaidenParityCheck:
         expected_ranks: Optional[int] = None,
         expected_checked_per_rank: Optional[int] = None,
         dump_dir: Optional[str] = None,
+        expected_workers_per_replica: Optional[list[int]] = None,
     ) -> bool:
         """Log one summary of the per-rank ``exact_result`` dicts that every sampler worker returns under
         ``install_raiden_weights(...)["exact_parity"]``, archive full per-rank results to JSON, and verify
         full rank/tensor coverage.
 
-        Returns True when every expected sampler rank returned a unique result with uniform positive tensor
-        coverage and every received tensor matches bit for bit. Raises ``RaidenParityError`` on any mismatched,
-        unresolved, duplicate-rank, or incomplete-coverage result.
+        Returns True when every expected sampler rank (0..W_r-1 per replica) returned a unique result with
+        uniform expected tensor coverage, the JSON report was archived, and every received tensor matches
+        bit for bit. Raises ``RaidenParityError`` on any mismatched, unresolved, duplicate/out-of-range rank,
+        incomplete tensor coverage, or JSON archive write failure.
         """
+        if expected_checked_per_rank is None:
+            env_expected = os.environ.get("RAIDEN_PARITY_EXPECTED_CHECKED_PER_RANK", "").strip()
+            if env_expected:
+                expected_checked_per_rank = int(env_expected)
+
         results = []
         for replica_idx, res in enumerate(install_results):
             workers = res if isinstance(res, list | tuple) else [res]
@@ -430,7 +473,58 @@ class RaidenParityCheck:
         num_unresolved = sum(len(r["unresolved"]) for r in results)
         checked_per_rank = sorted({int(r["checked"]) for r in results})
 
-        target_dir = dump_dir or os.environ.get("RAIDEN_PARITY_DUMP_DIR") or "/tmp"
+        coverage_errors = []
+        if len(distinct_pairs) != len(results):
+            coverage_errors.append(
+                f"duplicate sampler (replica, rank) IDs in exact_parity results: {replica_rank_pairs}"
+            )
+        if expected_ranks is not None and len(distinct_pairs) != expected_ranks:
+            coverage_errors.append(
+                f"expected {expected_ranks} sampler worker results, got {len(distinct_pairs)} ({replica_rank_pairs})"
+            )
+
+        # Verify that each replica's returned rank IDs form the exact 0-indexed set 0..W_r-1.
+        if expected_workers_per_replica is not None:
+            if len(install_results) != len(expected_workers_per_replica):
+                coverage_errors.append(
+                    f"expected {len(expected_workers_per_replica)} rollout replicas, got {len(install_results)}"
+                )
+            for replica_idx, expected_w in enumerate(expected_workers_per_replica):
+                expected_set = list(range(int(expected_w)))
+                actual_set = sorted(int(r["rank"]) for r in results if int(r.get("replica", 0)) == replica_idx)
+                if actual_set != expected_set:
+                    coverage_errors.append(
+                        f"replica {replica_idx} expected rank IDs 0..{int(expected_w) - 1}, got {actual_set}"
+                    )
+        else:
+            num_replicas = max(len(install_results), 1)
+            for replica_idx in sorted({int(r.get("replica", 0)) for r in results}):
+                actual_set = sorted(int(r["rank"]) for r in results if int(r.get("replica", 0)) == replica_idx)
+                if expected_ranks is not None and expected_ranks % num_replicas == 0:
+                    expected_w = expected_ranks // num_replicas
+                else:
+                    expected_w = len(actual_set)
+                expected_set = list(range(int(expected_w)))
+                if actual_set != expected_set:
+                    coverage_errors.append(
+                        f"replica {replica_idx} expected rank IDs 0..{int(expected_w) - 1}, got {actual_set}"
+                    )
+
+        if len(checked_per_rank) != 1 or checked_per_rank[0] <= 0:
+            coverage_errors.append(f"non-uniform or zero tensors checked per rank: {checked_per_rank}")
+        if expected_checked_per_rank is not None and checked_per_rank != [expected_checked_per_rank]:
+            coverage_errors.append(
+                f"expected [{expected_checked_per_rank}] tensors checked per rank, got {checked_per_rank}"
+            )
+        for r in results:
+            worker_expected = r.get("expected_checked")
+            if worker_expected is not None and int(r["checked"]) != int(worker_expected):
+                coverage_errors.append(
+                    f"replica {int(r.get('replica', 0))} rank {int(r['rank'])} checked {int(r['checked'])} tensors, "
+                    f"expected {int(worker_expected)} installed model parameters"
+                )
+
+        target_dir = cls._resolve_dump_dir(dump_dir)
         archive_path = os.path.join(target_dir, f"raiden_exact_parity_step_{step}.json")
         archived_note = ""
         try:
@@ -439,17 +533,20 @@ class RaidenParityCheck:
                 "step": step,
                 "num_results": len(results),
                 "expected_ranks": expected_ranks,
+                "expected_workers_per_replica": expected_workers_per_replica,
                 "expected_checked_per_rank": expected_checked_per_rank,
                 "replica_rank_pairs": replica_rank_pairs,
                 "distinct_ranks": distinct_ranks,
                 "checked_per_rank": checked_per_rank,
                 "num_mismatched": num_mismatched,
                 "num_unresolved": num_unresolved,
+                "coverage_errors": list(coverage_errors),
                 "ranks": [
                     {
                         "replica": int(r.get("replica", 0)),
                         "rank": int(r["rank"]),
                         "checked": int(r["checked"]),
+                        "expected_checked": r.get("expected_checked"),
                         "num_mismatched": int(r["num_mismatched"]),
                         "unresolved": list(r.get("unresolved", [])),
                         "all_mismatched": list(r.get("all_mismatched", r.get("mismatched", []))),
@@ -461,23 +558,10 @@ class RaidenParityCheck:
                 json.dump(archive_payload, f, indent=2)
             archived_note = f" (full per-rank report archived to {archive_path})"
         except Exception as exc:
-            logger.warning(f"[RAIDEN PARITY EXACT | Step {step}] failed to archive report to {archive_path}: {exc}")
-
-        coverage_errors = []
-        if len(distinct_pairs) != len(results):
-            coverage_errors.append(
-                f"duplicate sampler (replica, rank) IDs in exact_parity results: {replica_rank_pairs}"
-            )
-        if expected_ranks is not None and len(distinct_pairs) != expected_ranks:
-            coverage_errors.append(
-                f"expected {expected_ranks} sampler worker results, got {len(distinct_pairs)} ({replica_rank_pairs})"
-            )
-        if len(checked_per_rank) != 1 or checked_per_rank[0] <= 0:
-            coverage_errors.append(f"non-uniform or zero tensors checked per rank: {checked_per_rank}")
-        if expected_checked_per_rank is not None and checked_per_rank != [expected_checked_per_rank]:
-            coverage_errors.append(
-                f"expected [{expected_checked_per_rank}] tensors checked per rank, got {checked_per_rank}"
-            )
+            archive_err = f"failed to archive exact_parity JSON report to {archive_path}: {exc}"
+            archived_note = f" (UNARCHIVED: {archive_err})"
+            logger.error(f"[RAIDEN PARITY EXACT | Step {step}] {archive_err}")
+            coverage_errors.append(archive_err)
 
         summary = (
             f"[RAIDEN PARITY EXACT | Step {step}] {len(results)} sampler ranks (distinct_workers={len(distinct_pairs)}, "
@@ -502,8 +586,14 @@ class RaidenParityCheck:
         target: torch.Tensor,
         received: torch.Tensor,
         extra_info: Optional[str] = None,
+        staging_tensors: Optional[dict[str, torch.Tensor]] = None,
     ) -> None:
-        """Compare ``received`` with ``target``; call before ``target`` is overwritten."""
+        """Compare ``received`` with ``target``; call before ``target`` is overwritten.
+
+        ``staging_tensors`` (optional mapping of label -> post-H2D staging tensor) is reduced ONLY when a
+        mismatch (``diff != 0.0``) is detected and ``VERL_RAIDEN_DIAG_STAGING != "0"``, avoiding extra TPU
+        reductions and ``.item()`` host syncs on matching tensors.
+        """
         try:
             ref, new = target.detach().float(), received.detach().float()
             if ref.shape != new.shape:
@@ -525,7 +615,16 @@ class RaidenParityCheck:
                         f" w13_h0(gate)_absmean={h0_absmean:.4g}(zero={h0_zero:.4g})"
                         f" w13_h1(up)_absmean={h1_absmean:.4g}(zero={h1_zero:.4g})"
                     )
-                extra_suffix = f" {extra_info}" if extra_info else ""
+                extra_parts = []
+                if staging_tensors and os.environ.get("VERL_RAIDEN_DIAG_STAGING", "1") != "0":
+                    for st_label, st_tensor in staging_tensors.items():
+                        st_f = st_tensor.detach().float()
+                        st_absmean = st_f.abs().mean().item()
+                        st_zero = (st_f == 0).float().mean().item()
+                        extra_parts.append(f"staging_{st_label}_absmean={st_absmean:.4g}(zero={st_zero:.4g})")
+                if extra_info:
+                    extra_parts.append(extra_info)
+                extra_suffix = (" " + " ".join(extra_parts)) if extra_parts else ""
                 self.mismatched.append(
                     f"{name}: max|diff|={diff:.4g} ref_absmean={ref.abs().mean().item():.4g} "
                     f"recv_absmean={new.abs().mean().item():.4g} ref_zero_frac={ref_zero_frac:.4g} "
@@ -534,8 +633,13 @@ class RaidenParityCheck:
         except Exception as e:  # never break the sync because of the check
             self.mismatched.append(f"{name}: parity check failed: {e}")
 
-    def exact_result(self, rank: int, unresolved: list[str]) -> dict:
-        return {
+    def exact_result(
+        self,
+        rank: int,
+        unresolved: list[str],
+        expected_checked: Optional[int] = None,
+    ) -> dict:
+        res = {
             "rank": rank,
             "checked": self.checked,
             "num_mismatched": len(self.mismatched),
@@ -543,6 +647,9 @@ class RaidenParityCheck:
             "all_mismatched": list(self.mismatched),
             "unresolved": list(unresolved),
         }
+        if expected_checked is not None:
+            res["expected_checked"] = int(expected_checked)
+        return res
 
     # ---- norm check: orchestrator side ----
 
@@ -1232,8 +1339,16 @@ async def update_raiden_weights(
     #    resumes generation on wrong weights. Off by default, so it adds nothing to the resume path.
     t_parity_start = time.perf_counter()
     if install_kwargs:
-        expected_sampler_ranks = sum(_replica_num_workers(r) for r in manager.replicas)
-        parity.report_exact(global_steps, install_results, expected_ranks=expected_sampler_ranks or None)
+        expected_workers_per_replica = [_replica_num_workers(r) for r in manager.replicas]
+        expected_sampler_ranks = sum(expected_workers_per_replica)
+        parity.report_exact(
+            global_steps,
+            install_results,
+            expected_ranks=expected_sampler_ranks or None,
+            expected_checked_per_rank=parity.expected_checked_per_rank,
+            dump_dir=parity.dump_dir,
+            expected_workers_per_replica=expected_workers_per_replica or None,
+        )
     if parity.norm:
         await parity.verify_norms(manager, global_steps)
     t_parity = time.perf_counter() - t_parity_start

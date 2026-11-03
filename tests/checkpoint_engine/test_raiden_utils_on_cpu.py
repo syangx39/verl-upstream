@@ -184,16 +184,17 @@ def test_check_exact_records_value_and_shape_mismatches():
     assert result["unresolved"] == ["x"]
 
 
-def _exact(rank, mismatched=(), unresolved=(), checked=10):
-    return {
-        "exact_parity": {
-            "rank": rank,
-            "checked": checked,
-            "num_mismatched": len(mismatched),
-            "mismatched": list(mismatched),
-            "unresolved": list(unresolved),
-        }
+def _exact(rank, mismatched=(), unresolved=(), checked=10, expected_checked=None):
+    payload = {
+        "rank": rank,
+        "checked": checked,
+        "num_mismatched": len(mismatched),
+        "mismatched": list(mismatched),
+        "unresolved": list(unresolved),
     }
+    if expected_checked is not None:
+        payload["expected_checked"] = expected_checked
+    return {"exact_parity": payload}
 
 
 def test_report_exact_passes_when_every_rank_matches(tmp_path):
@@ -221,15 +222,16 @@ def test_report_exact_archives_untruncated_mismatches_and_enforces_coverage(tmp_
         "model.layers.3.mlp.experts.routed_experts.w13_weight",
         ref,
         recv_half_zero,
-        extra_info="staging_gate_absmean=1(zero=0) staging_up_absmean=0(zero=1)",
+        staging_tensors={"gate": torch.ones((4, 4)), "up": torch.zeros((4, 4))},
     )
     for idx in range(70):
         parity.check_exact(f"layer.{idx}.weight", torch.ones(2), torch.zeros(2))
-    res0 = parity.exact_result(rank=0, unresolved=[])
+    res0 = parity.exact_result(rank=0, unresolved=[], expected_checked=71)
     assert len(res0["mismatched"]) == RaidenParityCheck.MAX_DETAIL_LINES
     assert len(res0["all_mismatched"]) == 71
     assert "w13_h0(gate)_absmean=" in res0["all_mismatched"][0]
     assert "w13_h1(up)_absmean=0(zero=1)" in res0["all_mismatched"][0]
+    assert "staging_gate_absmean=1(zero=0)" in res0["all_mismatched"][0]
     assert "staging_up_absmean=0(zero=1)" in res0["all_mismatched"][0]
 
     with pytest.raises(RaidenParityError, match="71 mismatched"):
@@ -240,15 +242,95 @@ def test_report_exact_archives_untruncated_mismatches_and_enforces_coverage(tmp_
     archived = json.loads((tmp_path / "raiden_exact_parity_step_0.json").read_text())
     assert len(archived["ranks"][0]["all_mismatched"]) == 71
 
-    # Duplicate rank within a replica or missing expected ranks must fail closed even with 0 mismatches.
+    # Duplicate rank within a replica, missing expected ranks, or non-0..W-1 rank IDs must fail closed.
     with pytest.raises(RaidenParityError, match="duplicate sampler"):
         RaidenParityCheck.report_exact(0, [[_exact(0), _exact(0)]], dump_dir=str(tmp_path))
     with pytest.raises(RaidenParityError, match="expected 4 sampler worker results"):
         RaidenParityCheck.report_exact(0, [[_exact(0), _exact(1)]], expected_ranks=4, dump_dir=str(tmp_path))
+    with pytest.raises(RaidenParityError, match=r"replica 0 expected rank IDs 0\.\.31"):
+        RaidenParityCheck.report_exact(
+            0,
+            [[_exact(r, checked=435) for r in range(100, 132)]],
+            expected_ranks=32,
+            expected_checked_per_rank=435,
+            dump_dir=str(tmp_path),
+        )
     with pytest.raises(RaidenParityError, match="non-uniform or zero tensors checked"):
         RaidenParityCheck.report_exact(
             0, [[_exact(0, checked=10), _exact(1, checked=9)]], dump_dir=str(tmp_path)
         )
+
+
+def test_report_exact_fails_closed_when_json_archive_fails(tmp_path, monkeypatch):
+    # Point dump_dir at an existing regular file so os.makedirs(target_dir, exist_ok=True) fails.
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    bad_dir = tmp_path / "not_a_dir"
+    bad_dir.write_text("file")
+    with pytest.raises(RaidenParityError, match=r"UNARCHIVED: failed to archive exact_parity JSON report"):
+        RaidenParityCheck.report_exact(
+            0,
+            [[_exact(0), _exact(1)]],
+            expected_ranks=2,
+            expected_checked_per_rank=10,
+            dump_dir=str(bad_dir),
+        )
+    # Also verify _resolve_dump_dir picks up VERL_NAP_RUN_DIR when dump_dir and RAIDEN_PARITY_DUMP_DIR are unset.
+    monkeypatch.delenv("RAIDEN_PARITY_DUMP_DIR", raising=False)
+    monkeypatch.setenv("VERL_NAP_RUN_DIR", str(tmp_path / "nap_run"))
+    assert RaidenParityCheck._resolve_dump_dir(None) == str(tmp_path / "nap_run" / "env")
+
+
+def test_check_exact_computes_staging_stats_only_on_mismatch(monkeypatch):
+    class _SpyStaging:
+        def __init__(self, t):
+            self._t = t
+            self.detach_calls = 0
+
+        def detach(self):
+            self.detach_calls += 1
+            return self._t.detach()
+
+    parity = RaidenParityCheck("exact")
+    ref = torch.ones((2, 4, 6), dtype=torch.bfloat16)
+    spy_gate = _SpyStaging(torch.ones((4, 4)))
+    spy_up = _SpyStaging(torch.zeros((4, 4)))
+
+    # 1. Exact match (diff == 0.0): staging_tensors must NOT be reduced or touched at all.
+    parity.check_exact(
+        "model.layers.0.mlp.experts.routed_experts.w13_weight",
+        ref,
+        ref.clone(),
+        staging_tensors={"gate": spy_gate, "up": spy_up},
+    )
+    assert spy_gate.detach_calls == 0
+    assert spy_up.detach_calls == 0
+    assert parity.mismatched == []
+
+    # 2. Mismatch (diff != 0.0): staging_tensors ARE reduced lazily.
+    bad = ref.clone()
+    bad[..., 3:] = 0.0
+    parity.check_exact(
+        "model.layers.0.mlp.experts.routed_experts.w13_weight",
+        ref,
+        bad,
+        staging_tensors={"gate": spy_gate, "up": spy_up},
+    )
+    assert spy_gate.detach_calls == 1
+    assert spy_up.detach_calls == 1
+    assert "staging_gate_absmean=1(zero=0)" in parity.mismatched[-1]
+    assert "staging_up_absmean=0(zero=1)" in parity.mismatched[-1]
+
+    # 3. Opt-out via VERL_RAIDEN_DIAG_STAGING=0 skips staging reduction even on mismatch.
+    monkeypatch.setenv("VERL_RAIDEN_DIAG_STAGING", "0")
+    parity.check_exact(
+        "model.layers.1.mlp.experts.routed_experts.w13_weight",
+        ref,
+        bad,
+        staging_tensors={"gate": spy_gate, "up": spy_up},
+    )
+    assert spy_gate.detach_calls == 1
+    assert spy_up.detach_calls == 1
+    assert "staging_gate_absmean" not in parity.mismatched[-1]
 
 
 @pytest.mark.parametrize(
@@ -396,9 +478,24 @@ class _FakeActorWG:
 
 
 class _FakeManager:
-    def __init__(self, num_trainer, num_replicas, tp, verify_parity="off", register=True, results=None):
+    def __init__(
+        self,
+        num_trainer,
+        num_replicas,
+        tp,
+        verify_parity="off",
+        register=True,
+        results=None,
+        expected_checked_per_rank=None,
+        parity_dump_dir=None,
+    ):
         self.events = []
-        self.config = SimpleNamespace(engine_kwargs={"raiden": {"verify_parity": verify_parity, "parallelism": 4}})
+        raiden_cfg = {"verify_parity": verify_parity, "parallelism": 4}
+        if expected_checked_per_rank is not None:
+            raiden_cfg["expected_checked_per_rank"] = expected_checked_per_rank
+        if parity_dump_dir is not None:
+            raiden_cfg["parity_dump_dir"] = parity_dump_dir
+        self.config = SimpleNamespace(engine_kwargs={"raiden": raiden_cfg})
         self.actor_wg = _FakeActorWG(num_trainer, self.events)
         self.replicas = [
             SimpleNamespace(world_size=tp, server_handle=_FakeServer(i, tp, results or {})) for i in range(num_replicas)
@@ -523,11 +620,70 @@ async def test_update_raiden_weights_exact_parity_failure_does_not_resume(stub_t
 
 
 @pytest.mark.asyncio
-async def test_update_raiden_weights_exact_parity_pass_resumes(stub_tpu_sync):
-    install = {"install_raiden_weights": lambda: [_exact(0), _exact(1)]}
-    manager = _FakeManager(num_trainer=2, num_replicas=1, tp=2, verify_parity="exact", results=install)
+async def test_update_raiden_weights_exact_parity_pass_resumes(stub_tpu_sync, tmp_path):
+    install = {"install_raiden_weights": lambda: [_exact(0, expected_checked=10), _exact(1, expected_checked=10)]}
+    manager = _FakeManager(
+        num_trainer=2,
+        num_replicas=1,
+        tp=2,
+        verify_parity="exact",
+        results=install,
+        expected_checked_per_rank=10,
+        parity_dump_dir=str(tmp_path),
+    )
     await raiden.update_raiden_weights(manager, global_steps=0)
     assert manager.events[-1] == ("resume",)
+    assert (tmp_path / "raiden_exact_parity_step_0.json").is_file()
+
+
+@pytest.mark.asyncio
+async def test_update_raiden_weights_exact_parity_rejects_checked_1_and_bad_rank_ids(stub_tpu_sync, tmp_path):
+    # Negative test from the update_raiden_weights entry point: 32 ranks all returning checked=1 must fail
+    # both via engine_kwargs.raiden.expected_checked_per_rank=435 and via worker expected_checked=435.
+    install_checked_1 = {"install_raiden_weights": lambda: [_exact(r, checked=1) for r in range(32)]}
+    manager_cfg = _FakeManager(
+        num_trainer=32,
+        num_replicas=1,
+        tp=32,
+        verify_parity="all",
+        results=install_checked_1,
+        expected_checked_per_rank=435,
+        parity_dump_dir=str(tmp_path),
+    )
+    with pytest.raises(RaidenParityError, match=r"expected \[435\] tensors checked per rank, got \[1\]"):
+        await raiden.update_raiden_weights(manager_cfg, global_steps=0)
+    assert ("resume",) not in manager_cfg.events
+
+    # Even without engine_kwargs.raiden.expected_checked_per_rank, worker expected_checked=435 rejects checked=1.
+    install_worker_mismatch = {
+        "install_raiden_weights": lambda: [_exact(r, checked=1, expected_checked=435) for r in range(32)]
+    }
+    manager_worker = _FakeManager(
+        num_trainer=32,
+        num_replicas=1,
+        tp=32,
+        verify_parity="all",
+        results=install_worker_mismatch,
+        parity_dump_dir=str(tmp_path),
+    )
+    with pytest.raises(RaidenParityError, match="checked 1 tensors, expected 435 installed model parameters"):
+        await raiden.update_raiden_weights(manager_worker, global_steps=0)
+    assert ("resume",) not in manager_worker.events
+
+    # Negative test from the update_raiden_weights entry point: 32 ranks returning rank IDs 100..131 must fail.
+    install_bad_ranks = {"install_raiden_weights": lambda: [_exact(r, checked=435) for r in range(100, 132)]}
+    manager_bad_ranks = _FakeManager(
+        num_trainer=32,
+        num_replicas=1,
+        tp=32,
+        verify_parity="all",
+        results=install_bad_ranks,
+        expected_checked_per_rank=435,
+        parity_dump_dir=str(tmp_path),
+    )
+    with pytest.raises(RaidenParityError, match=r"replica 0 expected rank IDs 0\.\.31"):
+        await raiden.update_raiden_weights(manager_bad_ranks, global_steps=0)
+    assert ("resume",) not in manager_bad_ranks.events
 
 
 class _FakeRegistry:

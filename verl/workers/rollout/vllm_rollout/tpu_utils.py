@@ -680,16 +680,18 @@ class vLLMRaidenWorkerExtension(_BaseWorkerExtension):
                     f"vLLM has {tuple(w13.shape)} / {tuple(w2.shape)}"
                 )
             if parity:
-                gate_f, up_f, down_f = gate.detach().float(), up.detach().float(), down.detach().float()
-                staging_w13_info = (
-                    f"staging_gate_absmean={gate_f.abs().mean().item():.4g}(zero={(gate_f == 0).float().mean().item():.4g}) "
-                    f"staging_up_absmean={up_f.abs().mean().item():.4g}(zero={(up_f == 0).float().mean().item():.4g})"
+                parity.check_exact(
+                    f"{mod_key}.w13_weight",
+                    w13,
+                    new13,
+                    staging_tensors={"gate": gate, "up": up},
                 )
-                staging_w2_info = (
-                    f"staging_down_absmean={down_f.abs().mean().item():.4g}(zero={(down_f == 0).float().mean().item():.4g})"
+                parity.check_exact(
+                    f"{mod_key}.w2_weight",
+                    w2,
+                    new2,
+                    staging_tensors={"down": down},
                 )
-                parity.check_exact(f"{mod_key}.w13_weight", w13, new13, extra_info=staging_w13_info)
-                parity.check_exact(f"{mod_key}.w2_weight", w2, new2, extra_info=staging_w2_info)
             w13.copy_(new13)
             w2.copy_(new2)
             written_keys.update((f"{mod_key}.w13_weight", f"{mod_key}.w2_weight"))
@@ -791,7 +793,14 @@ class vLLMRaidenWorkerExtension(_BaseWorkerExtension):
         # Returned through collective_rpc so the orchestrator can log them as step metrics.
         result = {"total": t_total, "h2d": t_h2d, "sync": t_sync}
         if parity:
-            result["exact_parity"] = parity.exact_result(getattr(self, "rank", 0), unresolved)
+            total_model_params = sum(1 for _ in vllm_model.named_parameters())
+            tied_lm_head = int(not received_lm_head and hasattr(vllm_model, "lm_head"))
+            expected_checked = max(total_model_params - tied_lm_head, 0)
+            result["exact_parity"] = parity.exact_result(
+                getattr(self, "rank", 0),
+                unresolved,
+                expected_checked=expected_checked,
+            )
         return result
 
     def get_model_weights_stats(self, include_shards: bool = False) -> dict:

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Two-node (2 x 4-GPU NVIDIA GB200) Ray cluster launcher on GKE with GCSFuse /data and /dev/shm model staging.
+# Multi-node (N x 4-GPU NVIDIA GB200; default NUM_NODES=2) Ray cluster launcher on GKE with GCSFuse /data and /dev/shm model staging.
 #
 # SECURITY & ISOLATION BOUNDARY:
 # - Pods in this launcher use `securityContext.privileged: true` (required by the NVIDIA DRA driver to inject
@@ -41,6 +41,24 @@ KEEP_PODS="${KEEP_PODS:-0}"
 ALLOW_OVERWRITE_RUN_DIR="${ALLOW_OVERWRITE_RUN_DIR:-0}"
 LAUNCH_ID="${LAUNCH_ID:-$(python3 -c 'import uuid; print(uuid.uuid4().hex[:12])')}"
 
+NUM_NODES="${NUM_NODES:-2}"
+GPUS_PER_NODE="${GPUS_PER_NODE:-4}"
+if ! [[ "${NUM_NODES}" =~ ^[0-9]+$ ]] || [[ "${NUM_NODES}" -lt 2 ]]; then
+    echo "ERROR: NUM_NODES must be an integer >= 2 (got NUM_NODES='${NUM_NODES}')" >&2
+    exit 1
+fi
+if ! [[ "${GPUS_PER_NODE}" =~ ^[0-9]+$ ]] || [[ "${GPUS_PER_NODE}" -lt 1 ]]; then
+    echo "ERROR: GPUS_PER_NODE must be an integer >= 1 (got GPUS_PER_NODE='${GPUS_PER_NODE}')" >&2
+    exit 1
+fi
+NUM_WORKERS=$((NUM_NODES - 1))
+TOTAL_GPUS=$((NUM_NODES * GPUS_PER_NODE))
+COMPUTE_DOMAIN_NUM_NODES="${COMPUTE_DOMAIN_NUM_NODES:-${NUM_NODES}}"
+if ! [[ "${COMPUTE_DOMAIN_NUM_NODES}" =~ ^[0-9]+$ ]] || [[ "${COMPUTE_DOMAIN_NUM_NODES}" -lt 1 ]]; then
+    echo "ERROR: COMPUTE_DOMAIN_NUM_NODES must be an integer >= 1 (got COMPUTE_DOMAIN_NUM_NODES='${COMPUTE_DOMAIN_NUM_NODES}')" >&2
+    exit 1
+fi
+
 SANDBOX_FUSION_HOST="${SANDBOX_FUSION_HOST:-${JOBENV_SANDBOX_FUSION_HOST:-127.0.0.1}}"
 SANDBOX_FUSION_PORT="${SANDBOX_FUSION_PORT:-${JOBENV_SANDBOX_FUSION_PORT:-18080}}"
 SANDBOX_FUSION_URL="${SANDBOX_FUSION_URL:-${JOBENV_SANDBOX_FUSION_URL:-http://${SANDBOX_FUSION_HOST}:${SANDBOX_FUSION_PORT}/run_code}}"
@@ -71,13 +89,20 @@ done < <(env | sort)
 
 CREATED_CD_UID=""
 CREATED_SVC_UID=""
-CREATED_WORKER_POD_UID=""
 CREATED_HEAD_POD_UID=""
+declare -a CREATED_WORKER_POD_UIDS=()
+declare -a WORKER_POD_NAMES=()
 
 ATTEMPTED_CD=""
 ATTEMPTED_SVC=""
-ATTEMPTED_WORKER_POD=""
 ATTEMPTED_HEAD_POD=""
+declare -a ATTEMPTED_WORKER_PODS=()
+
+for ((w = 0; w < NUM_WORKERS; w++)); do
+    WORKER_POD_NAMES[w]="${RUN_NAME}-worker-${w}"
+    CREATED_WORKER_POD_UIDS[w]=""
+    ATTEMPTED_WORKER_PODS[w]=""
+done
 
 resolve_attempted_uid() {
     local k8s_res="$1"
@@ -143,15 +168,29 @@ cleanup() {
     local exit_rc=$?
     local cleanup_failed=0
     if [[ "${KEEP_PODS}" != "1" ]]; then
-        if [[ -n "${ATTEMPTED_HEAD_POD}${ATTEMPTED_WORKER_POD}${ATTEMPTED_SVC}${ATTEMPTED_CD}" ]]; then
+        local any_worker_attempted=""
+        local w
+        for ((w = 0; w < NUM_WORKERS; w++)); do
+            if [[ -n "${ATTEMPTED_WORKER_PODS[$w]:-}" ]]; then
+                any_worker_attempted="1"
+                break
+            fi
+        done
+        if [[ -n "${ATTEMPTED_HEAD_POD}${any_worker_attempted}${ATTEMPTED_SVC}${ATTEMPTED_CD}" ]]; then
             echo "[gb200-launcher $(date -u +%H:%M:%S)] atomically cleaning up resources by DeleteOptions.preconditions.uid for ${RUN_NAME} (launch_id=${LAUNCH_ID})"
-            local head_uid="" worker_uid="" svc_uid="" cd_uid=""
+            local head_uid="" svc_uid="" cd_uid="" any_worker_uid=""
+            local -a worker_uids=()
             head_uid="$(resolve_attempted_uid "pod/${RUN_NAME}-head" "${CREATED_HEAD_POD_UID}" "${ATTEMPTED_HEAD_POD}")" || cleanup_failed=1
-            worker_uid="$(resolve_attempted_uid "pod/${RUN_NAME}-worker-0" "${CREATED_WORKER_POD_UID}" "${ATTEMPTED_WORKER_POD}")" || cleanup_failed=1
+            for ((w = 0; w < NUM_WORKERS; w++)); do
+                worker_uids[w]="$(resolve_attempted_uid "pod/${WORKER_POD_NAMES[$w]}" "${CREATED_WORKER_POD_UIDS[$w]:-}" "${ATTEMPTED_WORKER_PODS[$w]:-}")" || cleanup_failed=1
+                if [[ -n "${worker_uids[$w]}" ]]; then
+                    any_worker_uid="1"
+                fi
+            done
             svc_uid="$(resolve_attempted_uid "svc/${RUN_NAME}-head" "${CREATED_SVC_UID}" "${ATTEMPTED_SVC}")" || cleanup_failed=1
             cd_uid="$(resolve_attempted_uid "computedomain.resource.nvidia.com/${RUN_NAME}-cd" "${CREATED_CD_UID}" "${ATTEMPTED_CD}")" || cleanup_failed=1
 
-            if [[ -n "${head_uid}${worker_uid}${svc_uid}${cd_uid}" ]]; then
+            if [[ -n "${head_uid}${any_worker_uid}${svc_uid}${cd_uid}" ]]; then
                 local proxy_log proxy_pid proxy_addr
                 proxy_log="$(mktemp)"
                 kubectl --context="${KUBE_CONTEXT}" proxy --port=0 >"${proxy_log}" 2>&1 &
@@ -166,7 +205,9 @@ cleanup() {
                 done
                 if [[ -n "${proxy_addr}" ]]; then
                     atomic_delete_by_uid "${proxy_addr}" "/api/v1/namespaces/${K8S_NAMESPACE}/pods/${RUN_NAME}-head" "${head_uid}" || cleanup_failed=1
-                    atomic_delete_by_uid "${proxy_addr}" "/api/v1/namespaces/${K8S_NAMESPACE}/pods/${RUN_NAME}-worker-0" "${worker_uid}" || cleanup_failed=1
+                    for ((w = 0; w < NUM_WORKERS; w++)); do
+                        atomic_delete_by_uid "${proxy_addr}" "/api/v1/namespaces/${K8S_NAMESPACE}/pods/${WORKER_POD_NAMES[$w]}" "${worker_uids[$w]}" || cleanup_failed=1
+                    done
                     atomic_delete_by_uid "${proxy_addr}" "/api/v1/namespaces/${K8S_NAMESPACE}/services/${RUN_NAME}-head" "${svc_uid}" || cleanup_failed=1
                     atomic_delete_by_uid "${proxy_addr}" "/apis/resource.nvidia.com/v1beta1/namespaces/${K8S_NAMESPACE}/computedomains/${RUN_NAME}-cd" "${cd_uid}" || cleanup_failed=1
                 else
@@ -187,11 +228,15 @@ cleanup() {
 trap cleanup EXIT
 
 # 1. Fail fast if any target K8s resource name is already in use so we never clobber an active run.
-for res_spec in \
-    "pod/${RUN_NAME}-head" \
-    "pod/${RUN_NAME}-worker-0" \
-    "svc/${RUN_NAME}-head" \
-    "computedomain.resource.nvidia.com/${RUN_NAME}-cd"; do
+PREFLIGHT_RES_SPECS=("pod/${RUN_NAME}-head")
+for ((w = 0; w < NUM_WORKERS; w++)); do
+    PREFLIGHT_RES_SPECS+=("pod/${WORKER_POD_NAMES[$w]}")
+done
+PREFLIGHT_RES_SPECS+=(
+    "svc/${RUN_NAME}-head"
+    "computedomain.resource.nvidia.com/${RUN_NAME}-cd"
+)
+for res_spec in "${PREFLIGHT_RES_SPECS[@]}"; do
     if kubectl --context="${KUBE_CONTEXT}" -n "${K8S_NAMESPACE}" get "${res_spec}" >/dev/null 2>&1; then
         echo "ERROR: ${res_spec} already exists in namespace ${K8S_NAMESPACE} for RUN_NAME=${RUN_NAME}; refusing to delete or overwrite existing workload." >&2
         exit 1
@@ -260,7 +305,7 @@ metadata:
     retool-run: ${RUN_NAME}
     retool-launch-id: ${LAUNCH_ID}
 spec:
-  numNodes: 2
+  numNodes: ${COMPUTE_DOMAIN_NUM_NODES}
   channel:
     allocationMode: Single
     resourceClaimTemplate:
@@ -289,11 +334,14 @@ spec:
     targetPort: 8265
 EOF
 
-create_k8s_object_and_record_uid CREATED_WORKER_POD_UID ATTEMPTED_WORKER_POD <<EOF
+for ((w = 0; w < NUM_WORKERS; w++)); do
+    WORKER_POD_NAME="${WORKER_POD_NAMES[$w]}"
+    WORKER_LABEL="worker-${w}"
+    create_k8s_object_and_record_uid "CREATED_WORKER_POD_UIDS[$w]" "ATTEMPTED_WORKER_PODS[$w]" <<EOF
 apiVersion: v1
 kind: Pod
 metadata:
-  name: ${RUN_NAME}-worker-0
+  name: ${WORKER_POD_NAME}
   labels:
     retool-run: ${RUN_NAME}
     retool-role: worker
@@ -432,7 +480,7 @@ ${JOBENV_YAML}    resources:
       if [[ "\${SANDBOX_EFFECTIVE_HOST}" == "127.0.0.1" || "\${SANDBOX_EFFECTIVE_HOST}" == "localhost" || "\${SANDBOX_EFFECTIVE_HOST}" == "::1" ]]; then
         if [[ "\${SANDBOX_DISABLE_AUTO_START:-0}" == "1" ]]; then
           if ! python3 examples/tpu/retool/sandbox_fusion_server.py --check --url "\${SANDBOX_FUSION_URL}" >/dev/null 2>&1; then
-            echo "ERROR: worker-0 loopback sandbox_fusion_server is not running at \${SANDBOX_FUSION_URL} and SANDBOX_DISABLE_AUTO_START=1" >&2
+            echo "ERROR: ${WORKER_LABEL} loopback sandbox_fusion_server is not running at \${SANDBOX_FUSION_URL} and SANDBOX_DISABLE_AUTO_START=1" >&2
             exit 1
           fi
         else
@@ -449,14 +497,14 @@ ${JOBENV_YAML}    resources:
             sleep 0.5
           done
           if [[ "\${SANDBOX_READY}" != "1" ]]; then
-            echo "ERROR: worker-0 local sandbox_fusion_server failed healthcheck on \${SANDBOX_FUSION_URL}" >&2
+            echo "ERROR: ${WORKER_LABEL} local sandbox_fusion_server failed healthcheck on \${SANDBOX_FUSION_URL}" >&2
             exit 1
           fi
         fi
       else
         export SANDBOX_DISABLE_AUTO_START=1
         if ! python3 examples/tpu/retool/sandbox_fusion_server.py --check --url "\${SANDBOX_FUSION_URL}" >/dev/null 2>&1; then
-          echo "ERROR: worker-0 external SandboxFusion endpoint \${SANDBOX_FUSION_URL} is unreachable (local server auto-start disabled)" >&2
+          echo "ERROR: ${WORKER_LABEL} external SandboxFusion endpoint \${SANDBOX_FUSION_URL} is unreachable (local server auto-start disabled)" >&2
           exit 1
         fi
       fi
@@ -473,20 +521,20 @@ ${JOBENV_YAML}    resources:
         sleep 1
       done
       if [[ "\${HEAD_DNS_READY}" != "1" ]]; then
-        echo "ERROR: worker-0 timed out waiting for DNS resolution of ${RUN_NAME}-head" >&2
+        echo "ERROR: ${WORKER_LABEL} timed out waiting for DNS resolution of ${RUN_NAME}-head" >&2
         exit 1
       fi
 
       RAY_JOINED=0
       for _ in \$(seq 1 120); do
-        if ray start --address="${RUN_NAME}-head:6379" --num-gpus=4; then
+        if ray start --address="${RUN_NAME}-head:6379" --num-gpus=${GPUS_PER_NODE}; then
           RAY_JOINED=1
           break
         fi
         sleep 2
       done
       if [[ "\${RAY_JOINED}" != "1" ]]; then
-        echo "ERROR: worker-0 timed out trying to join Ray head at ${RUN_NAME}-head:6379" >&2
+        echo "ERROR: ${WORKER_LABEL} timed out trying to join Ray head at ${RUN_NAME}-head:6379" >&2
         exit 1
       fi
       while [[ ! -f "${RUN_DIR}/exit_code.txt" ]]; do
@@ -494,6 +542,7 @@ ${JOBENV_YAML}    resources:
       done
       ray stop || true
 EOF
+done
 
 create_k8s_object_and_record_uid CREATED_HEAD_POD_UID ATTEMPTED_HEAD_POD <<EOF
 apiVersion: v1
@@ -608,7 +657,7 @@ ${JOBENV_YAML}    resources:
         --require-gpu \
         --require-gb200 > "${RUN_DIR}/env/\${HOST_TAG}-precheck.json"
 
-      ray start --head --port=6379 --dashboard-port=8265 --num-gpus=4
+      ray start --head --port=6379 --dashboard-port=8265 --num-gpus=${GPUS_PER_NODE}
 
       MODEL_SRC="\${MODEL_SRC_PATH:-/data/runs/p2-retool-sft-01/checkpoint/global_step_372/huggingface}"
       MODEL_DST="\${MODEL_PATH:-/dev/shm/models/multiturn-sft-qwen3-30b-a3b-tpu7x}"
@@ -636,18 +685,18 @@ ${JOBENV_YAML}    resources:
         tar -xzf "\${CACHE_DIR}/vllm_cache_sm100a.tar.gz" -C /root/.cache || true
       fi
 
-      # Wait for 2 nodes (8 GPUs) and both nodes' G0 manifest files matching this LAUNCH_ID; fail explicitly on timeout
+      # Wait for ${NUM_NODES} nodes (${TOTAL_GPUS} GPUs) and all nodes' G0 manifest files matching this LAUNCH_ID; fail explicitly on timeout
       CLUSTER_G0_READY=0
       for _ in \$(seq 1 200); do
-        if ray status 2>/dev/null | grep -q "8.0 GPU" && [[ \$(ls -1 "${RUN_DIR}/env/${LAUNCH_ID}-"*-g0-verify.json 2>/dev/null | wc -l) -ge 2 ]]; then
-          python3 -c 'import glob, json, sys; files = sorted(glob.glob(sys.argv[1] + "/" + sys.argv[2] + "-*-g0-verify.json")); digests = {f: json.load(open(f))["g0_checkpoint_manifest"]["composite_sha256"] for f in files}; print("[g0-cross-node] digests:", digests, flush=True); assert len(files) >= 2 and len(set(digests.values())) == 1, f"Cross-node manifest mismatch: {digests}"' "${RUN_DIR}/env" "${LAUNCH_ID}"
+        if ray status 2>/dev/null | grep -q "${TOTAL_GPUS}.0 GPU" && [[ \$(ls -1 "${RUN_DIR}/env/${LAUNCH_ID}-"*-g0-verify.json 2>/dev/null | wc -l) -ge ${NUM_NODES} ]]; then
+          python3 -c 'import glob, json, sys; files = sorted(glob.glob(sys.argv[1] + "/" + sys.argv[2] + "-*-g0-verify.json")); expected = int(sys.argv[3]); digests = {f: json.load(open(f))["g0_checkpoint_manifest"]["composite_sha256"] for f in files}; print("[g0-cross-node] digests:", digests, flush=True); assert len(files) >= expected and len(set(digests.values())) == 1, f"Cross-node manifest mismatch (expected >= {expected}): {digests}"' "${RUN_DIR}/env" "${LAUNCH_ID}" "${NUM_NODES}"
           CLUSTER_G0_READY=1
           break
         fi
         sleep 3
       done
       if [[ "\${CLUSTER_G0_READY}" != "1" ]]; then
-        echo "ERROR: timed out waiting for 2 nodes (8.0 GPU) and both nodes' G0 manifest files (launch_id=${LAUNCH_ID}) in ${RUN_DIR}/env" >&2
+        echo "ERROR: timed out waiting for ${NUM_NODES} nodes (${TOTAL_GPUS}.0 GPU) and all nodes' G0 manifest files (launch_id=${LAUNCH_ID}) in ${RUN_DIR}/env" >&2
         echo "1" > "${RUN_DIR}/exit_code.txt"
         sync
         exit 1
@@ -666,8 +715,8 @@ ${JOBENV_YAML}    resources:
       exit "\${rc}"
 EOF
 
-echo "[gb200-launcher $(date -u +%H:%M:%S)] waiting for pods ${RUN_NAME}-head (uid=${CREATED_HEAD_POD_UID}) and ${RUN_NAME}-worker-0 (uid=${CREATED_WORKER_POD_UID}) to be Ready..."
-kubectl --context="${KUBE_CONTEXT}" -n "${K8S_NAMESPACE}" wait --for=condition=Ready pod "${RUN_NAME}-head" "${RUN_NAME}-worker-0" --timeout=600s
+echo "[gb200-launcher $(date -u +%H:%M:%S)] waiting for ${NUM_NODES} pods (${RUN_NAME}-head uid=${CREATED_HEAD_POD_UID} + ${NUM_WORKERS} worker(s): ${WORKER_POD_NAMES[*]}) to be Ready..."
+kubectl --context="${KUBE_CONTEXT}" -n "${K8S_NAMESPACE}" wait --for=condition=Ready pod "${RUN_NAME}-head" "${WORKER_POD_NAMES[@]}" --timeout=600s
 kubectl --context="${KUBE_CONTEXT}" -n "${K8S_NAMESPACE}" get pods -l "retool-run=${RUN_NAME}" -o wide
 
 kubectl --context="${KUBE_CONTEXT}" -n "${K8S_NAMESPACE}" logs -f "${RUN_NAME}-head"

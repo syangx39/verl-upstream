@@ -511,6 +511,38 @@ exit 0
                 self.assertIn(expected_err, res.stderr)
                 self.assertEqual(_MockKubeProxyHandler.deletes, [])
 
+    def test_multinode_16_nodes_partial_create_cleans_up_all_created_workers_by_uid(self):
+        """Verify NUM_NODES=16 (64 GPUs) creates worker-0..worker-14 and cleans up all created pods on failure."""
+        launcher = REPO_ROOT / "examples" / "tpu" / "retool" / "gb200" / "run_ray_jobset_gb200.sh"
+        with tempfile.TemporaryDirectory() as td:
+            # Objects: 1=CD, 2=Service, 3..17=worker-0..worker-14, 18=head. Fail on 18 (head) after all 15 workers created.
+            bin_dir = self._make_mock_bins(Path(td), fail_on_create_idx=18)
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PATH": f"{bin_dir}:{env.get('PATH', '')}",
+                    "RUN_NAME": "scale16-run",
+                    "LAUNCH_ID": "launch-scale16",
+                    "NUM_NODES": "16",
+                    "KUBE_CONTEXT": "mock-ctx",
+                    "NODEPOOL": "mock-pool",
+                    "GCS_BUCKET": "mock-bucket",
+                    "RUN_ROOT": "mock-runs",
+                    "INPUTS_ROOT": "mock-inputs",
+                    "IMAGE": "mock-image:latest",
+                }
+            )
+            res = subprocess.run(["bash", str(launcher)], env=env, capture_output=True, text=True)
+            self.assertNotEqual(res.returncode, 0)
+            deleted = dict(_MockKubeProxyHandler.deletes)
+            # Should delete CD (uid-obj-1), Service (uid-obj-2), and 15 workers worker-0..worker-14 (uid-obj-3..uid-obj-17)
+            self.assertEqual(len(deleted), 17, f"Expected 17 atomic deletes for NUM_NODES=16, got {len(deleted)}")
+            for w in range(15):
+                self.assertEqual(
+                    deleted[f"/api/v1/namespaces/default/pods/scale16-run-worker-{w}"]["preconditions"]["uid"],
+                    f"uid-obj-{w + 3}",
+                )
+
 
 class TestG0ManifestCompositeHashCheck(unittest.TestCase):
     """Verify verify_g0_gb200.verify_checkpoint_manifest checks --expect-composite-sha256."""

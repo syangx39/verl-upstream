@@ -1,14 +1,26 @@
 # TPU v7x ReTool 对齐 Askhat 运行与重跑方案（TPU v7x Only）
 
-状态：**rev 8（已完成 `p3c-retool-smoke-01` Step 0–2 实测与全部 4 项硬门槛核验、补充单步耗时拆解与 64 卡预约队列 `r-b0f80` 运行计划）**（2026-11-04）。
+状态：**rev 9（已完成 `p3c-retool-smoke-01` 32 卡早期部分验证、修正 64 卡 `r-b0f80` 启动命令及 `DRY_RUN=1` 产物一致性、补齐三副本在线放行 JSON Schema 与监控终止机制）**（2026-11-04）。
 
+- **rev 9**：
+  1. **修正 §6.5 中 64 卡正式运行（`p3c-retool-25s-01`）启动命令，使其与 `DRY_RUN=1` 生成的 `run_record.json` / `job_spec.json` 100% 同源一致**：
+     - 显式设置 `JOB_SCRIPT="examples/tpu/retool/run_qwen3_30b_a3b_dapo_torchtitan.sh"` 并移除位置参数中的 `-- bash ...`（避免 launcher 误选默认 GRPO 脚本）；
+     - 显式设置 `GCS_BUCKET=ubench-logs`、`RUN_ROOT=xiaotongyang/retool-v7x/runs`、`INPUTS_ROOT=xiaotongyang/retool-v7x/inputs`，并用 `@RUN_DIR@/{rollout,validation,rollout_audit,tensorboard}` 统一生成产物路径；
+     - 显式传入 `JOBENV_LIBTPU_INIT_ARGS` 与 `JOBENV_NUM_WARMUP_BATCHES="2"`；将无效变量 `TOPOLOGY` / `WAIT_FOR_COMPLETION=0` 更正为 launcher 实际读取的 `TPU_TOPOLOGY="2x2x4"` 与 `KEEP_JOBSET=1`；
+     - 统一使用 `p3c-retool-smoke-01` 实测 Pod 运行的同一镜像 digest `verl-tpu@sha256:d92a2b3d6667584d67ea51874a721228a96c799263ab40f4aee168680476f64e`（已由 `.pods.json` 的 `imageID` 与 `tests/special_tpu/gke/tpu-ci-image.env` 交叉核实）；
+     - 补充动态预约命名空间 `r-b0f80` 的 W&B Secret（`Secret/xiaotongyang-wandb`）创建与启动前 `DRY_RUN=1 RAY_NAMESPACE=r-b0f80` 校验流程。
+  2. **按真实 `raiden_exact_parity_step_0.json` Schema、浮点容差 `abs_tol=1e-6` 与外部自动终止机制完善 §6.5.4 在线放行门槛**：
+     - 对齐 [`raiden_checkpoint_engine.py`](../../verl/checkpoint_engine/raiden_checkpoint_engine.py) 实际落盘字段：`num_results == 96`、`expected_ranks == 96`、`expected_workers_per_replica == [32, 32, 32]`、`checked_per_rank == [435]`、`replica_rank_pairs` 完整覆盖 `0..2 × 0..31`、`num_mismatched == 0`、`num_unresolved == 0`、`coverage_errors == []` 及 `sum(r["checked"] for r in ranks) == 41,760`；
+     - 离线 `score` 复算采用 `math.isclose(..., abs_tol=1e-6)` 避免 float32 舍入误报；明确由外部放行监控脚本实时轮询 `validation/0.jsonl` 与 `rollout_audit/{1..3}.jsonl`，一旦发现离线对账或 mask 异常立即执行 `kubectl delete jobset p3c-retool-25s-01 -n r-b0f80`。
+  3. **更正 §6.3 中 Askhat `ci0k54pl` Step 25 对照数值（`58.33% / 38.75%`）并同步全篇关于 32 卡“早期部分验证”的表述**：与 §1.1 及 [`askhat_runs_summary.json`](results/askhat-wandb-audit/askhat_runs_summary.json) 对齐。
 - **rev 8**：
-  1. **补入 `p3c-retool-smoke-01`（W&B [`uinjk8rs`](https://wandb.ai/google-trellis/verl-torchtpu-grpo-test/runs/uinjk8rs)）实测验收结果（第 6 节）**：
+  1. **补入 `p3c-retool-smoke-01`（W&B [`uinjk8rs`](https://wandb.ai/google-trellis/verl-torchtpu-grpo-test/runs/uinjk8rs)）32 卡早期部分验证结果（第 6 节）**：
+     - **完成范围说明**：已完成 Step 0 验证（`n=2`，120 个 session）、Step 0 单副本 13,920 分片逐元素校验、Step 1 完整训练（含 8 条 session 审计与 1 次分布式范数校验）及 Step 2 前向/反向更新；Step 2 在权重同步阶段因 `r-db36b` 动态预约到期被回收，Steps 3–5 未运行（原计划的 5 次同步检查、40 条审计轨迹与末次验证因此未在 32 卡上全部跑完，转由 64 卡正式 run 的前 3 步执行三副本放行检查）；
      - **Gate 1（Resolved Config & W&B）**：确认 `retool_tpu.compute_score`、`enable_thinking=True`、`16384/18432`、两侧 `16` turns、`training.max_norm=1.0`、`release_buffers_after_sync=False`、`verify_parity=all`、`actor/lr=2.0e-6` 全部生效，`WANDB_API_KEY` 已在 `pod_env.json` 脱敏且 W&B 实时收到指标；
-     - **Gate 2（固定样例 Shaping）**：9/9 样例确定性检查全部通过；
-     - **Gate 3（`validation/0.jsonl` 120 个 session + `rollout_audit/1.jsonl` 8 个 session 离线对账）**：`summarize_validation_dump` 校验 `complete=True, score_complete=True`；`120/120` 验证 session 与 `8/8` 训练审计 session 的 `acc`、`pred`、`score` 离线复算 **100% 一致（0 mismatch）**，`0` 条 `response_mask` 违规；Step 0 基线准确率显著提升至 **AIME 2024 `41.67%`（`mean_score = -0.0200`）、AIME 2025 `28.33%`（`mean_score = -0.2383`）**，与 Askhat 16K+thinking 的 `ci0k54pl`（`38.11% / 25.89%`）完全对齐，远超旧 8K 无 thinking 基线 `p2-retool-full-11`（`25.56% / 17.33%`）；
-     - **Gate 4（Raiden 权重同步）**：Step 0 逐元素 float32 对账 `0 / 13,920` mismatch（`1.79s`），Step 1 分布式范数对账 `100% DISTRIBUTED NORM PARITY CONFIRMED`（`30,532,122,624` 参数 across `579` tensors，端到端 `15.59s`）；
-  2. **补充 16K + thinking 单步耗时拆解与 64 卡预约队列 `r-b0f80`（`Wed Nov 4, 8:00 AM – 2:00 PM`）运行计划（第 6.5 节）**：实测 1 个 Rollout Slice（16 卡）生成单步（`64 × 16 = 1,024` 条轨迹）耗时 `~705s`（`11.8 min`），Trainer 稳态更新耗时 `136s`（`2.3 min`），Raiden 同步耗时 `15.6s`；在 64 卡（`1 Trainer + 3 Rollout Slices`）下预计单步总耗时降至 **`~4.5 ~ 7.0 min / 步`**。
+     - **Gate 2（固定样例经 `NaiveRewardManager` 完整链路检查）**：9/9 固定样例通过 `get_custom_reward_fn` + `NaiveRewardManager.__call__` 端到端校验；
+     - **Gate 3（部分完成：`validation/0.jsonl` 120 个 session + `rollout_audit/1.jsonl` 8 个 session 离线对账）**：`summarize_validation_dump` 校验 `complete=True, score_complete=True`；`120/120` 验证 session 与 `8/8` 训练审计 session 的 `acc`、`pred`、`score` 离线复算 **100% 一致（0 mismatch）**，`0` 条 `response_mask` 违规；Step 0 小样本（`n=2`，每集 60 样本）初测为 **AIME 2024 `41.67%`（`mean_score = -0.0200`）、AIME 2025 `28.33%`（`mean_score = -0.2383`）**，正式基线对比以 64 卡 Step 0 / Step 25 的 `n=30`（每集 900 样本）为准；
+     - **Gate 4（部分完成：单副本 Raiden 权重同步）**：Step 0 逐元素 float32 对账 `0 / 13,920` mismatch（`1.79s`），Step 1 分布式范数对账 `100% DISTRIBUTED NORM PARITY CONFIRMED`（`30,532,122,624` 参数 across `579` tensors，端到端 `15.59s`）；
+  2. **补充 64 卡预约队列 `r-b0f80`（`Wed Nov 4, 8:00 AM – 2:00 PM`）运行与前 3 步在线放行方案（第 6.5 节）**。
 - **rev 7**：
   1. **补齐 V1 Validation Dump 的 `num_turns` 字段并新增 CPU 回归测试（第 4.1 节第 3 项）**：在 [`verl/trainer/ppo/v1/trainer_base.py` L1229-L1232](../../verl/trainer/ppo/v1/trainer_base.py#L1229-L1232) 的 `_validate()` 中按 `session_final_indices` 将 `sample_turns` 写入 `validation/{step}.jsonl` 的 `num_turns` 字段（`{"num_turns": [sample_turns[i] for i in session_final_indices]}`），并在 [`tests/trainer/ppo/v1/test_rollout_audit_on_cpu.py`](../../tests/trainer/ppo/v1/test_rollout_audit_on_cpu.py#L722-L1035) 中补充了多输出 session 的 `num_turns` 落盘与 `retool_tpu.compute_score` 离线重算对账 CPU 回归测试；
   2. **将 `CODE_REF` 与实验名更新到包含上述修复的 commit `53bc215c8880483142caee0b4d25d57066a0a54f`（短 SHA `53bc215c`），并重新生成 `DRY_RUN=1` 的 `run_record.json`、`jobset.yaml` 和 `job_spec.json`（第 2 / 3.2 节）**；
@@ -433,16 +445,16 @@ bash examples/tpu/gke/run_ray_jobset_v7x_nap.sh \
    - 对全部 120 个 session 调用 `retool_tpu.compute_score(data_source, row["output"], row["gts"], extra_info={"num_turns": row["num_turns"]})` 离线复算，与 `validation/0.jsonl` 中记录的 `row["acc"]` 和 `row["score"]` **`120 / 120` 完全一致（`0` 处 mismatch）**。
    - **78 / 120 个 session**（`aime_2024` 35 条、`aime_2025` 43 条，即全部答错样本）均触发了多轮工具调用（`num_turns > 2`），命中 ReTool shaped reward（`[-0.9, -0.6]`）；120 个 session 的 `num_turns` 分布为 `{4: 44, 6: 20, 8: 14, 10: 13, 12: 12, 14: 6, 16: 2, 18: 3, 20: 2, 22: 2, 24: 1, 28: 1}`（`min=4, mean=8.23, max=28`）。
    - **Step 0 小样本（`n=2`）初步验证结果与历史参考对比**：
-     - **更正说明**：Askhat 的 `ci0k54pl` 从 `global_step_20` 续训，其首个记录的 validation（`38.11% / 25.89%`，`n=8`）实际位于 **Step 25**（见 §1.2 表），而非 Step 0；Askhat Regime 1 的 `m732539q` 在 Step 0（`n=8`）的记录值为 `22.44% / 14.17%`，Regime 2 的 `yjowd03u` 在 Step 0（`n=8`）的记录值为 `48.75% / 30.83%`。
-     - 本轮 `p3c-retool-smoke-01` 的 Step 0 仅采样 **`n=2`（每数据集 60 个样本）**，样本量较小、抽样方差较大，仅作为 `16K + thinking=True + shaped reward` 管线生效的初步冒烟参考，**不能单凭 `n=2` 结论声称与 Askhat `n=8` / `n=30` 完全对齐或独立证明显著提升**；正式基线对比以 64 卡运行的 Step 0 / Step 25 **`n=30`（每数据集 900 个样本）** 为准。
+     - **更正说明**：与 §1.1 及 [`askhat_runs_summary.json`](results/askhat-wandb-audit/askhat_runs_summary.json) 对齐——Askhat Regime 2 的 `yjowd03u`（`16K, thinking=True, n=8`）在 **Step 0** 的记录值为 **`48.75% / 30.83%`**（`mean_score = +0.0121 / -0.2500`）；`ci0k54pl` 从 `fcze3xlx` 的 `global_step_20` 续训，其首个记录的 validation 位于 **Step 25**（`n=8`），记录值为 **`58.33% / 38.75%`**（`mean_score = +0.1933 / -0.1304`）；Askhat Regime 1（`8K, thinking=False, n=30`）的 `lb5cdzuq` Step 0 为 **`25.44% / 14.44%`**（更早一次独立 Step 0 评估为 `22.44% / 14.17%`）。
+     - 本轮 `p3c-retool-smoke-01` 的 Step 0 仅采样 **`n=2`（每数据集 60 个样本）**，样本量较小、抽样方差较大，仅作为 `16K + thinking=True + shaped reward` 管线生效的初步冒烟参考，**不能单凭 `n=2` 结论声称与 Askhat `n=8` / `n=30` 完全对齐或独立证明显著提升**；正式基线对比以 64 卡运行的 Step 0 / Step 25 **`n=30`（每数据集 900 个样本，同时导出前 8 个 session 的 `mean@8`）** 为准。
 
-| 数据集 | 旧 v7x 基线 `p2-retool-full-11` Step 0 (`8K`, `thinking=False`, `n=30`) | Askhat `m732539q` Step 0 (`16K`, `thinking=True`, `n=8`) | Askhat `ci0k54pl` **Step 25** (`from step 20`, `16K`, `thinking=True`, `n=8`) | **本轮 `p3c-retool-smoke-01` Step 0 (`16K`, `thinking=True`, `n=2` 小样本初测) Strict / Default Scorer** | **本轮 Step 0 (`n=2`) Mean Shaped Score** |
-| --- | --- | --- | --- | --- | --- |
-| **AIME 2024** | `25.56%` (`-0.4889`) | `22.44%` (`-0.3712`) | `38.11%` (`-0.0569`) | **`41.67%` (`25 / 60`)** | **`-0.0200`** |
-| **AIME 2025** | `17.33%` (`-0.6533`) | `14.17%` (`-0.5567`) | `25.89%` (`-0.2738`) | **`28.33%` (`17 / 60`)** | **`-0.2383`** |
+| 数据集 | 旧 v7x 基线 `p3-retool-rl-11` Step 0 (`8K`, `thinking=False`, `n=30`) | Askhat `lb5cdzuq` Step 0 (`8K`, `thinking=False`, `n=30`) | Askhat `yjowd03u` Step 0 (`16K`, `thinking=True`, `n=8`) | Askhat `ci0k54pl` **Step 25** (`from step 20`, `16K`, `thinking=True`, `n=8`) | **本轮 `p3c-retool-smoke-01` Step 0 (`16K`, `thinking=True`, `n=2` 小样本初测) Strict / Default Scorer** | **本轮 Step 0 (`n=2`) Mean Shaped Score** |
+| --- | --- | --- | --- | --- | --- | --- |
+| **AIME 2024** | `25.56%` (`-0.4889`) | `25.44%` (`-0.4911`) | **`48.75%`** (`+0.0121`) | **`58.33%`** (`+0.1933`) | **`41.67%` (`25 / 60`)** | **`-0.0200`** |
+| **AIME 2025** | `17.33%` (`-0.6533`) | `14.44%` (`-0.7111`) | **`30.83%`** (`-0.2500`) | **`38.75%`** (`-0.1304`) | **`28.33%` (`17 / 60`)** | **`-0.2383`** |
 
 2. **Step 1 训练审计样本（`rollout_audit/1.jsonl`，已完成 8 / 40 个计划 session）对账**：
-   - 对 Step 1 的 8 个 session 的 `response_ids` 执行 `tokenizer.decode(record["response_ids"], skip_special_tokens=True)` 后调用 `retool_tpu.compute_score(..., extra_info={"num_turns": record["num_turns"]})`，重算的 `acc`、`pred`、`score` 与日志记录 **`8 / 8` 100% 一致**，且 **`0` 条 `response_mask` 违规**（注：Steps 2–5 的其余 32 条审计样本因作业在 Step 2 权重同步阶段被回收而未生成）：
+   - 对 Step 1 的 8 个 session 的 `response_ids` 执行 `tokenizer.decode(record["response_ids"], skip_special_tokens=True)` 后调用 `retool_tpu.compute_score(..., extra_info={"num_turns": record["num_turns"]})`，重算的 `acc`、`pred`、`score`（`abs_tol=1e-6`）与日志记录 **`8 / 8` 100% 一致**，且 **`0` 条 `response_mask` 违规**（注：Steps 2–5 的其余 32 条审计样本因作业在 Step 2 权重同步阶段被回收而未生成）：
 
 | Session Key | `num_turns` | `acc` | `pred` | 记录 `score` | 离线重算 `score` | Response Tokens | `response_mask == 1` Tokens |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -457,7 +469,7 @@ bash examples/tpu/gke/run_ray_jobset_v7x_nap.sh \
 
 ### 6.4 Gate 4（部分完成）：单副本（32 卡）Raiden 权重同步与 Step 1–2 训练指标
 
-- **Step 0 单副本逐元素 float32 校验（`env/raiden_exact_parity_step_0.json`）**：`checked = 13,920`（单副本 32 个 Sampler TP ranks × 每 rank 435 个张量分片），**`num_mismatched = 0`**，耗时 `1.7911s`（`H2D DMA = 0.0993s`）。
+- **Step 0 单副本逐元素 float32 校验（`env/raiden_exact_parity_step_0.json`）**：`num_results = 32`、`expected_ranks = 32`、`expected_workers_per_replica = [32]`、`checked_per_rank = [435]`（合计 `32 × 435 = 13,920` 个张量分片），**`num_mismatched = 0`、`num_unresolved = 0`、`coverage_errors = []`**，耗时 `1.7911s`（`H2D DMA = 0.0993s`）。
 - **Step 1 单副本分布式范数校验（已完成 1 / 5 次计划同步校验）**：`[RAIDEN PARITY VERIFIED | Step 1] 100% DISTRIBUTED NORM PARITY CONFIRMED!`
   - `Global L1 Norm = 576,240,144.43`（`Trainer = 576,240,144.62, delta = 0.1904`）
   - `Global L2 Norm = 4,206.4321`（`Trainer = 4,206.4329, delta = 0.000793`）
@@ -514,67 +526,122 @@ DRIVER_TIMEOUT_MIN="${DRIVER_TIMEOUT_MIN:-$((RUN_LIMIT_MIN - 10))}"
 对于 `RAY_NAMESPACE=r-b0f80`（6 小时预约窗口：`8:00 AM – 2:00 PM PST`，共 `360` 分钟），脚本默认仍会落入 `else` 分支并设置 `RUN_LIMIT_MIN=120`、`DRIVER_TIMEOUT_MIN=110`（1 小时 50 分钟后由 `head_supervisor.py` 主动终止 driver！）。
 因此在提交时，**必须根据 `r-b0f80` 预约窗口的实际剩余分钟数显式设置 `RUN_LIMIT_MIN` 和 `DRIVER_TIMEOUT_MIN`**（例如 8:00 AM 准时启动时设为 `RUN_LIMIT_MIN=355`、`DRIVER_TIMEOUT_MIN=345`，为结束清理预留 buffer）。
 
-#### 3. 64 卡正式运行（`p3c-retool-25s-01`）完整启动命令与预渲染核验结果
+#### 3. 镜像 Digest 核实与 `r-b0f80` 动态命名空间 W&B Secret 准备
+
+1. **镜像 Digest 核实（统一使用 `@sha256:d92a2b3d...`）**：
+   - 从 `p3c-retool-smoke-01` 运行时的 9 个 Pod 状态快照（`.pods.json` 中 `status.containerStatuses[0].imageID`）与仓库 [`tests/special_tpu/gke/tpu-ci-image.env`](../../tests/special_tpu/gke/tpu-ci-image.env) 交叉核实，标签 `us-west2-docker.pkg.dev/tpu-pytorch/raycluster/verl-tpu:v20261006-tsync1006` 对应的真实镜像摘要为 **`sha256:d92a2b3d6667584d67ea51874a721228a96c799263ab40f4aee168680476f64e`**。
+   - 64 卡命令显式固定 `IMAGE="us-west2-docker.pkg.dev/tpu-pytorch/raycluster/verl-tpu@sha256:d92a2b3d6667584d67ea51874a721228a96c799263ab40f4aee168680476f64e"`，确保与 32 卡 smoke 使用完全相同的容器镜像与软件栈。
+2. **动态预约命名空间 `r-b0f80` 的 W&B Secret 创建与预检流程**：
+   - 在 `bodaborg-tpu7x-nap` 集群上，`r-*` 预约命名空间及其 `LocalQueue`（`multislice-queue`）由 `calendar-schedule-daemon` 在预约开始时刻（`2026-11-04T16:00:00Z` / `8:00 AM PST`）动态创建，预约生效前集群中尚不存在 `namespace/r-b0f80`。
+   - 因此：
+     - **预约生效前（Pre-window Dry-Run）**：使用 `DRY_RUN=1 RAY_NAMESPACE=priority-dev` 对下列 64 卡完整字面命令执行预渲染与 API server dry-run，核验 `run_record.json`、`job_spec.json`、`jobset.yaml` 和 `prewarm.yaml`；
+     - **预约生效时（`8:00 AM PST`）**：确认 `namespace/r-b0f80` 与 `LocalQueue/multislice-queue` 就绪后，首先在 `r-b0f80` 创建同名 `Secret/xiaotongyang-wandb`（含 `WANDB_API_KEY`），随后先执行一次 `DRY_RUN=1 RAY_NAMESPACE=r-b0f80` 确认输出 `verified Secret xiaotongyang-wandb[WANDB_API_KEY] exists in namespace r-b0f80` 且 `jobset.yaml` 通过 `r-b0f80` server-side dry-run，再以 `DRY_RUN=0` 正式提交。
+
+#### 4. 64 卡正式运行（`p3c-retool-25s-01`）完整字面启动命令与 `DRY_RUN=1` 同源产物
+
+> **说明**：
+> - 通过 `JOB_SCRIPT="examples/tpu/retool/run_qwen3_30b_a3b_dapo_torchtitan.sh"` 指定训练入口脚本，位置参数直接传 Hydra 覆盖项（不传 `-- bash ...`）；
+> - 显式指定 `GCS_BUCKET=ubench-logs`、`RUN_ROOT=xiaotongyang/retool-v7x/runs`、`INPUTS_ROOT=xiaotongyang/retool-v7x/inputs`，并用 `@RUN_DIR@` 占位符生成产物目录；
+> - 使用 launcher 实际识别的 `TPU_TOPOLOGY="2x2x4"`（而非 `TOPOLOGY`）和 `KEEP_JOBSET=1`（防止客户端进程退出时 `EXIT` trap 误删运行中的 JobSet；注：`run_ray_jobset_v7x_nap.sh` 本身为前台监控脚本，不存在 `WAIT_FOR_COMPLETION` 变量）。
 
 ```bash
+git merge-base --is-ancestor 53bc215c8880483142caee0b4d25d57066a0a54f HEAD && \
+test -z "$(git status --porcelain --untracked-files=no)" && \
 DRY_RUN=0 \
-WAIT_FOR_COMPLETION=0 \
+KEEP_JOBSET=1 \
 RUN_NAME="p3c-retool-25s-01" \
+GCS_BUCKET="ubench-logs" \
+RUN_ROOT="xiaotongyang/retool-v7x/runs" \
+INPUTS_ROOT="xiaotongyang/retool-v7x/inputs" \
 RAY_NAMESPACE="r-b0f80" \
 KUEUE_QUEUE="multislice-queue" \
 PRIORITY_CLASS="medium" \
+PREWARM=1 \
+JOBSET_MAX_RESTARTS=1 \
+ALLOW_REQUEUE=0 \
 RUN_LIMIT_MIN=355 \
 DRIVER_TIMEOUT_MIN=345 \
-TOPOLOGY="2x2x4" \
+TPU_TOPOLOGY="2x2x4" \
 TRAINER_SLICES=1 \
 ROLLOUT_SLICES=3 \
 CODE_REF="53bc215c8880483142caee0b4d25d57066a0a54f" \
-IMAGE="us-west2-docker.pkg.dev/tpu-pytorch/raycluster/verl-tpu:v20261006-tsync1006@sha256:de83eb3a7b66fa0c2e0219c6c4fd172f295c8dfde7a7558068443d3fa8c68255" \
 WANDB_SECRET_NAME="xiaotongyang-wandb" \
 WANDB_SECRET_KEY="WANDB_API_KEY" \
-JOBENV_WANDB_ENTITY="google-trellis" \
-JOBENV_PROJECT_NAME="verl-torchtpu-grpo-test" \
-JOBENV_EXPERIMENT_NAME="qwen3-30b-a3b-retool-dapo-v7x-64c-16k-think-shaped-16t-25s-01-sha53bc215c" \
-JOBENV_LOGGER_LIST="['console','tensorboard','wandb']" \
+IMAGE="us-west2-docker.pkg.dev/tpu-pytorch/raycluster/verl-tpu@sha256:d92a2b3d6667584d67ea51874a721228a96c799263ab40f4aee168680476f64e" \
+JOB_SCRIPT="examples/tpu/retool/run_qwen3_30b_a3b_dapo_torchtitan.sh" \
+JOBENV_LIBTPU_INIT_ARGS="--xla_tpu_use_enhanced_launch_barrier=false --xla_tpu_bf16_emission_mode=PROMOTE_F32" \
 JOBENV_MODEL_PATH="/dev/shm/models/multiturn-sft-qwen3-30b-a3b-tpu7x" \
 JOBENV_MODEL_SRC_PATH="/data/xiaotongyang/retool-v7x/runs/p2-retool-sft-01/checkpoint/global_step_372/huggingface" \
-JOBENV_RAY_DATA_HOME="/data/xiaotongyang/retool-v7x/inputs" \
-JOBENV_NNODES_TRAINER=4 \
-JOBENV_N_CHIPS_TRAINER=8 \
-JOBENV_NNODES_ROLLOUT=12 \
-JOBENV_N_CHIPS_ROLLOUT=8 \
-JOBENV_ROLLOUT_TP=32 \
-JOBENV_ROLLOUT_EP=32 \
-JOBENV_TRAIN_BATCH_SIZE=64 \
-JOBENV_PPO_MINI_BATCH_SIZE=64 \
-JOBENV_N_RESP_PER_PROMPT=16 \
-JOBENV_N_RESP_PER_PROMPT_VAL=30 \
-JOBENV_MAX_RESPONSE_LENGTH=16384 \
-JOBENV_MAX_TURNS=16 \
+JOBENV_NNODES_TRAINER="4" \
+JOBENV_N_CHIPS_TRAINER="8" \
+JOBENV_NNODES_ROLLOUT="12" \
+JOBENV_N_CHIPS_ROLLOUT="8" \
+JOBENV_ROLLOUT_TP="32" \
+JOBENV_ROLLOUT_EP="32" \
+JOBENV_TRAIN_BATCH_SIZE="64" \
+JOBENV_PPO_MINI_BATCH_SIZE="64" \
+JOBENV_MAX_RESPONSE_LENGTH="16384" \
+JOBENV_MAX_TURNS="16" \
+JOBENV_N_RESP_PER_PROMPT="16" \
+JOBENV_N_RESP_PER_PROMPT_VAL="30" \
 JOBENV_ACTOR_LR="2e-6" \
-JOBENV_TOTAL_TRAINING_STEPS=25 \
-JOBENV_VAL_BEFORE_TRAIN="True" \
-JOBENV_TEST_FREQ=25 \
-JOBENV_SAVE_FREQ=5 \
-JOBENV_VERIFY_PARITY="all" \
+JOBENV_NUM_WARMUP_BATCHES="2" \
 JOBENV_RELEASE_SYNC_BUFFERS="False" \
-JOBENV_VERL_RAIDEN_RELEASE_BUFFERS=0 \
+JOBENV_VERL_RAIDEN_RELEASE_BUFFERS="0" \
+JOBENV_VERIFY_PARITY="all" \
+JOBENV_VAL_BEFORE_TRAIN="True" \
+JOBENV_TEST_FREQ="25" \
+JOBENV_TOTAL_TRAINING_STEPS="25" \
+JOBENV_SAVE_FREQ="5" \
+JOBENV_LOGGER_LIST="['console','tensorboard','wandb']" \
+JOBENV_PROJECT_NAME="verl-torchtpu-grpo-test" \
+JOBENV_WANDB_ENTITY="google-trellis" \
+JOBENV_EXPERIMENT_NAME="qwen3-30b-a3b-retool-dapo-v7x-64c-16k-think-shaped-16t-25s-01-sha53bc215c" \
+JOBENV_TENSORBOARD_DIR="@RUN_DIR@/tensorboard" \
 bash examples/tpu/gke/run_ray_jobset_v7x_nap.sh \
-  -- bash examples/tpu/retool/run_qwen3_30b_a3b_dapo_torchtitan.sh \
-  'trainer.rollout_data_dir=/data/xiaotongyang/retool-v7x/runs/p3c-retool-25s-01/rollout' \
-  'trainer.validation_data_dir=/data/xiaotongyang/retool-v7x/runs/p3c-retool-25s-01/validation' \
-  '+trainer.rollout_audit_dir=/data/xiaotongyang/retool-v7x/runs/p3c-retool-25s-01/rollout_audit' \
-  '+trainer.rollout_audit_sessions=8' \
-  'reward.custom_reward_function.path=pkg://examples.tpu.retool.retool_tpu' \
-  'reward.custom_reward_function.name=compute_score' \
-  '++data.apply_chat_template_kwargs.enable_thinking=True'
+  "trainer.rollout_data_dir=@RUN_DIR@/rollout" \
+  "trainer.validation_data_dir=@RUN_DIR@/validation" \
+  "+trainer.rollout_audit_dir=@RUN_DIR@/rollout_audit" \
+  "+trainer.rollout_audit_sessions=8" \
+  "reward.custom_reward_function.path=pkg://examples.tpu.retool.retool_tpu" \
+  "reward.custom_reward_function.name=compute_score" \
+  "++data.apply_chat_template_kwargs.enable_thinking=True"
 ```
 
-我们已通过 `DRY_RUN=1` 预生成并核对了 64 卡的 `job_spec.json` 与 `jobset.yaml`：
+我们对上述**完全相同的字面命令**执行了 `DRY_RUN=1`（预检时仅将 `RAY_NAMESPACE` 指向已存在的 `priority-dev` 以通过 API server admission 校验），生成的同源 `run_record.json`、`job_spec.json` 与 `jobset.yaml` 如下：
 - **JobSet Slices（共 4 个 `2x2x4` slice = 16 hosts / 64 physical chips）**：
   - `trainer-0`（`tpu-group-0`，4 pods × 4 chips）
   - `rollout-0`、`rollout-1`、`rollout-2`（`tpu-group-1`、`tpu-group-2`、`tpu-group-3`，共 12 pods × 4 chips）
-- **生成的 64 卡 `job_spec.json`**：
+- **该字面命令生成的 `run_record.json`**：
+```json
+{
+ "code_sha": "53bc215c8880483142caee0b4d25d57066a0a54f",
+ "created_at": "2026-11-04T11:37:13Z",
+ "driver_timeout_s": "20700",
+ "gcs_bucket": "ubench-logs",
+ "image": "us-west2-docker.pkg.dev/tpu-pytorch/raycluster/verl-tpu@sha256:d92a2b3d6667584d67ea51874a721228a96c799263ab40f4aee168680476f64e",
+ "inputs_root": "xiaotongyang/retool-v7x/inputs",
+ "jobset_max_restarts": "1",
+ "kube_context": "gke_cloud-tpu-shared-capacity_us-central1_bodaborg-tpu7x-nap",
+ "kueue_queue": "multislice-queue",
+ "node_rank_source": "job-index",
+ "node_wait_timeout_s": "1200",
+ "pod_tpu_accelerator_type": "tpu7x",
+ "priority_class": "medium",
+ "ray_namespace": "priority-dev",
+ "ray_tpu_per_host": "8",
+ "require_node_rank": "1",
+ "rollout_slices": "3",
+ "run_dir": "/data/xiaotongyang/retool-v7x/runs/p3c-retool-25s-01",
+ "run_name": "p3c-retool-25s-01",
+ "run_owner": "xiaotongyang",
+ "tpu_topology": "2x2x4",
+ "trainer_slices": "1",
+ "wandb_secret_key": "WANDB_API_KEY",
+ "wandb_secret_name": "xiaotongyang-wandb"
+}
+```
+- **该字面命令生成的 64 卡 `job_spec.json`**：
 ```json
 {
  "entrypoint": [
@@ -599,6 +666,7 @@ bash examples/tpu/gke/run_ray_jobset_v7x_nap.sh \
   "MODEL_SRC_PATH": "/data/xiaotongyang/retool-v7x/runs/p2-retool-sft-01/checkpoint/global_step_372/huggingface",
   "NNODES_ROLLOUT": "12",
   "NNODES_TRAINER": "4",
+  "NUM_WARMUP_BATCHES": "2",
   "N_CHIPS_ROLLOUT": "8",
   "N_CHIPS_TRAINER": "8",
   "N_RESP_PER_PROMPT": "16",
@@ -631,25 +699,36 @@ bash examples/tpu/gke/run_ray_jobset_v7x_nap.sh \
 }
 ```
 
-#### 4. 64 卡正式运行前 3 步（Steps 0–3）在线放行门槛（In-Flight Release Gate）
+#### 5. 64 卡正式运行前 3 步（Steps 0–3）在线放行门槛（In-Flight Release Gate）与监控终止机制
 
-此前 32 卡（单 rollout replica）的验证结果不能直接证明 64 卡（三 rollout replica）同步通过。因此在 `p3c-retool-25s-01` 启动后，必须对 **Step 0 及 Steps 1–3** 实时执行以下多副本放行检查（全部通过则继续跑完至 Step 25；任一项失败则立即终止作业）：
+此前 32 卡（单 rollout replica）的验证结果不能直接证明 64 卡（三 rollout replica）同步通过。因此在 `p3c-retool-25s-01` 启动后，对 **Step 0 及 Steps 1–3** 实时执行以下多副本放行检查：
 
-1. **Multi-Replica 拓扑与 Resolved Config 检查（Step 0 启动时）**：
+1. **自动报错与外部监控终止机制（谁来监控与如何停止）**：
+   - **进程内 Fail-Fast（Raiden 同步与范数校验）**：[`RaidenCheckpointEngine`](../../verl/checkpoint_engine/raiden_checkpoint_engine.py) 在 `VERIFY_PARITY=all` 下对 Step 0 逐元素对账和每步 `update_weights` 的三副本分布式范数/覆盖率执行进程内强校验；一旦出现任何 mismatch、unresolved shard 或 rank 缺失，直接抛出 `RuntimeError` 中止训练作业。
+   - **进程外实时监控哨兵（Resolved Config / Reward 对账 / Response Mask / 梯度检查）**：由于 `validation/0.jsonl` 与 `rollout_audit/{1..3}.jsonl` 的离线复算不会自动阻塞 Trainer 进入 Step 4，值守脚本（由执行 Agent 在作业启动后持续运行）实时轮询 `gs://ubench-logs/xiaotongyang/retool-v7x/runs/p3c-retool-25s-01/` 下新落盘的 `head.log`、`env/raiden_exact_parity_step_0.json`、`validation/0.jsonl` 与 `rollout_audit/{1..3}.jsonl`；**只要下述第 2–5 项任一检查不通过，值守脚本立即执行 `kubectl delete jobset p3c-retool-25s-01 -n r-b0f80` 终止作业**；全部通过则保持作业继续运行至 Step 25。
+2. **Multi-Replica 拓扑与 Resolved Config 检查（Step 0 启动时）**：
    - 确认实际创建了 **3 个独立的 vLLM Rollout Replica（`sampler0`、`sampler1`、`sampler2`）**，每个 replica 为 `TP=32, EP=32`，合计 **96 个 rollout worker ranks**。
    - 确认 Hydra resolved config 与 §6.1 所有字段完全一致。
-2. **Step 0 三副本 Raiden 逐元素同步检查（`env/raiden_exact_parity_step_0.json`）**：
-   - 若每个 rank 仍为 `435` 个张量分片，则三副本（`96` ranks）预期覆盖 **`96 × 435 = 41,760` 次分片检查**；
-   - 硬性要求：**`checked == 41,760`（或实际 `96 × shards_per_rank`）、`num_mismatched == 0`、`num_missing == 0`、`num_duplicate == 0`**。
-3. **Steps 1–3 三副本训练后分布式范数与梯度检查**：
-   - 在 Steps 1、2、3 每一步 `update_weights` 后，检查 **全部 3 个 rollout replica** 的分布式参数范数（Global L1 / L2 norm 及 `total_numel = 30,532,122,624` across `579` tensors）与 Trainer 100% 匹配；
+3. **Step 0 三副本 Raiden 逐元素同步检查（按 `env/raiden_exact_parity_step_0.json` 真实 Schema 校验）**：
+   - 校验顶层字段：
+     - `step == 0`
+     - `num_results == 96` 且 `expected_ranks == 96`
+     - `expected_workers_per_replica == [32, 32, 32]`
+     - `expected_checked_per_rank == 435` 且 `checked_per_rank == [435]`（或实际每 rank 分片数 `S`，满足所有 rank 一致）
+     - `replica_rank_pairs` 精确覆盖全部 96 个 `[replica_idx, rank_idx]` 组合（`replica_idx ∈ {0, 1, 2}`、`rank_idx ∈ {0..31}`，无缺失或重复）
+     - **`num_mismatched == 0`、`num_unresolved == 0`、`coverage_errors == []`**
+   - 校验逐 rank 明细列表 `ranks`（`len(ranks) == 96`）：
+     - 每个元素 `r` 均满足 `r["checked"] == r["expected_checked"] == 435`、`r["num_mismatched"] == 0`、`r["unresolved"] == []`、`r["all_mismatched"] == []`；
+     - 全部 96 个 rank 累计检查分片数 **`sum(r["checked"] for r in ranks) == 41,760`**（即 `96 × 435`）。
+4. **Steps 1–3 三副本训练后分布式范数与梯度检查**：
+   - 在 Steps 1、2、3 每一步 `update_weights` 后，检查 **全部 3 个 rollout replica（96 ranks）** 的分布式参数范数（Global L1 / L2 norm 及 `total_numel = 30,532,122,624` across `579` tensors）与 Trainer 100% 匹配（日志输出 `[RAIDEN PARITY VERIFIED | Step k] 100% DISTRIBUTED NORM PARITY CONFIRMED!`）；
    - 确认 Steps 1–3 的 `actor/grad_norm` 均为有限正数，`0` 次非有限梯度跳过更新，`actor/lr == 2.0e-6`。
-4. **Step 0 验证集（`validation/0.jsonl`，`n=30`）与 Steps 1–3 训练审计（`rollout_audit/{1..3}.jsonl`，24 个 session）对账**：
-   - `validation/0.jsonl` 通过 `summarize_validation_dump(..., expected_n=30)` 完整性校验（`60 × 30 = 1,800` 个完整 session），离线重算 `acc` / `score` 100% 一致；
-   - `rollout_audit/{1..3}.jsonl`（每步 8 个 session，共 24 个 session）离线重算 `acc`、`pred`、`score` 100% 一致，且 **`0` 条 `response_mask` 违规（`<tool_response>` 零泄漏）**；
+5. **Step 0 验证集（`validation/0.jsonl`，`n=30`）与 Steps 1–3 训练审计（`rollout_audit/{1..3}.jsonl`，24 个 session）对账**：
+   - `validation/0.jsonl` 通过 `summarize_validation_dump(..., expected_n=30)` 完整性校验（`60 × 30 = 1,800` 个完整 session，`missing_num_turns == 0`）；对全部 1,800 个 session 离线调用 `retool_tpu.compute_score` 复算，`acc` 100% 一致，且 `score` 在浮点容差 **`math.isclose(recomputed_score, recorded_score, abs_tol=1e-6)`** 下 100% 一致（避免 float32 舍入造成误判）；
+   - `rollout_audit/{1..3}.jsonl`（每步 8 个 session，共 24 个 session）离线重算 `acc`、`pred` 完全一致、`score` 满足 `math.isclose(..., abs_tol=1e-6)`，且 **`0` 条 `response_mask` 违规（`<tool_response>` 零泄漏）**；
    - W&B 新 Run 实时收到 Step 0 验证与 Steps 1–3 训练指标。
 
-#### 5. 运行时长预估不确定性与 Checkpoint 恢复边界说明
+#### 6. 运行时长预估不确定性与 Checkpoint 恢复边界说明
 
 1. **运行时长不作事前保证，以 64 卡实测为准**：
    - 32 卡 smoke 中 Step 1 的 `timing_s/gen = 2,116.86s` 是 3 个异步批次（2 个 warmup 批次 + Step 1 批次，共 192 道题）合并等待的总墙钟时间，日志并未分别记录这 3 个批次各自的完成时间戳与实际生成 token 总量；而 Step 2 的 `136s` 仅是单个 step 在 `ReplayBuffer` 已命中情况下的耗时，并非多步稳态均值。

@@ -472,19 +472,7 @@ ${WANDB_EXTRA_ENV}${JOBENV_YAML}    resources:
     - |
       set -xeuo pipefail
       HOST_TAG="\$(hostname)"
-      sysctl -w net.ipv6.conf.eth0.disable_ipv6=1 >/dev/null 2>&1 || true
-      ip -6 addr flush dev eth0 >/dev/null 2>&1 || true
-      if [[ -w /etc/gai.conf ]] || [[ -w /etc ]]; then
-        grep -q '^precedence ::ffff:0:0/96  100' /etc/gai.conf 2>/dev/null || echo 'precedence ::ffff:0:0/96  100' >> /etc/gai.conf
-      fi
-      if [[ -w /etc/hosts ]]; then
-        HOST_IPV4="\$(ip -4 -o addr show dev eth0 2>/dev/null | awk '{split(\$4,a,"/"); print a[1]; exit}')"
-        grep -v -E '^[0-9a-fA-F]*:[0-9a-fA-F:]+[[:space:]]' /etc/hosts > /tmp/hosts.ipv4 || true
-        if [[ -n "\${HOST_IPV4}" ]] && ! grep -q "\${HOST_IPV4}[[:space:]].*\${HOST_TAG}" /tmp/hosts.ipv4; then
-          echo "\${HOST_IPV4} \${HOST_TAG}" >> /tmp/hosts.ipv4
-        fi
-        cat /tmp/hosts.ipv4 > /etc/hosts || true
-      fi
+      python3 -c 'import socket; from pathlib import Path; [(Path(p).write_text("1\n", encoding="utf-8") if Path(p).exists() else None) for p in ("/proc/sys/net/ipv6/conf/eth0/disable_ipv6", "/proc/sys/net/ipv6/conf/default/disable_ipv6")]; gai = Path("/etc/gai.conf"); txt = gai.read_text(encoding="utf-8") if gai.exists() else ""; gai.write_text(txt + "\nprecedence ::ffff:0:0/96  100\n", encoding="utf-8") if "precedence ::ffff:0:0/96  100" not in txt else None; s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.connect(("10.255.255.255", 1)); ipv4 = s.getsockname()[0]; s.close(); host = socket.gethostname(); hp = Path("/etc/hosts"); lines = [ln for ln in hp.read_text(encoding="utf-8").splitlines() if not (":" in (ln.split("#", 1)[0].split()[0] if ln.split("#", 1)[0].split() else "") and host in ln.split())]; lines = lines + ([f"{ipv4}\t{host}"] if not any(ln.split()[:2] == [ipv4, host] for ln in lines if ln.split()) else []); hp.write_text("\n".join(lines) + "\n", encoding="utf-8"); print(f"[ipv4-setup] host={host} ipv4={ipv4} addrinfo={socket.getaddrinfo(host, None, 0, socket.SOCK_STREAM)[0][4]}", flush=True)' || true
       mkdir -p "${RUN_DIR}/env"
       rm -f "${RUN_DIR}/exit_code.txt"
       if [[ -n "\${EXPECT_GIT_SHA:-}" && "\$(git rev-parse HEAD)" != "\${EXPECT_GIT_SHA}" ]]; then
@@ -709,19 +697,7 @@ ${WANDB_EXTRA_ENV}${JOBENV_YAML}    resources:
     - |
       set -xeuo pipefail
       HOST_TAG="\$(hostname)"
-      sysctl -w net.ipv6.conf.eth0.disable_ipv6=1 >/dev/null 2>&1 || true
-      ip -6 addr flush dev eth0 >/dev/null 2>&1 || true
-      if [[ -w /etc/gai.conf ]] || [[ -w /etc ]]; then
-        grep -q '^precedence ::ffff:0:0/96  100' /etc/gai.conf 2>/dev/null || echo 'precedence ::ffff:0:0/96  100' >> /etc/gai.conf
-      fi
-      if [[ -w /etc/hosts ]]; then
-        HOST_IPV4="\$(ip -4 -o addr show dev eth0 2>/dev/null | awk '{split(\$4,a,"/"); print a[1]; exit}')"
-        grep -v -E '^[0-9a-fA-F]*:[0-9a-fA-F:]+[[:space:]]' /etc/hosts > /tmp/hosts.ipv4 || true
-        if [[ -n "\${HOST_IPV4}" ]] && ! grep -q "\${HOST_IPV4}[[:space:]].*\${HOST_TAG}" /tmp/hosts.ipv4; then
-          echo "\${HOST_IPV4} \${HOST_TAG}" >> /tmp/hosts.ipv4
-        fi
-        cat /tmp/hosts.ipv4 > /etc/hosts || true
-      fi
+      python3 -c 'import socket; from pathlib import Path; [(Path(p).write_text("1\n", encoding="utf-8") if Path(p).exists() else None) for p in ("/proc/sys/net/ipv6/conf/eth0/disable_ipv6", "/proc/sys/net/ipv6/conf/default/disable_ipv6")]; gai = Path("/etc/gai.conf"); txt = gai.read_text(encoding="utf-8") if gai.exists() else ""; gai.write_text(txt + "\nprecedence ::ffff:0:0/96  100\n", encoding="utf-8") if "precedence ::ffff:0:0/96  100" not in txt else None; s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.connect(("10.255.255.255", 1)); ipv4 = s.getsockname()[0]; s.close(); host = socket.gethostname(); hp = Path("/etc/hosts"); lines = [ln for ln in hp.read_text(encoding="utf-8").splitlines() if not (":" in (ln.split("#", 1)[0].split()[0] if ln.split("#", 1)[0].split() else "") and host in ln.split())]; lines = lines + ([f"{ipv4}\t{host}"] if not any(ln.split()[:2] == [ipv4, host] for ln in lines if ln.split()) else []); hp.write_text("\n".join(lines) + "\n", encoding="utf-8"); print(f"[ipv4-setup] host={host} ipv4={ipv4} addrinfo={socket.getaddrinfo(host, None, 0, socket.SOCK_STREAM)[0][4]}", flush=True)' || true
       mkdir -p "${RUN_DIR}/env" "${RUN_DIR}/rollout" "${RUN_DIR}/validation" "${RUN_DIR}/rollout_audit" "${TENSORBOARD_DIR}"
       rm -f "${RUN_DIR}/exit_code.txt"
       if [[ -n "\${EXPECT_GIT_SHA:-}" && "\$(git rev-parse HEAD)" != "\${EXPECT_GIT_SHA}" ]]; then

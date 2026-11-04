@@ -162,7 +162,8 @@ test_files="['${aime_2025}', '${aime_2024}']"
 tool_config_path="examples/tpu/retool/sandbox_fusion_tool_config_tpu.yaml"
 retool_py_path="pkg://examples.tpu.retool.retool_tpu"
 
-project_name="${PROJECT_NAME:-verl_gb200_retool}"
+export WANDB_ENTITY="${WANDB_ENTITY:-google-trellis}"
+project_name="${PROJECT_NAME:-${WANDB_PROJECT:-verl_gb200_retool}}"
 experiment_name="${EXPERIMENT_NAME:-qwen3-30b-a3b_retool_dapo_gb200}"
 default_local_dir="${CKPTS_DIR:-/tmp/checkpoint/${experiment_name}}"
 
@@ -274,6 +275,9 @@ if [[ -n "${TENSORBOARD_DIR:-}" ]]; then
     export TENSORBOARD_DIR
     mkdir -p "${TENSORBOARD_DIR}"
     DUMP_ARGS+=("+ray_kwargs.ray_init.runtime_env.env_vars.TENSORBOARD_DIR='${TENSORBOARD_DIR}'")
+fi
+if [[ -n "${WANDB_ENTITY:-}" ]]; then
+    DUMP_ARGS+=("+ray_kwargs.ray_init.runtime_env.env_vars.WANDB_ENTITY='${WANDB_ENTITY}'")
 fi
 
 python3 -m verl.trainer.main_ppo \

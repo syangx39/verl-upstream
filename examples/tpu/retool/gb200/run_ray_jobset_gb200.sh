@@ -68,6 +68,25 @@ INPUTS_DIR="/data/${INPUTS_ROOT}"
 TENSORBOARD_DIR="${TENSORBOARD_DIR:-${JOBENV_TENSORBOARD_DIR:-${RUN_DIR}/tensorboard}}"
 EXPECT_CHECKPOINT_SHA256="${EXPECT_CHECKPOINT_SHA256:-${JOBENV_EXPECT_CHECKPOINT_SHA256:-59247a00c13f2364a12aab5ab6b88b6d971d59ff643c57aad8ac4e55a71231b0}}"
 EXPECT_GIT_SHA="${EXPECT_GIT_SHA:-${JOBENV_EXPECT_GIT_SHA:-}}"
+WANDB_SECRET_NAME="${WANDB_SECRET_NAME:-}"
+WANDB_SECRET_KEY="${WANDB_SECRET_KEY:-WANDB_API_KEY}"
+
+WANDB_EXTRA_ENV=""
+if [[ -n "${WANDB_SECRET_NAME}" ]]; then
+    if ! [[ "${WANDB_SECRET_NAME}" =~ ^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$ ]] || [[ "${#WANDB_SECRET_NAME}" -gt 253 ]]; then
+        echo "ERROR: WANDB_SECRET_NAME='${WANDB_SECRET_NAME}' is not a valid Kubernetes Secret name" >&2
+        exit 1
+    fi
+    if ! [[ "${WANDB_SECRET_KEY}" =~ ^[-._a-zA-Z0-9]+$ ]]; then
+        echo "ERROR: WANDB_SECRET_KEY='${WANDB_SECRET_KEY}' is not a valid Kubernetes Secret key" >&2
+        exit 1
+    fi
+    WANDB_EXTRA_ENV+="    - name: WANDB_API_KEY"$'\n'
+    WANDB_EXTRA_ENV+="      valueFrom:"$'\n'
+    WANDB_EXTRA_ENV+="        secretKeyRef:"$'\n'
+    WANDB_EXTRA_ENV+="          name: \"${WANDB_SECRET_NAME}\""$'\n'
+    WANDB_EXTRA_ENV+="          key: \"${WANDB_SECRET_KEY}\""$'\n'
+fi
 
 EXTRA_ARGS=()
 for arg in "$@"; do
@@ -80,6 +99,10 @@ JOBENV_YAML=""
 while IFS='=' read -r name val; do
     if [[ "${name}" == JOBENV_* ]]; then
         env_key="${name#JOBENV_}"
+        if [[ "${env_key}" == "WANDB_API_KEY" ]]; then
+            echo "ERROR: refusing to inject plaintext JOBENV_WANDB_API_KEY into Pod specs; use WANDB_SECRET_NAME=<k8s-secret-name> instead." >&2
+            exit 1
+        fi
         if [[ "${env_key}" == "SANDBOX_FUSION_HOST" || "${env_key}" == "SANDBOX_FUSION_PORT" || "${env_key}" == "SANDBOX_FUSION_URL" || "${env_key}" == "TENSORBOARD_DIR" || "${env_key}" == "EXPECT_CHECKPOINT_SHA256" || "${env_key}" == "EXPECT_GIT_SHA" ]]; then
             continue
         fi
@@ -243,6 +266,15 @@ for res_spec in "${PREFLIGHT_RES_SPECS[@]}"; do
         exit 1
     fi
 done
+if [[ -n "${WANDB_SECRET_NAME}" ]]; then
+    SECRET_HAS_KEY="$(kubectl --context="${KUBE_CONTEXT}" -n "${K8S_NAMESPACE}" get secret "${WANDB_SECRET_NAME}" -o jsonpath="{.data.${WANDB_SECRET_KEY}}" 2>/dev/null || true)"
+    if [[ -z "${SECRET_HAS_KEY}" ]]; then
+        echo "ERROR: Secret ${WANDB_SECRET_NAME} (key ${WANDB_SECRET_KEY}) not found or empty in namespace ${K8S_NAMESPACE}" >&2
+        exit 1
+    fi
+    unset SECRET_HAS_KEY
+    echo "[gb200-launcher] verified Secret ${WANDB_SECRET_NAME}[${WANDB_SECRET_KEY}] exists in namespace ${K8S_NAMESPACE}"
+fi
 
 # 2. Refuse to reuse an existing GCS run directory or stale G0 precheck files unless ALLOW_OVERWRITE_RUN_DIR=1.
 #    Fail closed if `gsutil stat` fails for any reason other than genuine object-not-found (e.g. permission/auth/network error).
@@ -413,7 +445,7 @@ spec:
       value: "${EXPECT_CHECKPOINT_SHA256}"
     - name: EXPECT_GIT_SHA
       value: "${EXPECT_GIT_SHA}"
-${JOBENV_YAML}    resources:
+${WANDB_EXTRA_ENV}${JOBENV_YAML}    resources:
       claims:
       - name: compute-domain-channel
       requests:
@@ -631,7 +663,7 @@ spec:
       value: "${EXPECT_CHECKPOINT_SHA256}"
     - name: EXPECT_GIT_SHA
       value: "${EXPECT_GIT_SHA}"
-${JOBENV_YAML}    resources:
+${WANDB_EXTRA_ENV}${JOBENV_YAML}    resources:
       claims:
       - name: compute-domain-channel
       requests:

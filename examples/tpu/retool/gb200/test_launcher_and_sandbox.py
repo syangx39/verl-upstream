@@ -573,6 +573,36 @@ exit 0
         self.assertNotIn('nvidia.com/gpu: "4"', src)
         self.assertEqual(src.count("- name: EXPECT_GIT_SHA"), 2)
 
+    def test_wandb_secret_ref_and_plaintext_rejection(self):
+        """Verify WANDB_SECRET_NAME validation/check and rejection of plaintext JOBENV_WANDB_API_KEY."""
+        launcher = REPO_ROOT / "examples" / "tpu" / "retool" / "gb200" / "run_ray_jobset_gb200.sh"
+        with tempfile.TemporaryDirectory() as td:
+            bin_dir = self._make_mock_bins(Path(td), fail_on_create_idx=99)
+            base_env = os.environ.copy()
+            base_env.update(
+                {
+                    "PATH": f"{bin_dir}:{base_env.get('PATH', '')}",
+                    "RUN_NAME": "wandb-test-run",
+                    "KUBE_CONTEXT": "mock-ctx",
+                    "NODEPOOL": "mock-pool",
+                    "GCS_BUCKET": "mock-bucket",
+                    "RUN_ROOT": "mock-runs",
+                    "INPUTS_ROOT": "mock-inputs",
+                    "IMAGE": "mock-image:latest",
+                }
+            )
+            # 1. Plaintext JOBENV_WANDB_API_KEY must be rejected
+            env_plain = dict(base_env, JOBENV_WANDB_API_KEY="secret-value")
+            res_plain = subprocess.run(["bash", str(launcher)], env=env_plain, capture_output=True, text=True)
+            self.assertNotEqual(res_plain.returncode, 0)
+            self.assertIn("refusing to inject plaintext JOBENV_WANDB_API_KEY", res_plain.stderr)
+
+            # 2. Missing K8s Secret when WANDB_SECRET_NAME is set must fail closed
+            env_missing = dict(base_env, WANDB_SECRET_NAME="xiaotongyang-wandb")
+            res_missing = subprocess.run(["bash", str(launcher)], env=env_missing, capture_output=True, text=True)
+            self.assertNotEqual(res_missing.returncode, 0)
+            self.assertIn("Secret xiaotongyang-wandb (key WANDB_API_KEY) not found or empty", res_missing.stderr)
+
     def test_precheck_json_emission_and_cross_node_readiness_parsing(self):
         """Verify verify_venv_lock writes structured JSON and the launcher readiness snippet parses it end-to-end."""
         from examples.tpu.retool.gb200 import verify_venv_lock

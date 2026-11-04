@@ -1,0 +1,219 @@
+{
+ "run": "g64-retool-25s-01",
+ "description": "Our 64x GB200 25-step ReTool run (same 16K + thinking + shaped reward config family), for reference only",
+ "source": "syangx39/verl-upstream PR #17 @ dfdaea2c: examples/tpu/retool/gb200/logs/g64-retool-25s-01/g64_25s_01_metrics.json",
+ "eval_n_per_question": 30,
+ "sft_checkpoint": "p2-retool-sft-01/checkpoint/global_step_372 (ours, not Askhat's)",
+ "train": [
+  {
+   "critic/score/mean": -0.12001952528953552,
+   "response_length/mean": 1557.64453125,
+   "num_turns/mean": 8.791015625,
+   "actor/grad_norm": 0.17667561769485474,
+   "timing_s/step": 248.77221475506667,
+   "step": 1
+  },
+  {
+   "critic/score/mean": -0.30126953125,
+   "response_length/mean": 2753.216796875,
+   "num_turns/mean": 8.787109375,
+   "actor/grad_norm": 0.12193867564201355,
+   "timing_s/step": 35.0335331360111,
+   "step": 2
+  },
+  {
+   "critic/score/mean": -0.2828124761581421,
+   "response_length/mean": 2667.1279296875,
+   "num_turns/mean": 8.642578125,
+   "actor/grad_norm": 0.1228809580206871,
+   "timing_s/step": 34.47135435498785,
+   "step": 3
+  },
+  {
+   "critic/score/mean": -0.26005858182907104,
+   "response_length/mean": 2452.0712890625,
+   "num_turns/mean": 8.5234375,
+   "actor/grad_norm": 0.12780164182186127,
+   "timing_s/step": 27.93004925409332,
+   "step": 4
+  },
+  {
+   "critic/score/mean": -0.04775391146540642,
+   "response_length/mean": 2252.4111328125,
+   "num_turns/mean": 7.9453125,
+   "actor/grad_norm": 0.12590038776397705,
+   "timing_s/step": 26.650547393015586,
+   "step": 5
+  },
+  {
+   "critic/score/mean": -0.03730468824505806,
+   "response_length/mean": 2195.1455078125,
+   "num_turns/mean": 8.7890625,
+   "actor/grad_norm": 0.1366974413394928,
+   "timing_s/step": 25.36092450004071,
+   "step": 6
+  },
+  {
+   "critic/score/mean": 0.13876953721046448,
+   "response_length/mean": 2496.0146484375,
+   "num_turns/mean": 8.376953125,
+   "actor/grad_norm": 0.12357449531555176,
+   "timing_s/step": 27.654367506038398,
+   "step": 7
+  },
+  {
+   "critic/score/mean": 0.13798828423023224,
+   "response_length/mean": 2337.5927734375,
+   "num_turns/mean": 8.583984375,
+   "actor/grad_norm": 0.12110396474599838,
+   "timing_s/step": 28.46642809000332,
+   "step": 8
+  },
+  {
+   "critic/score/mean": 0.21054688096046448,
+   "response_length/mean": 2419.6025390625,
+   "num_turns/mean": 8.859375,
+   "actor/grad_norm": 0.12378460168838501,
+   "timing_s/step": 28.894637000979856,
+   "step": 9
+  },
+  {
+   "critic/score/mean": 0.2861328125,
+   "response_length/mean": 2472.8671875,
+   "num_turns/mean": 8.119140625,
+   "actor/grad_norm": 0.12280038744211197,
+   "timing_s/step": 27.60770844097715,
+   "step": 10
+  },
+  {
+   "critic/score/mean": 0.2740234434604645,
+   "response_length/mean": 2493.830078125,
+   "num_turns/mean": 8.21875,
+   "actor/grad_norm": 0.11869102716445923,
+   "timing_s/step": 29.261924003018066,
+   "step": 11
+  },
+  {
+   "critic/score/mean": 0.22929686307907104,
+   "response_length/mean": 2622.9814453125,
+   "num_turns/mean": 8.013671875,
+   "actor/grad_norm": 0.15924431383609772,
+   "timing_s/step": 34.86023148300592,
+   "step": 12
+  },
+  {
+   "critic/score/mean": 0.43925780057907104,
+   "response_length/mean": 2309.0126953125,
+   "num_turns/mean": 8.623046875,
+   "actor/grad_norm": 0.155014768242836,
+   "timing_s/step": 26.338752473006025,
+   "step": 13
+  },
+  {
+   "critic/score/mean": 0.3871093988418579,
+   "response_length/mean": 2610.0224609375,
+   "num_turns/mean": 8.203125,
+   "actor/grad_norm": 0.10959579050540924,
+   "timing_s/step": 28.82709693198558,
+   "step": 14
+  },
+  {
+   "critic/score/mean": 0.44921875,
+   "response_length/mean": 2709.0390625,
+   "num_turns/mean": 8.4375,
+   "actor/grad_norm": 0.10456462949514389,
+   "timing_s/step": 30.57913800305687,
+   "step": 15
+  },
+  {
+   "critic/score/mean": 0.4583984613418579,
+   "response_length/mean": 2589.48828125,
+   "num_turns/mean": 8.64453125,
+   "actor/grad_norm": 0.11062178760766983,
+   "timing_s/step": 28.069384702015668,
+   "step": 16
+  },
+  {
+   "critic/score/mean": 0.3941406011581421,
+   "response_length/mean": 2866.3583984375,
+   "num_turns/mean": 9.0078125,
+   "actor/grad_norm": 0.1080218106508255,
+   "timing_s/step": 30.88308937801048,
+   "step": 17
+  },
+  {
+   "critic/score/mean": 0.18242186307907104,
+   "response_length/mean": 2916.8740234375,
+   "num_turns/mean": 8.6875,
+   "actor/grad_norm": 0.1033211275935173,
+   "timing_s/step": 34.78058218001388,
+   "step": 18
+  },
+  {
+   "critic/score/mean": 0.33642578125,
+   "response_length/mean": 2780.43359375,
+   "num_turns/mean": 9.419921875,
+   "actor/grad_norm": 0.10695333033800125,
+   "timing_s/step": 32.42087861895561,
+   "step": 19
+  },
+  {
+   "critic/score/mean": 0.42597657442092896,
+   "response_length/mean": 2664.892578125,
+   "num_turns/mean": 8.814453125,
+   "actor/grad_norm": 0.10716889053583145,
+   "timing_s/step": 33.18871080689132,
+   "step": 20
+  },
+  {
+   "critic/score/mean": 0.3412109613418579,
+   "response_length/mean": 2826.7958984375,
+   "num_turns/mean": 8.8125,
+   "actor/grad_norm": 0.1068660318851471,
+   "timing_s/step": 35.035768746980466,
+   "step": 21
+  },
+  {
+   "critic/score/mean": 0.47880858182907104,
+   "response_length/mean": 2980.3828125,
+   "num_turns/mean": 8.384765625,
+   "actor/grad_norm": 0.0918152704834938,
+   "timing_s/step": 33.755353272892535,
+   "step": 22
+  },
+  {
+   "critic/score/mean": 0.4405273199081421,
+   "response_length/mean": 3103.8291015625,
+   "num_turns/mean": 8.193359375,
+   "actor/grad_norm": 0.09572897106409073,
+   "timing_s/step": 34.12492903403472,
+   "step": 23
+  },
+  {
+   "critic/score/mean": 0.42578125,
+   "response_length/mean": 2809.6376953125,
+   "num_turns/mean": 8.515625,
+   "actor/grad_norm": 0.10149896144866943,
+   "timing_s/step": 30.87777694594115,
+   "step": 24
+  },
+  {
+   "critic/score/mean": 0.4715820550918579,
+   "response_length/mean": 3113.8251953125,
+   "num_turns/mean": 8.01953125,
+   "actor/grad_norm": 0.09109295904636383,
+   "timing_s/step": 33.714190799044445,
+   "step": 25
+  }
+ ],
+ "eval": {
+  "0": {
+   "val-core/aime_2024/acc/mean@30": 0.44222222222222224,
+   "val-core/aime_2025/acc/mean@30": 0.35
+  },
+  "25": {
+   "val-core/aime_2024/acc/mean@30": 0.5399999999999999,
+   "val-core/aime_2025/acc/mean@30": 0.41777777777777775
+  }
+ }
+}

@@ -1,0 +1,131 @@
+{
+  "all_passed": true,
+  "fixtures": [
+    {
+      "case": "correct_boxed_t2",
+      "solution_str": "Let us solve this.\n\\boxed{42}",
+      "ground_truth": "42",
+      "num_turns": 2,
+      "expected_score": 1.0,
+      "expected_acc": true,
+      "actual": {
+        "score": 1.0,
+        "acc": true,
+        "pred": "42"
+      },
+      "passed": true
+    },
+    {
+      "case": "correct_boxed_t8",
+      "solution_str": "Tool call done.\n\\boxed{42}",
+      "ground_truth": "42",
+      "num_turns": 8,
+      "expected_score": 1.0,
+      "expected_acc": true,
+      "actual": {
+        "score": 1.0,
+        "acc": true,
+        "pred": "42"
+      },
+      "passed": true
+    },
+    {
+      "case": "wrong_boxed_t2",
+      "solution_str": "\\boxed{41}",
+      "ground_truth": "42",
+      "num_turns": 2,
+      "expected_score": -1.0,
+      "expected_acc": false,
+      "actual": {
+        "score": -1.0,
+        "acc": false,
+        "pred": "41"
+      },
+      "passed": true
+    },
+    {
+      "case": "wrong_boxed_t3",
+      "solution_str": "\\boxed{41}",
+      "ground_truth": "42",
+      "num_turns": 3,
+      "expected_score": -0.95,
+      "expected_acc": false,
+      "actual": {
+        "score": -0.95,
+        "acc": false,
+        "pred": "41"
+      },
+      "passed": true
+    },
+    {
+      "case": "wrong_boxed_t4",
+      "solution_str": "\\boxed{41}",
+      "ground_truth": "42",
+      "num_turns": 4,
+      "expected_score": -0.9,
+      "expected_acc": false,
+      "actual": {
+        "score": -0.9,
+        "acc": false,
+        "pred": "41"
+      },
+      "passed": true
+    },
+    {
+      "case": "wrong_boxed_t6",
+      "solution_str": "\\boxed{41}",
+      "ground_truth": "42",
+      "num_turns": 6,
+      "expected_score": -0.8,
+      "expected_acc": false,
+      "actual": {
+        "score": -0.8,
+        "acc": false,
+        "pred": "41"
+      },
+      "passed": true
+    },
+    {
+      "case": "wrong_boxed_t10",
+      "solution_str": "\\boxed{41}",
+      "ground_truth": "42",
+      "num_turns": 10,
+      "expected_score": -0.6,
+      "expected_acc": false,
+      "actual": {
+        "score": -0.6,
+        "acc": false,
+        "pred": "41"
+      },
+      "passed": true
+    },
+    {
+      "case": "answer_prefix_no_box_t2",
+      "solution_str": "Therefore, Answer: 42",
+      "ground_truth": "42",
+      "num_turns": 2,
+      "expected_score": -1.0,
+      "expected_acc": false,
+      "actual": {
+        "score": -1.0,
+        "acc": false,
+        "pred": ""
+      },
+      "passed": true
+    },
+    {
+      "case": "boxed_with_long_suffix_gt_100_chars_t2",
+      "solution_str": "\\boxed{42}xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "ground_truth": "42",
+      "num_turns": 2,
+      "expected_score": -1.0,
+      "expected_acc": false,
+      "actual": {
+        "score": -1.0,
+        "acc": false,
+        "pred": ""
+      },
+      "passed": true
+    }
+  ]
+}

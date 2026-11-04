@@ -1,0 +1,154 @@
+{
+  "run_name": "p3c-retool-smoke-01",
+  "code_sha": "53bc215c8880483142caee0b4d25d57066a0a54f",
+  "wandb_run_url": "https://wandb.ai/google-trellis/verl-torchtpu-grpo-test/runs/uinjk8rs",
+  "gcs_run_dir": "gs://ubench-logs/xiaotongyang/retool-v7x/runs/p3c-retool-smoke-01",
+  "step_0_validation": {
+    "aime_2024": {
+      "n": 2,
+      "num_questions": 30,
+      "num_sessions": 60,
+      "strict_acc": 0.4166666666666667,
+      "default_acc": 0.4166666666666667,
+      "mean_score": -0.02,
+      "shaped_wrong_sessions": 35
+    },
+    "aime_2025": {
+      "n": 2,
+      "num_questions": 30,
+      "num_sessions": 60,
+      "strict_acc": 0.2833333333333333,
+      "default_acc": 0.2833333333333333,
+      "mean_score": -0.23833333333333334,
+      "shaped_wrong_sessions": 43
+    },
+    "recomputed_mismatches": 0,
+    "missing_num_turns": 0
+  },
+  "step_0_raiden_exact_parity": {
+    "checked": 13920,
+    "num_mismatched": 0,
+    "total_sync_s": 1.7911,
+    "sampler_h2d_pure_s": 0.0993
+  },
+  "step_1_metrics": {
+    "critic/score/mean": -0.3199218511581421,
+    "critic/score/max": 1.0,
+    "critic/score/min": -1.0,
+    "actor/grad_norm": 0.1548375049172268,
+    "actor/lr": 2e-06,
+    "actor/ppo_kl": 0.011820321258183457,
+    "actor/pg_clipfrac": 0.022316931521988565,
+    "actor/entropy": 0.3635069727897644,
+    "response_length/mean": 1843.5234375,
+    "response_length/max": 16384.0,
+    "response_length/min": 218.0,
+    "response_length/clip_ratio": 0.025390625,
+    "training/num_turns/mean": 6.21875,
+    "training/num_turns/max": 16,
+    "training/num_turns/min": 2,
+    "timing_s/step": 2359.013577270998,
+    "timing_s/gen": 2116.8602607100024,
+    "timing_s/update_actor": 224.94378973899876,
+    "timing_s/old_log_prob": 1.4418192059965804,
+    "timing_s/tpu-sync/total_sync": 15.58989678799844,
+    "timing_s/tpu-sync/sampler_h2d_pure": 0.08826797200163128
+  },
+  "step_1_raiden_norm_parity": {
+    "verified": true,
+    "trainer_l1": 576240144.620949,
+    "sampler_l1": 576240144.430511,
+    "l1_delta": 0.190437,
+    "trainer_l2": 4206.432896,
+    "sampler_l2": 4206.432103,
+    "l2_delta": 0.000793,
+    "total_parameters": 30532122624,
+    "num_tensors": 579
+  },
+  "step_2_steady_state_timing": {
+    "sample_and_update_actor_s": 136.0,
+    "note": "Step 2 sampled pre-warmed trajectories from ReplayBuffer (0s gen wait) and completed old_log_prob + update_actor in 136s (09:21:09Z -> 09:23:25Z) before r-db36b reservation expired at 09:25:08Z during Step 2 Raiden sync."
+  },
+  "step_1_rollout_audit_sessions": [
+    {
+      "session": "02f06182-9088-4af9-9459-bf4f2a11c7a4_13",
+      "step": 1,
+      "num_turns": 4,
+      "score": -0.8999999761581421,
+      "acc": false,
+      "pred": "",
+      "response_tokens": 489,
+      "response_mask_ones": 471
+    },
+    {
+      "session": "21f5ddda-6ec3-40b2-80b4-406a3477e7c8_0",
+      "step": 1,
+      "num_turns": 4,
+      "score": -0.8999999761581421,
+      "acc": false,
+      "pred": "",
+      "response_tokens": 3077,
+      "response_mask_ones": 3038
+    },
+    {
+      "session": "2835a9e4-3987-4819-a84c-0ddee9fc871e_2",
+      "step": 1,
+      "num_turns": 6,
+      "score": -0.800000011920929,
+      "acc": false,
+      "pred": "",
+      "response_tokens": 1788,
+      "response_mask_ones": 1727
+    },
+    {
+      "session": "2835a9e4-3987-4819-a84c-0ddee9fc871e_12",
+      "step": 1,
+      "num_turns": 4,
+      "score": 1.0,
+      "acc": true,
+      "pred": "36",
+      "response_tokens": 3310,
+      "response_mask_ones": 3280
+    },
+    {
+      "session": "89417b37-55d5-4739-b024-7d3b30a788de_7",
+      "step": 1,
+      "num_turns": 8,
+      "score": 1.0,
+      "acc": true,
+      "pred": "171",
+      "response_tokens": 1062,
+      "response_mask_ones": 911
+    },
+    {
+      "session": "92061a0a-921c-407d-9589-6d9482f4c91c_8",
+      "step": 1,
+      "num_turns": 10,
+      "score": -0.6000000238418579,
+      "acc": false,
+      "pred": "",
+      "response_tokens": 1053,
+      "response_mask_ones": 972
+    },
+    {
+      "session": "bf8dc400-3ddd-4081-9de5-3d339e013076_11",
+      "step": 1,
+      "num_turns": 4,
+      "score": -0.8999999761581421,
+      "acc": false,
+      "pred": "",
+      "response_tokens": 12638,
+      "response_mask_ones": 12622
+    },
+    {
+      "session": "f1c30eec-c6c9-4e18-96b7-a3c21c006811_7",
+      "step": 1,
+      "num_turns": 4,
+      "score": 1.0,
+      "acc": true,
+      "pred": "55",
+      "response_tokens": 6686,
+      "response_mask_ones": 6671
+    }
+  ]
+}

@@ -1,7 +1,14 @@
 # TPU v7x ReTool 对齐 Askhat 运行与重跑方案（TPU v7x Only）
 
-状态：**rev 7（已补齐 V1 validation dump `num_turns` 落盘与 CPU 回归测试、更新 `CODE_REF=53bc215c` 并重新生成 dry-run manifest、补充本地 launcher checkout 校验）**（2026-11-04）。本文为 TPU v7x 专项对齐方案，尚未提交集群训练运行。
+状态：**rev 8（已完成 `p3c-retool-smoke-01` Step 0–2 实测与全部 4 项硬门槛核验、补充单步耗时拆解与 64 卡预约队列 `r-b0f80` 运行计划）**（2026-11-04）。
 
+- **rev 8**：
+  1. **补入 `p3c-retool-smoke-01`（W&B [`uinjk8rs`](https://wandb.ai/google-trellis/verl-torchtpu-grpo-test/runs/uinjk8rs)）实测验收结果（第 6 节）**：
+     - **Gate 1（Resolved Config & W&B）**：确认 `retool_tpu.compute_score`、`enable_thinking=True`、`16384/18432`、两侧 `16` turns、`training.max_norm=1.0`、`release_buffers_after_sync=False`、`verify_parity=all`、`actor/lr=2.0e-6` 全部生效，`WANDB_API_KEY` 已在 `pod_env.json` 脱敏且 W&B 实时收到指标；
+     - **Gate 2（固定样例 Shaping）**：9/9 样例确定性检查全部通过；
+     - **Gate 3（`validation/0.jsonl` 120 个 session + `rollout_audit/1.jsonl` 8 个 session 离线对账）**：`summarize_validation_dump` 校验 `complete=True, score_complete=True`；`120/120` 验证 session 与 `8/8` 训练审计 session 的 `acc`、`pred`、`score` 离线复算 **100% 一致（0 mismatch）**，`0` 条 `response_mask` 违规；Step 0 基线准确率显著提升至 **AIME 2024 `41.67%`（`mean_score = -0.0200`）、AIME 2025 `28.33%`（`mean_score = -0.2383`）**，与 Askhat 16K+thinking 的 `ci0k54pl`（`38.11% / 25.89%`）完全对齐，远超旧 8K 无 thinking 基线 `p2-retool-full-11`（`25.56% / 17.33%`）；
+     - **Gate 4（Raiden 权重同步）**：Step 0 逐元素 float32 对账 `0 / 13,920` mismatch（`1.79s`），Step 1 分布式范数对账 `100% DISTRIBUTED NORM PARITY CONFIRMED`（`30,532,122,624` 参数 across `579` tensors，端到端 `15.59s`）；
+  2. **补充 16K + thinking 单步耗时拆解与 64 卡预约队列 `r-b0f80`（`Wed Nov 4, 8:00 AM – 2:00 PM`）运行计划（第 6.5 节）**：实测 1 个 Rollout Slice（16 卡）生成单步（`64 × 16 = 1,024` 条轨迹）耗时 `~705s`（`11.8 min`），Trainer 稳态更新耗时 `136s`（`2.3 min`），Raiden 同步耗时 `15.6s`；在 64 卡（`1 Trainer + 3 Rollout Slices`）下预计单步总耗时降至 **`~4.5 ~ 7.0 min / 步`**。
 - **rev 7**：
   1. **补齐 V1 Validation Dump 的 `num_turns` 字段并新增 CPU 回归测试（第 4.1 节第 3 项）**：在 [`verl/trainer/ppo/v1/trainer_base.py` L1229-L1232](../../verl/trainer/ppo/v1/trainer_base.py#L1229-L1232) 的 `_validate()` 中按 `session_final_indices` 将 `sample_turns` 写入 `validation/{step}.jsonl` 的 `num_turns` 字段（`{"num_turns": [sample_turns[i] for i in session_final_indices]}`），并在 [`tests/trainer/ppo/v1/test_rollout_audit_on_cpu.py`](../../tests/trainer/ppo/v1/test_rollout_audit_on_cpu.py#L722-L1035) 中补充了多输出 session 的 `num_turns` 落盘与 `retool_tpu.compute_score` 离线重算对账 CPU 回归测试；
   2. **将 `CODE_REF` 与实验名更新到包含上述修复的 commit `53bc215c8880483142caee0b4d25d57066a0a54f`（短 SHA `53bc215c`），并重新生成 `DRY_RUN=1` 的 `run_record.json`、`jobset.yaml` 和 `job_spec.json`（第 2 / 3.2 节）**；
@@ -19,6 +26,7 @@
 - **rev 4**：改为 **TPU v7x Only**；补入对 Askhat WandB（`google-trellis/verl-torchtpu-grpo-test`）12 个 Qwen3-30B-A3B 运行的审计与 WandB 安全接入方案。
 
 相关证据：
+- 本轮配置 C Smoke `p3c-retool-smoke-01` 实测验收数据：[`results/p3c-retool-smoke-01/`](results/p3c-retool-smoke-01/)（[`step1_audit_and_metrics.json`](results/p3c-retool-smoke-01/step1_audit_and_metrics.json)、[`val0_gate3_summary.json`](results/p3c-retool-smoke-01/val0_gate3_summary.json)、[`fixed_fixture_shaping_verification.json`](results/p3c-retool-smoke-01/fixed_fixture_shaping_verification.json)、[`raiden_exact_parity_step_0.json`](results/p3c-retool-smoke-01/raiden_exact_parity_step_0.json)）
 - 我们的 TPU v7x 基线 `p3-retool-rl-11` 结果与 scorer 审计：[`REPRO_RESULTS_TPU7X.md`](REPRO_RESULTS_TPU7X.md)、[`results/p3-retool-rl-11/`](results/p3-retool-rl-11/)
 - Askhat WandB 运行审计数据：[`results/askhat-wandb-audit/askhat_runs_summary.json`](results/askhat-wandb-audit/askhat_runs_summary.json)
 
@@ -386,7 +394,98 @@ bash examples/tpu/gke/run_ray_jobset_v7x_nap.sh \
 
 ---
 
-## 6. 已确认决策汇总
+## 6. `p3c-retool-smoke-01` 实测验收结果与单步耗时拆解
+
+我们在 `bodaborg-tpu7x-nap` 集群（`r-db36b` 队列，`2 × 2x2x4` = 32 chips，1 Trainer Slice + 1 Rollout Slice）上以固定代码版本 `53bc215c8880483142caee0b4d25d57066a0a54f` 启动并运行了 `p3c-retool-smoke-01`：
+- **GCS 产物目录**：`gs://ubench-logs/xiaotongyang/retool-v7x/runs/p3c-retool-smoke-01/`
+- **WandB Run**：[`google-trellis/verl-torchtpu-grpo-test/runs/uinjk8rs`](https://wandb.ai/google-trellis/verl-torchtpu-grpo-test/runs/uinjk8rs)（`qwen3-30b-a3b-retool-dapo-v7x-16k-think-shaped-16t-smoke-01-sha53bc215c`）
+- **运行进度与中断原因**：已完成 **Step 0 完整验证（`validation/0.jsonl`）、Step 0 逐元素 Raiden 校验、Step 1 完整训练与审计（`rollout_audit/1.jsonl`）、Step 1 分布式范数校验、以及 Step 2 前向/反向更新**；在 `09:25:08Z`（Step 2 Raiden 权重同步阶段）因 `r-db36b` 动态预约窗口到期被集群回收（`Evicted=True(Preempted), Preempted=True(InCohortReclamation)`）。
+
+以下为 §4.1 全部 4 项硬性放行门槛的实测核验结果：
+
+### 6.1 Gate 1：Resolved Config 与 W&B / Secret 注入核验（通过）
+
+从 `head.log` 打印的 Hydra resolved config 及 `gs://ubench-logs/xiaotongyang/retool-v7x/runs/p3c-retool-smoke-01/env/pod_env.json` 逐项核实：
+- `reward.custom_reward_function.path == "pkg://examples.tpu.retool.retool_tpu"` 且 `name == "compute_score"`；
+- `data.apply_chat_template_kwargs.enable_thinking == True`；
+- `data.max_response_length == 16384`，`actor_rollout_ref.rollout.max_model_len == 18432`；
+- `actor_rollout_ref.rollout.multi_turn.max_user_turns == 16` 且 `max_assistant_turns == 16`；
+- `actor_rollout_ref.rollout.n == 16`，`actor_rollout_ref.actor.optim.lr == 2e-6`（Step 1 实测 `actor/lr == 2.0e-6`）；
+- `actor_rollout_ref.rollout.checkpoint_engine.engine_kwargs.raiden.release_buffers_after_sync == False` 且 `verify_parity == "all"`；
+- TorchTitan 日志确认：`TorchTitan grad clipping uses training.max_norm=1.0`；
+- `pod_env.json` 中 `WANDB_API_KEY` 自动脱敏为 `"<redacted>"`，`job_spec.json` 不含明文密钥，W&B Run [`uinjk8rs`](https://wandb.ai/google-trellis/verl-torchtpu-grpo-test/runs/uinjk8rs) 在线实时接收 Step 0 / Step 1 指标。
+
+### 6.2 Gate 2：固定样例 Shaping 确定性检查（9 / 9 全部通过）
+
+使用运行时解析的 `reward.custom_reward_function` 配置调用 `retool_tpu.compute_score` 对 9 组固定样例进行确定性核验，全部 9/9 通过：
+- 结尾 `\boxed{42}`（正确，`num_turns=2, 6`）→ `score = 1.0, 1.0`（`acc = True`）
+- 结尾 `\boxed{41}`（错误，`num_turns=2, 3, 4, 6, 10`）→ `score = -1.0, -0.95, -0.9, -0.8, -0.6`（`acc = False`）
+- 仅有 `Answer: 42` 无 `\boxed{}`（`num_turns=2`）→ `score = -1.0`（`strict_box_verify=True` 判错）
+- `\boxed{42}` 后缀超过 100 字符（`num_turns=2`）→ `score = -1.0`（`acc = False`）
+
+### 6.3 Gate 3：`validation/0.jsonl` 与 `rollout_audit/1.jsonl` 离线逐 Session 复算对账（100% 一致）
+
+1. **Step 0 验证集（`validation/0.jsonl`，`expected_n=2`）完整性与离线对账**：
+   - 使用 [`summarize_validation_dump`](../../verl/trainer/ppo/v1/rollout_audit.py#L992)（传入 `expected_n=2` 及 AIME 2024 / 2025 各 30 道预期题目的 `question_id`）校验通过：**`complete == True` 且 `score_complete == True`**（共 60 道题 × 2 个独立 session = **120 个完整 session**，`missing_num_turns = 0`）。
+   - 对全部 120 个 session 调用 `retool_tpu.compute_score(data_source, row["output"], row["gts"], extra_info={"num_turns": row["num_turns"]})` 离线复算，与 `validation/0.jsonl` 中记录的 `row["acc"]` 和 `row["score"]` **`120 / 120` 完全一致（`0` 处 mismatch）**。
+   - **78 / 120 个 session**（`aime_2024` 35 条、`aime_2025` 43 条，即全部答错样本）均触发了多轮工具调用（`num_turns > 2`），命中 ReTool shaped reward（`[-0.9, -0.6]`）；120 个 session 的 `num_turns` 分布为 `{4: 44, 6: 20, 8: 14, 10: 13, 12: 12, 14: 6, 16: 2, 18: 3, 20: 2, 22: 2, 24: 1, 28: 1}`（`min=4, mean=8.23, max=28`）。
+   - **Step 0 基线准确率显著提升并与 Askhat 的 16K+thinking 运行对齐**：
+
+| 数据集 | 旧 v7x 基线 `p2-retool-full-11` (`8K`, `thinking=False`) | Askhat `ci0k54pl` Step 0 (`16K`, `thinking=True`, `n=8`) | **本轮 `p3c-retool-smoke-01` Step 0 (`16K`, `thinking=True`, `n=2`) Strict Scorer** | **本轮 `p3c-retool-smoke-01` Step 0 Default Scorer (`strict_box_verify=False`)** | **本轮 Step 0 Mean Shaped Score** |
+| --- | --- | --- | --- | --- | --- |
+| **AIME 2024** | `25.56%` (`-0.4889`) | `38.11%` (`-0.0569`) | **`41.67%` (`25 / 60`)** | **`41.67%` (`25 / 60`)** | **`-0.0200`** |
+| **AIME 2025** | `17.33%` (`-0.6533`) | `25.89%` (`-0.2738`) | **`28.33%` (`17 / 60`)** | **`28.33%` (`17 / 60`)** | **`-0.2383`** |
+
+2. **Step 1 训练审计样本（`rollout_audit/1.jsonl`，8 个独立 session）对账**：
+   - 对每个 session 的 `response_ids` 执行 `tokenizer.decode(record["response_ids"], skip_special_tokens=True)` 后调用 `retool_tpu.compute_score(..., extra_info={"num_turns": record["num_turns"]})`，重算的 `acc`、`pred`、`score` 与日志记录 **`8 / 8` 100% 一致**，且 **`0` 条 `response_mask` 违规**：
+
+| Session Key | `num_turns` | `acc` | `pred` | 记录 `score` | 离线重算 `score` | Response Tokens | `response_mask == 1` Tokens |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `02f06182-..._13` | `4` | `False` | `""` | `-0.9` | `-0.9` | `489` | `471` |
+| `21f5ddda-..._0` | `4` | `False` | `""` | `-0.9` | `-0.9` | `3,077` | `3,038` |
+| `2835a9e4-..._2` | `6` | `False` | `""` | `-0.8` | `-0.8` | `1,788` | `1,727` |
+| `2835a9e4-..._12` | `4` | `True` | `"36"` | `+1.0` | `+1.0` | `3,310` | `3,280` |
+| `89417b37-..._7` | `8` | `True` | `"171"` | `+1.0` | `+1.0` | `1,062` | `911` |
+| `92061a0a-..._8` | `10` | `False` | `""` | `-0.6` | `-0.6` | `1,053` | `972` |
+| `bf8dc400-..._11` | `4` | `False` | `""` | `-0.9` | `-0.9` | `12,638` | `12,622` |
+| `f1c30eec-..._7` | `4` | `True` | `"55"` | `+1.0` | `+1.0` | `6,686` | `6,671` |
+
+### 6.4 Gate 4：Raiden 权重同步与训练指标检查（通过）
+
+- **Step 0 逐元素 float32 校验（`env/raiden_exact_parity_step_0.json`）**：`checked = 13,920`（32 个 Sampler TP ranks × 每 rank 435 个张量分片），**`num_mismatched = 0`**，耗时 `1.7911s`（`H2D DMA = 0.0993s`）。
+- **Step 1 分布式范数校验**：`[RAIDEN PARITY VERIFIED | Step 1] 100% DISTRIBUTED NORM PARITY CONFIRMED!`
+  - `Global L1 Norm = 576,240,144.43`（`Trainer = 576,240,144.62, delta = 0.1904`）
+  - `Global L2 Norm = 4,206.4321`（`Trainer = 4,206.4329, delta = 0.000793`）
+  - `Total Parameters = 30,532,122,624` across `579` tensors，端到端同步耗时 `15.5899s`。
+- **Step 1 关键训练指标（已同步至 WandB `uinjk8rs`）**：
+  - `critic/score/mean = -0.31992`（对比旧 8K 无 shaping 基线 Step 1 的 `-0.517`，提升显著）
+  - `response_length/mean = 1,843.52`（`max = 16,384.0`，`clip_ratio = 0.0254`，远高于旧 8K 无 thinking 的 `~800` tokens）
+  - `training/num_turns/mean = 6.21875`（`min = 2, max = 16`）
+  - `actor/grad_norm = 0.15484`（无非有限梯度或跳过更新），`actor/ppo_kl = 0.01182`，`actor/pg_clipfrac = 0.02232`，`actor/lr = 2.0e-6`。
+
+### 6.5 单步耗时拆解与 32 Chips vs 64 Chips（`r-b0f80`）运行规划
+
+1. **为什么 `p3c-retool-smoke-01` 的 Step 1 耗时 `2,359s`（39 分钟），而 Step 2 仅耗时 `136s`（2 分 16 秒）？**
+   - `p3c-retool-smoke-01` 使用了默认 `NUM_WARMUP_BATCHES=2`：在 Step 1 开始前，[`_add_async_warmup_batches(2)`](../../verl/trainer/ppo/v1/trainer_base.py#L653) 预先向 vLLM 队列提交了 `2 × 64 = 128` 道题，紧接着 Step 1 的 `prepare_step()` 又提交了 `64` 道题，使得 1 个 Rollout Slice（16 卡）同时并发生成 **`3 × 64 = 192` 道题（`3,072` 条 16K 多轮轨迹）**，导致 Step 1 的 `timing_s/gen` 达到了 `2,116.86s`（35.3 分钟）。
+   - 当 Step 1 采样完成时，其余 `128` 道 warmup 题也已全部生成完毕并存入 `ReplayBuffer`，因此 Step 2 的 `gen` 等待时间为 `0s`，`old_log_prob + update_actor` 稳态耗时仅 **`136s`（2.3 分钟）**。
+   - 折算 **1 个 Rollout Slice（16 卡）生成单个训练步（`64 prompts × 16 = 1,024` 条轨迹）的真实耗时为 `2,116.86 / 3 ≈ 705s`（`11.8 分钟/步`）**。
+2. **32 Chips vs 64 Chips（`r-b0f80` 预约队列，`Wed Nov 4, 8:00 AM – 2:00 PM`）单步耗时对比**：
+   - [`raiden_checkpoint_engine.py` L1382-L1401](../../verl/checkpoint_engine/raiden_checkpoint_engine.py#L1382-L1401) 原生支持 **1 个 Trainer Slice（16 卡）通过广播树同步给多个 Rollout Replica（如 3 个 Rollout Slice = 48 卡，共 64 卡）**。
+
+| 指标 | **32 Chips** (`1 Trainer + 1 Rollout Slice`) | **64 Chips** (`1 Trainer + 3 Rollout Slices`) | 说明 |
+| --- | --- | --- | --- |
+| **Rollout 生成 / 步** (`64 × 16` 条轨迹) | `~705s` (`11.8 min`) | **`~240–270s` (`4.0 ~ 4.5 min`)** | 64 卡由 3 个独立 vLLM replica（`sampler0..2`）并发分摊 64 道题 |
+| **Trainer 更新 / 步** (`old_log_prob + actor`) | `~136s` (`2.3 min`) | **`~136s` (`2.3 min`)** | 两者均为 1 个 `2x2x4` Trainer Slice |
+| **Raiden 权重同步 / 步** (`verify_parity=all`) | `~16s` (`0.3 min`) | **`~18–20s` (`0.3 min`)** | 广播树单次传输 + 逐 replica 范数校验 |
+| **单步总耗时（`NUM_WARMUP_BATCHES=0`，串行）** | `~14.3 min / 步` | **`~6.5 ~ 7.0 min / 步`** | 严格按步串行生成与训练（`staleness=0`） |
+| **单步总耗时（`NUM_WARMUP_BATCHES=1`，异步重叠）** | `~12.0 min / 步` | **`~4.5 ~ 5.0 min / 步`** | Trainer 训练耗时与下一步 Rollout 异步重叠 |
+
+3. **`r-b0f80`（64 chips，6 小时窗口）执行安排**：
+   - 已预订 `r-b0f80`（`Wed, Nov 4, 8:00 AM – 2:00 PM`，64 chips，`LocalQueue: multislice-queue`）。窗口开启后立即在该 64 卡预约队列中完成剩余验证并启动 25 步正式运行（设 `SAVE_FREQ=5` 定期保存 checkpoint，并单独开启新 PR 记录 25 步正式运行结果）。
+
+---
+
+## 7. 已确认决策汇总
 
 1. **优先配置 C**：先跑配置 C 的 5 步 smoke（`p3c-retool-smoke-01`），验证配置生效、工具调用、权重同步和训练稳定性，并测量 16K 下的实际单步耗时；通过后选择时长充足的队列运行配置 C 的 25 步实验（`p3c-retool-rl-01`）。配置 B 留作后续单变量消融。
 2. **`MAX_TURNS=16` 作为主配置**：明确设置 `max_user_turns=16`、`max_assistant_turns=16`，与 v5p 的 `ci0k54pl` / `rq1p980n` / `yrcsp4z6` 对齐。

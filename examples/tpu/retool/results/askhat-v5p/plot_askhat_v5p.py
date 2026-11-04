@@ -48,8 +48,8 @@ LINES = {
 }
 DATASETS = (("aime_2024", "AIME 2024"), ("aime_2025", "AIME 2025"))
 NOTES = {
-    "ci0k54pl": "从 `fcze3xlx` 的 step 20 checkpoint 恢复（见下文“恢复关系”）",
-    "hsodvfgr": "从 `rq1p980n` 的 step 80 checkpoint 恢复（见下文“恢复关系”）",
+    "ci0k54pl": "推测从 `fcze3xlx` 的 step 20 checkpoint 恢复（见下文“恢复关系”）",
+    "hsodvfgr": "推测从 `rq1p980n` 的 step 80 checkpoint 恢复（见下文“恢复关系”）",
     "myaf5pal": "RL 的 `model_path` 与这个 SFT 实验同名（按名称对应，未核对 checkpoint 哈希）",
     "mtuqkfsy": "同名 SFT 的第一次尝试，39 步后 crashed",
     BASE_EVAL: "原始 `Qwen3-30B-A3B`（无 SFT），`val_only`，`n=8`",

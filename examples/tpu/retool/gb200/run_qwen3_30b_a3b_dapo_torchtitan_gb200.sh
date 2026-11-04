@@ -18,6 +18,9 @@ set -xeuo pipefail
 
 export VERL_PLATFORM=nvidia
 export VLLM_USE_V1="${VLLM_USE_V1:-1}"
+export GLOO_SOCKET_IFNAME="${GLOO_SOCKET_IFNAME:-eth0}"
+export NCCL_SOCKET_IFNAME="${NCCL_SOCKET_IFNAME:-eth0}"
+export NCCL_SOCKET_FAMILY="${NCCL_SOCKET_FAMILY:-AF_INET}"
 export RAY_OVERRIDE_JOB_RUNTIME_ENV=1
 export PYTHONUNBUFFERED=1
 export RAY_memory_monitor_refresh_ms=0
@@ -162,7 +165,8 @@ test_files="['${aime_2025}', '${aime_2024}']"
 tool_config_path="examples/tpu/retool/sandbox_fusion_tool_config_tpu.yaml"
 retool_py_path="pkg://examples.tpu.retool.retool_tpu"
 
-project_name="${PROJECT_NAME:-verl_gb200_retool}"
+export WANDB_ENTITY="${WANDB_ENTITY:-google-trellis}"
+project_name="${PROJECT_NAME:-${WANDB_PROJECT:-verl_gb200_retool}}"
 experiment_name="${EXPERIMENT_NAME:-qwen3-30b-a3b_retool_dapo_gb200}"
 default_local_dir="${CKPTS_DIR:-/tmp/checkpoint/${experiment_name}}"
 
@@ -214,9 +218,12 @@ DEFAULT_DP_SHARD=$((TOTAL_TRAINER_GPUS / (TENSOR_PARALLEL_SIZE * CONTEXT_PARALLE
 DATA_PARALLEL_SHARD_SIZE="${DATA_PARALLEL_SHARD_SIZE:-${DEFAULT_DP_SHARD}}"
 
 USE_DYNAMIC_BSZ="${USE_DYNAMIC_BSZ:-True}"
-ACTOR_MAX_TOKEN_LEN_PER_GPU="${ACTOR_MAX_TOKEN_LEN_PER_GPU:-16384}"
-LOG_PROB_MAX_TOKEN_LEN_PER_GPU="${LOG_PROB_MAX_TOKEN_LEN_PER_GPU:-16384}"
-torchtitan_max_seq_len="${TORCHTITAN_MAX_SEQ_LEN:-16384}"
+MIN_TOKEN_LEN_PER_GPU=$(( (max_model_len + CONTEXT_PARALLEL_SIZE - 1) / CONTEXT_PARALLEL_SIZE ))
+DEFAULT_MAX_TOKEN_LEN_PER_GPU=$(( MIN_TOKEN_LEN_PER_GPU > 16384 ? MIN_TOKEN_LEN_PER_GPU : 16384 ))
+ACTOR_MAX_TOKEN_LEN_PER_GPU="${ACTOR_MAX_TOKEN_LEN_PER_GPU:-${DEFAULT_MAX_TOKEN_LEN_PER_GPU}}"
+LOG_PROB_MAX_TOKEN_LEN_PER_GPU="${LOG_PROB_MAX_TOKEN_LEN_PER_GPU:-${ACTOR_MAX_TOKEN_LEN_PER_GPU}}"
+DEFAULT_TORCHTITAN_MAX_SEQ_LEN=$(( (ACTOR_MAX_TOKEN_LEN_PER_GPU > LOG_PROB_MAX_TOKEN_LEN_PER_GPU ? ACTOR_MAX_TOKEN_LEN_PER_GPU : LOG_PROB_MAX_TOKEN_LEN_PER_GPU) * CONTEXT_PARALLEL_SIZE ))
+torchtitan_max_seq_len="${TORCHTITAN_MAX_SEQ_LEN:-${DEFAULT_TORCHTITAN_MAX_SEQ_LEN}}"
 
 ATTN_TYPE="${ATTN_TYPE:-flex}"
 AC_MODE="${AC_MODE:-selective}"
@@ -275,6 +282,9 @@ if [[ -n "${TENSORBOARD_DIR:-}" ]]; then
     mkdir -p "${TENSORBOARD_DIR}"
     DUMP_ARGS+=("+ray_kwargs.ray_init.runtime_env.env_vars.TENSORBOARD_DIR='${TENSORBOARD_DIR}'")
 fi
+if [[ -n "${WANDB_ENTITY:-}" ]]; then
+    DUMP_ARGS+=("+ray_kwargs.ray_init.runtime_env.env_vars.WANDB_ENTITY='${WANDB_ENTITY}'")
+fi
 
 python3 -m verl.trainer.main_ppo \
     "ray_kwargs.ray_init.runtime_env.py_executable=null" \
@@ -284,6 +294,9 @@ python3 -m verl.trainer.main_ppo \
     "+ray_kwargs.ray_init.runtime_env.env_vars.SANDBOX_FUSION_PORT='${SANDBOX_FUSION_PORT}'" \
     "+ray_kwargs.ray_init.runtime_env.env_vars.SANDBOX_DISABLE_AUTO_START='${SANDBOX_DISABLE_AUTO_START:-0}'" \
     "+ray_kwargs.ray_init.runtime_env.env_vars.VLLM_USE_V1='${VLLM_USE_V1}'" \
+    "+ray_kwargs.ray_init.runtime_env.env_vars.GLOO_SOCKET_IFNAME='${GLOO_SOCKET_IFNAME}'" \
+    "+ray_kwargs.ray_init.runtime_env.env_vars.NCCL_SOCKET_IFNAME='${NCCL_SOCKET_IFNAME}'" \
+    "+ray_kwargs.ray_init.runtime_env.env_vars.NCCL_SOCKET_FAMILY='${NCCL_SOCKET_FAMILY}'" \
     "${DUMP_ARGS[@]}" \
     trainer.use_v1=True \
     trainer.v1.trainer_mode=separate_async \

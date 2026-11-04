@@ -68,6 +68,25 @@ INPUTS_DIR="/data/${INPUTS_ROOT}"
 TENSORBOARD_DIR="${TENSORBOARD_DIR:-${JOBENV_TENSORBOARD_DIR:-${RUN_DIR}/tensorboard}}"
 EXPECT_CHECKPOINT_SHA256="${EXPECT_CHECKPOINT_SHA256:-${JOBENV_EXPECT_CHECKPOINT_SHA256:-59247a00c13f2364a12aab5ab6b88b6d971d59ff643c57aad8ac4e55a71231b0}}"
 EXPECT_GIT_SHA="${EXPECT_GIT_SHA:-${JOBENV_EXPECT_GIT_SHA:-}}"
+WANDB_SECRET_NAME="${WANDB_SECRET_NAME:-}"
+WANDB_SECRET_KEY="${WANDB_SECRET_KEY:-WANDB_API_KEY}"
+
+WANDB_EXTRA_ENV=""
+if [[ -n "${WANDB_SECRET_NAME}" ]]; then
+    if ! [[ "${WANDB_SECRET_NAME}" =~ ^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$ ]] || [[ "${#WANDB_SECRET_NAME}" -gt 253 ]]; then
+        echo "ERROR: WANDB_SECRET_NAME='${WANDB_SECRET_NAME}' is not a valid Kubernetes Secret name" >&2
+        exit 1
+    fi
+    if ! [[ "${WANDB_SECRET_KEY}" =~ ^[-._a-zA-Z0-9]+$ ]]; then
+        echo "ERROR: WANDB_SECRET_KEY='${WANDB_SECRET_KEY}' is not a valid Kubernetes Secret key" >&2
+        exit 1
+    fi
+    WANDB_EXTRA_ENV+="    - name: WANDB_API_KEY"$'\n'
+    WANDB_EXTRA_ENV+="      valueFrom:"$'\n'
+    WANDB_EXTRA_ENV+="        secretKeyRef:"$'\n'
+    WANDB_EXTRA_ENV+="          name: \"${WANDB_SECRET_NAME}\""$'\n'
+    WANDB_EXTRA_ENV+="          key: \"${WANDB_SECRET_KEY}\""$'\n'
+fi
 
 EXTRA_ARGS=()
 for arg in "$@"; do
@@ -80,6 +99,10 @@ JOBENV_YAML=""
 while IFS='=' read -r name val; do
     if [[ "${name}" == JOBENV_* ]]; then
         env_key="${name#JOBENV_}"
+        if [[ "${env_key}" == "WANDB_API_KEY" ]]; then
+            echo "ERROR: refusing to inject plaintext JOBENV_WANDB_API_KEY into Pod specs; use WANDB_SECRET_NAME=<k8s-secret-name> instead." >&2
+            exit 1
+        fi
         if [[ "${env_key}" == "SANDBOX_FUSION_HOST" || "${env_key}" == "SANDBOX_FUSION_PORT" || "${env_key}" == "SANDBOX_FUSION_URL" || "${env_key}" == "TENSORBOARD_DIR" || "${env_key}" == "EXPECT_CHECKPOINT_SHA256" || "${env_key}" == "EXPECT_GIT_SHA" ]]; then
             continue
         fi
@@ -243,6 +266,15 @@ for res_spec in "${PREFLIGHT_RES_SPECS[@]}"; do
         exit 1
     fi
 done
+if [[ -n "${WANDB_SECRET_NAME}" ]]; then
+    SECRET_HAS_KEY="$(kubectl --context="${KUBE_CONTEXT}" -n "${K8S_NAMESPACE}" get secret "${WANDB_SECRET_NAME}" -o jsonpath="{.data.${WANDB_SECRET_KEY}}" 2>/dev/null || true)"
+    if [[ -z "${SECRET_HAS_KEY}" ]]; then
+        echo "ERROR: Secret ${WANDB_SECRET_NAME} (key ${WANDB_SECRET_KEY}) not found or empty in namespace ${K8S_NAMESPACE}" >&2
+        exit 1
+    fi
+    unset SECRET_HAS_KEY
+    echo "[gb200-launcher] verified Secret ${WANDB_SECRET_NAME}[${WANDB_SECRET_KEY}] exists in namespace ${K8S_NAMESPACE}"
+fi
 
 # 2. Refuse to reuse an existing GCS run directory or stale G0 precheck files unless ALLOW_OVERWRITE_RUN_DIR=1.
 #    Fail closed if `gsutil stat` fails for any reason other than genuine object-not-found (e.g. permission/auth/network error).
@@ -413,7 +445,13 @@ spec:
       value: "${EXPECT_CHECKPOINT_SHA256}"
     - name: EXPECT_GIT_SHA
       value: "${EXPECT_GIT_SHA}"
-${JOBENV_YAML}    resources:
+    - name: GLOO_SOCKET_IFNAME
+      value: "eth0"
+    - name: NCCL_SOCKET_IFNAME
+      value: "eth0"
+    - name: NCCL_SOCKET_FAMILY
+      value: "AF_INET"
+${WANDB_EXTRA_ENV}${JOBENV_YAML}    resources:
       claims:
       - name: compute-domain-channel
       requests:
@@ -434,6 +472,7 @@ ${JOBENV_YAML}    resources:
     - |
       set -xeuo pipefail
       HOST_TAG="\$(hostname)"
+      python3 -c 'import socket; from pathlib import Path; [(Path(p).write_text("1\n", encoding="utf-8") if Path(p).exists() else None) for p in ("/proc/sys/net/ipv6/conf/eth0/disable_ipv6", "/proc/sys/net/ipv6/conf/default/disable_ipv6")]; gai = Path("/etc/gai.conf"); txt = gai.read_text(encoding="utf-8") if gai.exists() else ""; gai.write_text(txt + "\nprecedence ::ffff:0:0/96  100\n", encoding="utf-8") if "precedence ::ffff:0:0/96  100" not in txt else None; s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.connect(("10.255.255.255", 1)); ipv4 = s.getsockname()[0]; s.close(); host = socket.gethostname(); hp = Path("/etc/hosts"); lines = [ln for ln in hp.read_text(encoding="utf-8").splitlines() if not (":" in (ln.split("#", 1)[0].split()[0] if ln.split("#", 1)[0].split() else "") and host in ln.split())]; lines = lines + ([f"{ipv4}\t{host}"] if not any(ln.split()[:2] == [ipv4, host] for ln in lines if ln.split()) else []); hp.write_text("\n".join(lines) + "\n", encoding="utf-8"); print(f"[ipv4-setup] host={host} ipv4={ipv4} addrinfo={socket.getaddrinfo(host, None, 0, socket.SOCK_STREAM)[0][4]}", flush=True)' || true
       mkdir -p "${RUN_DIR}/env"
       rm -f "${RUN_DIR}/exit_code.txt"
       if [[ -n "\${EXPECT_GIT_SHA:-}" && "\$(git rev-parse HEAD)" != "\${EXPECT_GIT_SHA}" ]]; then
@@ -480,9 +519,7 @@ ${JOBENV_YAML}    resources:
       mkdir -p /root/.cache
       if [[ -f "\${CACHE_DIR}/flashinfer_cache_sm100a.tar.gz" ]]; then
         tar -xzf "\${CACHE_DIR}/flashinfer_cache_sm100a.tar.gz" -C /root/.cache || true
-        find /root/.cache/flashinfer -name "*.o" -exec touch -c {} + 2>/dev/null || true
-        sleep 1
-        find /root/.cache/flashinfer -name "*.so" -exec touch -c {} + 2>/dev/null || true
+        python3 -c 'import os, time; from pathlib import Path; root = Path("/root/.cache/flashinfer"); t_o = int(time.time()) + 86400; t_so = t_o + 1; [os.utime(p, (t_o, t_o)) for p in root.rglob("*.o")]; [os.utime(p, (t_so, t_so)) for p in root.rglob("*.so")]; [nlog.write_text("\n".join(["\t".join(parts[:2] + [str(Path(parts[3]).stat().st_mtime_ns if Path(parts[3]).exists() else parts[2])] + parts[3:]) if (len(parts := ln.split("\t")) == 5 and not ln.startswith("#")) else ln for ln in nlog.read_text(encoding="utf-8").splitlines()]) + "\n", encoding="utf-8") for nlog in root.rglob(".ninja_log")]' || true
       fi
       if [[ -f "\${CACHE_DIR}/vllm_cache_sm100a.tar.gz" ]]; then
         tar -xzf "\${CACHE_DIR}/vllm_cache_sm100a.tar.gz" -C /root/.cache || true
@@ -631,7 +668,13 @@ spec:
       value: "${EXPECT_CHECKPOINT_SHA256}"
     - name: EXPECT_GIT_SHA
       value: "${EXPECT_GIT_SHA}"
-${JOBENV_YAML}    resources:
+    - name: GLOO_SOCKET_IFNAME
+      value: "eth0"
+    - name: NCCL_SOCKET_IFNAME
+      value: "eth0"
+    - name: NCCL_SOCKET_FAMILY
+      value: "AF_INET"
+${WANDB_EXTRA_ENV}${JOBENV_YAML}    resources:
       claims:
       - name: compute-domain-channel
       requests:
@@ -652,6 +695,7 @@ ${JOBENV_YAML}    resources:
     - |
       set -xeuo pipefail
       HOST_TAG="\$(hostname)"
+      python3 -c 'import socket; from pathlib import Path; [(Path(p).write_text("1\n", encoding="utf-8") if Path(p).exists() else None) for p in ("/proc/sys/net/ipv6/conf/eth0/disable_ipv6", "/proc/sys/net/ipv6/conf/default/disable_ipv6")]; gai = Path("/etc/gai.conf"); txt = gai.read_text(encoding="utf-8") if gai.exists() else ""; gai.write_text(txt + "\nprecedence ::ffff:0:0/96  100\n", encoding="utf-8") if "precedence ::ffff:0:0/96  100" not in txt else None; s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.connect(("10.255.255.255", 1)); ipv4 = s.getsockname()[0]; s.close(); host = socket.gethostname(); hp = Path("/etc/hosts"); lines = [ln for ln in hp.read_text(encoding="utf-8").splitlines() if not (":" in (ln.split("#", 1)[0].split()[0] if ln.split("#", 1)[0].split() else "") and host in ln.split())]; lines = lines + ([f"{ipv4}\t{host}"] if not any(ln.split()[:2] == [ipv4, host] for ln in lines if ln.split()) else []); hp.write_text("\n".join(lines) + "\n", encoding="utf-8"); print(f"[ipv4-setup] host={host} ipv4={ipv4} addrinfo={socket.getaddrinfo(host, None, 0, socket.SOCK_STREAM)[0][4]}", flush=True)' || true
       mkdir -p "${RUN_DIR}/env" "${RUN_DIR}/rollout" "${RUN_DIR}/validation" "${RUN_DIR}/rollout_audit" "${TENSORBOARD_DIR}"
       rm -f "${RUN_DIR}/exit_code.txt"
       if [[ -n "\${EXPECT_GIT_SHA:-}" && "\$(git rev-parse HEAD)" != "\${EXPECT_GIT_SHA}" ]]; then
@@ -700,9 +744,7 @@ ${JOBENV_YAML}    resources:
       mkdir -p /root/.cache
       if [[ -f "\${CACHE_DIR}/flashinfer_cache_sm100a.tar.gz" ]]; then
         tar -xzf "\${CACHE_DIR}/flashinfer_cache_sm100a.tar.gz" -C /root/.cache || true
-        find /root/.cache/flashinfer -name "*.o" -exec touch -c {} + 2>/dev/null || true
-        sleep 1
-        find /root/.cache/flashinfer -name "*.so" -exec touch -c {} + 2>/dev/null || true
+        python3 -c 'import os, time; from pathlib import Path; root = Path("/root/.cache/flashinfer"); t_o = int(time.time()) + 86400; t_so = t_o + 1; [os.utime(p, (t_o, t_o)) for p in root.rglob("*.o")]; [os.utime(p, (t_so, t_so)) for p in root.rglob("*.so")]; [nlog.write_text("\n".join(["\t".join(parts[:2] + [str(Path(parts[3]).stat().st_mtime_ns if Path(parts[3]).exists() else parts[2])] + parts[3:]) if (len(parts := ln.split("\t")) == 5 and not ln.startswith("#")) else ln for ln in nlog.read_text(encoding="utf-8").splitlines()]) + "\n", encoding="utf-8") for nlog in root.rglob(".ninja_log")]' || true
       fi
       if [[ -f "\${CACHE_DIR}/vllm_cache_sm100a.tar.gz" ]]; then
         tar -xzf "\${CACHE_DIR}/vllm_cache_sm100a.tar.gz" -C /root/.cache || true
@@ -710,7 +752,7 @@ ${JOBENV_YAML}    resources:
 
       # Wait for ${NUM_NODES} nodes (${TOTAL_GPUS} GPUs) and all nodes' precheck + G0 manifest files matching this LAUNCH_ID; fail explicitly on timeout
       CLUSTER_G0_READY=0
-      for _ in \$(seq 1 200); do
+      for _ in \$(seq 1 400); do
         if ray status 2>/dev/null | grep -q "${TOTAL_GPUS}.0 GPU" && [[ \$(ls -1 "${RUN_DIR}/env/${LAUNCH_ID}-"*-g0-verify.json 2>/dev/null | wc -l) -ge ${NUM_NODES} ]] && [[ \$(ls -1 "${RUN_DIR}/env/${LAUNCH_ID}-"*-precheck.json 2>/dev/null | wc -l) -ge ${NUM_NODES} ]]; then
           python3 -c 'import glob, json, sys; env_dir, lid, expected, expect_sha = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]; g0_files = sorted(glob.glob(f"{env_dir}/{lid}-*-g0-verify.json")); pre_files = sorted(glob.glob(f"{env_dir}/{lid}-*-precheck.json")); digests = {f: json.load(open(f))["g0_checkpoint_manifest"]["composite_sha256"] for f in g0_files}; pre_records = {f: json.load(open(f)) for f in pre_files}; shas = {f: rec.get("git_sha") for f, rec in pre_records.items()}; statuses = {f: rec.get("status") for f, rec in pre_records.items()}; print("[g0-cross-node] digests:", digests, "git_shas:", shas, flush=True); assert len(g0_files) >= expected and len(set(digests.values())) == 1, f"Cross-node manifest mismatch (expected >= {expected}): {digests}"; assert len(pre_files) >= expected and set(statuses.values()) == {"PASS"} and None not in shas.values() and len(set(shas.values())) == 1, f"Cross-node precheck/git_sha mismatch (expected >= {expected}): statuses={statuses} shas={shas}"; assert not expect_sha or next(iter(shas.values())) == expect_sha, f"Cross-node git_sha {shas} != EXPECT_GIT_SHA {expect_sha}"' "${RUN_DIR}/env" "${LAUNCH_ID}" "${NUM_NODES}" "\${EXPECT_GIT_SHA:-}"
           CLUSTER_G0_READY=1

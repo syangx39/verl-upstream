@@ -573,6 +573,36 @@ exit 0
         self.assertNotIn('nvidia.com/gpu: "4"', src)
         self.assertEqual(src.count("- name: EXPECT_GIT_SHA"), 2)
 
+    def test_wandb_secret_ref_and_plaintext_rejection(self):
+        """Verify WANDB_SECRET_NAME validation/check and rejection of plaintext JOBENV_WANDB_API_KEY."""
+        launcher = REPO_ROOT / "examples" / "tpu" / "retool" / "gb200" / "run_ray_jobset_gb200.sh"
+        with tempfile.TemporaryDirectory() as td:
+            bin_dir = self._make_mock_bins(Path(td), fail_on_create_idx=99)
+            base_env = os.environ.copy()
+            base_env.update(
+                {
+                    "PATH": f"{bin_dir}:{base_env.get('PATH', '')}",
+                    "RUN_NAME": "wandb-test-run",
+                    "KUBE_CONTEXT": "mock-ctx",
+                    "NODEPOOL": "mock-pool",
+                    "GCS_BUCKET": "mock-bucket",
+                    "RUN_ROOT": "mock-runs",
+                    "INPUTS_ROOT": "mock-inputs",
+                    "IMAGE": "mock-image:latest",
+                }
+            )
+            # 1. Plaintext JOBENV_WANDB_API_KEY must be rejected
+            env_plain = dict(base_env, JOBENV_WANDB_API_KEY="secret-value")
+            res_plain = subprocess.run(["bash", str(launcher)], env=env_plain, capture_output=True, text=True)
+            self.assertNotEqual(res_plain.returncode, 0)
+            self.assertIn("refusing to inject plaintext JOBENV_WANDB_API_KEY", res_plain.stderr)
+
+            # 2. Missing K8s Secret when WANDB_SECRET_NAME is set must fail closed
+            env_missing = dict(base_env, WANDB_SECRET_NAME="xiaotongyang-wandb")
+            res_missing = subprocess.run(["bash", str(launcher)], env=env_missing, capture_output=True, text=True)
+            self.assertNotEqual(res_missing.returncode, 0)
+            self.assertIn("Secret xiaotongyang-wandb (key WANDB_API_KEY) not found or empty", res_missing.stderr)
+
     def test_precheck_json_emission_and_cross_node_readiness_parsing(self):
         """Verify verify_venv_lock writes structured JSON and the launcher readiness snippet parses it end-to-end."""
         from examples.tpu.retool.gb200 import verify_venv_lock
@@ -661,6 +691,25 @@ class TestG0ManifestCompositeHashCheck(unittest.TestCase):
             self.assertEqual(rep_bad["expected_composite_sha256"], "0" * 64)
             self.assertFalse(rep_bad["composite_sha256_match"])
 
+            ref_dir = Path(td) / "ref"
+            ref_dir.mkdir()
+            for p in model_dir.iterdir():
+                if p.is_file():
+                    (ref_dir / p.name).write_bytes(p.read_bytes())
+
+            rep_ref_ok = verify_g0_gb200.verify_checkpoint_manifest(
+                model_dir, ref_dir=ref_dir, expect_composite_sha256=actual
+            )
+            self.assertTrue(rep_ref_ok["ref_match"])
+            self.assertEqual(rep_ref_ok["ref_composite_sha256"], actual)
+
+            (ref_dir / "model-00001-of-00016.safetensors").write_bytes(b"corrupted-size")
+            rep_ref_bad = verify_g0_gb200.verify_checkpoint_manifest(
+                model_dir, ref_dir=ref_dir, expect_composite_sha256=actual
+            )
+            self.assertFalse(rep_ref_bad["ref_match"])
+            self.assertIn("model-00001-of-00016.safetensors", rep_ref_bad["mismatches"])
+
 
 class TestV1ValidateDumpNumTurns(unittest.TestCase):
     """Verify V1 PPOTrainer._validate writes session num_turns for shaped reward reconciliation."""
@@ -722,6 +771,15 @@ class TestV1ValidateDumpNumTurns(unittest.TestCase):
         exec(compile(mod, str(test_path), "exec"), ns)
         with tempfile.TemporaryDirectory() as td:
             ns["test_validate_dump_writes_num_turns_and_reconciles_shaped_reward"](Path(td))
+
+    def test_dapo_script_scales_max_token_len_per_gpu_for_16k_response(self):
+        dapo_script = REPO_ROOT / "examples" / "tpu" / "retool" / "gb200" / "run_qwen3_30b_a3b_dapo_torchtitan_gb200.sh"
+        src = dapo_script.read_text(encoding="utf-8")
+        self.assertIn("MIN_TOKEN_LEN_PER_GPU=$(( (max_model_len + CONTEXT_PARALLEL_SIZE - 1) / CONTEXT_PARALLEL_SIZE ))", src)
+        self.assertIn(
+            "DEFAULT_MAX_TOKEN_LEN_PER_GPU=$(( MIN_TOKEN_LEN_PER_GPU > 16384 ? MIN_TOKEN_LEN_PER_GPU : 16384 ))",
+            src,
+        )
 
 
 if __name__ == "__main__":

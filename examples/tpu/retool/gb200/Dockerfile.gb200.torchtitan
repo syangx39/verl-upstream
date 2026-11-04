@@ -1,4 +1,4 @@
-# Derived GB200 (linux/arm64 / aarch64) image for ReTool TorchTitan + veRL + vLLM parity & performance runs.
+# Derived GB200 (linux/arm64 / aarch64) image for ReTool TorchTitan + verl + vLLM parity & performance runs.
 #
 # Base image: verlai/verl:uv.cu130.dev5 (published 2026-10-23T05:30:38Z, 11.90 GB compressed)
 #   - Multi-arch manifest index : sha256:21e75451badbd7080a221f4cf408306ce637b77d5bb9df80a37e4387b5310146
@@ -12,13 +12,13 @@
 #     cd examples/tpu/retool/gb200
 #     docker buildx build --platform linux/arm64 --progress=plain \
 #       --build-arg VERL_REPO=https://github.com/syangx39/verl-upstream.git \
-#       --build-arg VERL_PIN=31ba29dbcd38585881308524347880f490c817ad \
+#       --build-arg VERL_PIN=a2cbde47ba729d0cba7e881da1692df20d8e05e4 \
 #       -f Dockerfile.gb200.torchtitan -t retool-gb200-torchtitan:latest --load . 2>&1 | tee build_arm64.log
 #   )
 FROM verlai/verl@sha256:6d7c328b1e7aedd2dece2f939a827704295b13f4bb75f2f17a962a91a19376b9
 
 ARG VERL_REPO=https://github.com/syangx39/verl-upstream.git
-ARG VERL_PIN=31ba29dbcd38585881308524347880f490c817ad
+ARG VERL_PIN=a2cbde47ba729d0cba7e881da1692df20d8e05e4
 # Optional expected SHA256 of uv.lock; if provided, build fails immediately if uv.lock differs.
 ARG EXPECT_LOCK_SHA256="df508db0b957fa181c229fb75885cd3863cb651fd5233d0fa5af95e990bda0be"
 # Set to 1 if the lock's flash-attn wheel URL is x86_64-only and 404s on aarch64:

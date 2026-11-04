@@ -19,7 +19,7 @@ The current convention (see ``examples/README.md``) is::
     run_<model>_<train-backend>.sh
 
 Where ``<train-backend>`` is one of ``fsdp``, ``fsdp2``, ``megatron``,
-``megatron_lite``, ``mindspeed``, ``automodel``, ``veomni`` or ``torchtitan``, and **must be
+``megatron_lite``, ``mindspeed``, ``automodel`` or ``veomni``, and **must be
 the final suffix before** ``.sh`` — nothing follows it. The legacy
 convention used to embed the inference backend (``vllm``/``sglang``/``trtllm``),
 platform tokens (``_npu``/``_amd``), machine-type tokens (``_gb200``,
@@ -92,6 +92,8 @@ DEFAULT_IGNORE_DIRS = (
     # MTP scripts encode async/multinode dispatch in the filename; they pre-
     # date this convention. Migrate separately rather than block this hook.
     "examples/mtp_trainer",
+    # GKE NAP Ray JobSet lifecycle and worker helper scripts (not model recipes).
+    "examples/tpu/gke",
 )
 
 # Individual files that are exempt. Use sparingly and document why.
@@ -107,12 +109,15 @@ DEFAULT_IGNORE_FILES = (
     # folding ``_multi_rs`` into a ROLLOUT_SERVER env-var toggle rather than
     # in this PR.
     "examples/rollout_correction/run_qwen2_5_7b_fsdp_multi_rs.sh",
-    # ROCm (4 nodes x 8 MI355X) sibling of run_deepseek_v4_flash_megatron.sh;
-    # it pins the dedicated docker/rocm/Dockerfile.rocm.deepseek-v4 image and
-    # exposes the qat/fp8/bf16 flavours via TRAIN_MODE. The canonical script
-    # does not yet carry a ROCm platform switch; migrate by folding ``_rocm``
-    # into a platform/DEVICE env-var toggle rather than in this PR.
-    "examples/grpo_trainer/run_deepseek_v4_flash_megatron_rocm.sh",
+    # Ephemeral GKE NAP Ray JobSet lifecycle wrapper that provisions a cluster
+    # and dispatches ``run_qwen3_0_6b_torchtitan.sh`` rather than defining a
+    # model/train-backend recipe directly.
+    "examples/tpu/grpo/run_grpo_v5p_nap.sh",
+    # GB200 Ray JobSet lifecycle wrapper and sibling ReTool TorchTitan script
+    # that dispatches GPU-specific environment/sandbox setup alongside the
+    # canonical TPU recipe ``examples/tpu/retool/run_qwen3_30b_a3b_dapo_torchtitan.sh``.
+    "examples/tpu/retool/gb200/run_ray_jobset_gb200.sh",
+    "examples/tpu/retool/gb200/run_qwen3_30b_a3b_dapo_torchtitan_gb200.sh",
 )
 
 

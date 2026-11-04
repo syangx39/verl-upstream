@@ -1190,7 +1190,7 @@ class PPOTrainer(ABC):
             dump_all_outputs = [dump_all_outputs[i] for i in sorted_indices]
             dump_all_keys = [dump_all_keys[i] for i in sorted_indices]
 
-            # For ground truths, scores and reward extra infos, find the values in the
+            # For ground truths, scores, num_turns and reward extra infos, find the values in the
             # lists for the final samples of each session
             dump_all_sessions = [
                 f"{parts[0]}_{parts[1]}" if len(parts) == 3 else key
@@ -1203,8 +1203,9 @@ class PPOTrainer(ABC):
                 outputs=dump_all_outputs,
                 gts=[sample_gts[i] for i in session_final_indices],
                 scores=[sample_scores[i] for i in session_final_indices],
-                # The identity columns come first so that reward extra info keys keep precedence.
+                # The identity and session-turn columns come first so that reward extra info keys keep precedence.
                 reward_extra_infos_dict=validation_dump_identity_columns(dump_all_keys, dump_identities)
+                | {"num_turns": [sample_turns[i] for i in session_final_indices]}
                 | {k: [v[i] for i in session_final_indices] for k, v in reward_extra_infos_dict.items()}
                 | {"uid": dump_all_keys},
                 dump_path=val_data_dir,

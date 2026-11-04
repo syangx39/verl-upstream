@@ -635,7 +635,6 @@ exit 0
             self.assertNotEqual(bad_json.returncode, 0)
 
 
-
 class TestG0ManifestCompositeHashCheck(unittest.TestCase):
     """Verify verify_g0_gb200.verify_checkpoint_manifest checks --expect-composite-sha256."""
 
@@ -661,6 +660,68 @@ class TestG0ManifestCompositeHashCheck(unittest.TestCase):
             rep_bad = verify_g0_gb200.verify_checkpoint_manifest(model_dir, expect_composite_sha256="0" * 64)
             self.assertEqual(rep_bad["expected_composite_sha256"], "0" * 64)
             self.assertFalse(rep_bad["composite_sha256_match"])
+
+
+class TestV1ValidateDumpNumTurns(unittest.TestCase):
+    """Verify V1 PPOTrainer._validate writes session num_turns for shaped reward reconciliation."""
+
+    def test_v1_validate_dump_writes_num_turns_and_reconciles_shaped_reward(self):
+        import ast
+        import importlib
+        import importlib.util
+        import math
+        import types
+
+        test_path = REPO_ROOT / "tests/trainer/ppo/v1/test_rollout_audit_on_cpu.py"
+        tree = ast.parse(test_path.read_text(encoding="utf-8"))
+        nodes = [
+            n
+            for n in tree.body
+            if isinstance(n, ast.FunctionDef)
+            and n.name in ("_collate", "test_validate_dump_writes_num_turns_and_reconciles_shaped_reward")
+        ]
+        mod = ast.Module(body=nodes, type_ignores=[])
+        ast.fix_missing_locations(mod)
+
+        ra_spec = importlib.util.spec_from_file_location(
+            "verl.trainer.ppo.v1.rollout_audit", REPO_ROOT / "verl/trainer/ppo/v1/rollout_audit.py"
+        )
+        ra_mod = importlib.util.module_from_spec(ra_spec)
+        ra_spec.loader.exec_module(ra_mod)
+
+        pytest_mod = types.ModuleType("pytest")
+
+        class _Approx:
+            def __init__(self, val, rel=1e-6, abs_tol=1e-12):
+                self.val = val
+                self.rel = rel
+                self.abs_tol = abs_tol
+
+            def __eq__(self, other):
+                return math.isclose(self.val, other, rel_tol=self.rel, abs_tol=self.abs_tol)
+
+        pytest_mod.approx = lambda val, **_kw: _Approx(val)
+        verl_pkg = types.ModuleType("verl")
+        verl_pkg.__file__ = str(REPO_ROOT / "verl/__init__.py")
+        ns = {
+            "Path": Path,
+            "verl": verl_pkg,
+            "pytest": pytest_mod,
+            "json": json,
+            "np": types.SimpleNamespace(
+                array=lambda x, dtype=object: list(x),
+                fromiter=lambda it, dtype=object, count=None: list(it),
+            ),
+            "importlib": importlib,
+            "split_trajectory_key": ra_mod.split_trajectory_key,
+            "summarize_validation_dump": ra_mod.summarize_validation_dump,
+            "validation_dump_identities": ra_mod.validation_dump_identities,
+            "validation_dump_identity_columns": ra_mod.validation_dump_identity_columns,
+            "validation_question_id": ra_mod.validation_question_id,
+        }
+        exec(compile(mod, str(test_path), "exec"), ns)
+        with tempfile.TemporaryDirectory() as td:
+            ns["test_validate_dump_writes_num_turns_and_reconciles_shaped_reward"](Path(td))
 
 
 if __name__ == "__main__":

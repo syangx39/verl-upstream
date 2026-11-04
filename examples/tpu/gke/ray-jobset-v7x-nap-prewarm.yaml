@@ -52,6 +52,7 @@ ${SLICE_EXTRA_POD_ANNOTATIONS}
                 cloud.google.com/gke-tpu-accelerator: tpu7x
                 cloud.google.com/gke-tpu-topology: "${TPU_TOPOLOGY}"
 ${SLICE_EXTRA_NODE_SELECTOR}
+${SLICE_EXTRA_AFFINITY}
               tolerations:
                 - key: google.com/tpu
                   operator: Exists

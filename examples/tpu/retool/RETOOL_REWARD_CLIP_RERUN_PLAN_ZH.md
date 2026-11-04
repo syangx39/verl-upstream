@@ -1,7 +1,13 @@
 # TPU v7x ReTool 对齐 Askhat 运行与重跑方案（TPU v7x Only）
 
-状态：**rev 10（已完成 `p3c-retool-smoke-01` 32 卡早期部分验证、对齐 64 卡 `r-b0f80` 启动命令与 `DRY_RUN=1` 产物、校准 Raiden 训练后范数检查代码边界与人工早期监控定位、修正 §6.3 Askhat `mean_score`）**（2026-11-04）。
+状态：**rev 11（64 卡 `p3c-retool-25s-01` 已在 `r-b0f80` 启动并通过 Steps 0–3 全部三副本在线放行检查，正在全速跑满 25 步；W&B [`smcnyyoh`](https://wandb.ai/google-trellis/verl-torchtpu-grpo-test/runs/smcnyyoh)）**（2026-11-04）。
 
+- **rev 11**：
+  1. **补入 64 卡 TPU v7x 正式运行 `p3c-retool-25s-01`（W&B [`smcnyyoh`](https://wandb.ai/google-trellis/verl-torchtpu-grpo-test/runs/smcnyyoh)）Steps 0–3 在线放行检查全项通过报告（第 8 节）**：
+     - **节点池坏 Slice 隔离（[`run_ray_jobset_v7x_nap.sh`](../gke/run_ray_jobset_v7x_nap.sh) `EXCLUDE_NODEPOOLS`）**：排查 `r-b0f80` 命名空间下各 `2x2x4` 节点池，排除 1 个坏盘池（`nap-tpu7x-stand-4t-13ryoomz` `mkdir /data/...: Input/output error`）与 6 个半占用池，在 3 个空闲存量健康池 + 1 个新扩容 NAP 池上实现 `17/17` Pod 一次性全部 Running；
+     - **Step 0 三副本（`3 × 32 = 96` ranks）逐元素 Raiden 权重同步核验（[`results/p3c-retool-25s-01/raiden_exact_parity_step_0.json`](results/p3c-retool-25s-01/raiden_exact_parity_step_0.json)）**：`num_results == 96`、`expected_ranks == 96`、`expected_workers_per_replica == [32, 32, 32]`、`checked_per_rank == [435]`（合计 **`41,760`** 个张量分片逐元素校验），**`num_mismatched == 0`、`num_unresolved == 0`、`coverage_errors == []`**，耗时 `38.2628s`；
+     - **Step 0 `n=30`（每题 30 采样，共 `1,800` 条 16K 多轮轨迹）AIME 2024 / 2025 基线与 `num_turns` 离线对账（[`results/p3c-retool-25s-01/val0_gate3_summary.json`](results/p3c-retool-25s-01/val0_gate3_summary.json)）**：AIME 2025 **`acc/mean@30 = 31.78%` (`286/900`)**、`maj@30 = 45.04%`、`best@30 = 71.74%`、`reward/mean@30 = -0.2046`；AIME 2024 **`acc/mean@30 = 44.78%` (`403/900`)**、`maj@30 = 62.49%`、`best@30 = 79.25%`、`reward/mean@30 = +0.0343`；全部 `1,800 / 1,800` 条样本离线调用 `retool_tpu.compute_score` 按真实 `num_turns` 复算 **`0` 误差**；
+     - **Steps 1–3 三副本分布式范数校验、梯度更新、掩码审计与稳态吞吐（[`results/p3c-retool-25s-01/steps_1_to_3_release_gate_summary.json`](results/p3c-retool-25s-01/steps_1_to_3_release_gate_summary.json)）**：Steps 1–3 每步均完整打印 `Replica 0, 1, 2` 共 3 个副本的 `100% DISTRIBUTED NORM PARITY CONFIRMED!`（每副本 `30,532,122,624` 参数 across `579` tensors，`L1 delta <= 0.415`、`L2 delta <= 0.000794`），跨 3 切片权重同步耗时 `22.89s -> 16.55s -> 15.06s`；Steps 1–3 共 `3,072` 条训练轨迹（`99.15%` 含 `<tool_response>`，共 `10,166` 次工具调用），`response_length/clip_ratio` 仅 **`0.10% / 0.10% / 0.20%`（远低于 `< 5%` 门槛）**，`-2.0` `reward_CLIP` 计数为 **`0`**，`24 / 24` 审计会话掩码违规为 **`0`**；Step 2–3 稳态 `timing_s/gen = 0.04s`（100% 异步掩盖），单步总耗时仅 **`156.77s`（Step 2）/ `144.33s`（Step 3）**，已放行继续跑满 25 步！
 - **rev 10**：
   1. **校准 §6.5.5 中进程内自动校验与人工早期监控的真实边界（不虚称已入库自动 watcher 或 Step 3 阻塞屏障）**：
      - 明确在固定代码版本 `CODE_REF=53bc215c8880483142caee0b4d25d57066a0a54f` 中，仅 Raiden 的 Step 0 逐元素对账与每步 `numel + L1` 校验具备进程内抛出 `RaidenParityError` 的自动中止机制；仓库中并未合入独立的后台 watcher 守护脚本，Trainer 也没有在 Step 3 结束时等待外部离线对账的同步暂停屏障（若外部检查延迟，训练可能已进入 Step 4）。因此将 `validation/0.jsonl`、`rollout_audit/{1..3}.jsonl` 及 `head.log` 检查明确表述为**人工/Agent 早期跟跑监控（发现异常后尽快手动执行 `kubectl delete jobset` 停止作业）**。
@@ -763,3 +769,71 @@ bash examples/tpu/gke/run_ray_jobset_v7x_nap.sh \
 1. **跳过额外 32 卡 smoke，直接以 64 卡正式运行（`p3c-retool-25s-01`）的前 3 步（Steps 0–3）作为在线放行门槛**：在 `r-b0f80`（64 chips，`1 Trainer Slice + 3 Rollout Slices`，显式设置 `JOBENV_ROLLOUT_TP=32`、`JOBENV_ROLLOUT_EP=32`、`RUN_LIMIT_MIN=355`、`DRIVER_TIMEOUT_MIN=345`）从 Step 0 启动；若 Steps 0–3 通过三副本 96 ranks（`41,760` 分片）同步、范数校验、reward 对账与 mask 审计，则继续跑完至 Step 25；否则立即停止。
 2. **`MAX_TURNS=16` 作为主配置**：明确设置 `max_user_turns=16`、`max_assistant_turns=16`，与 v5p 的 `ci0k54pl` / `rq1p980n` / `yrcsp4z6` 对齐。
 3. **WandB Project 与新 PR 追踪**：使用 `google-trellis/verl-torchtpu-grpo-test`，PR #15 定格现有 32 卡早期部分验证结果与 64 卡启动/放行规范，64 卡正式运行使用新 W&B Run 与独立 PR 追踪。
+
+---
+
+## 8. 64 卡 TPU v7x 正式运行（`p3c-retool-25s-01`）Steps 0–3 在线放行检查全项通过与实时进展报告
+
+### 8.1 运行标识、集群拓扑与节点池健康隔离记录
+
+- **Run 名称**：`p3c-retool-25s-01`（命名空间 `r-b0f80`，队列 `multislice-queue`）
+- **W&B Online 实时链接**：[`https://wandb.ai/google-trellis/verl-torchtpu-grpo-test/runs/smcnyyoh`](https://wandb.ai/google-trellis/verl-torchtpu-grpo-test/runs/smcnyyoh)
+- **物理拓扑（64 × TPU v7x 物理芯片 = 128 逻辑 TensorCore，16 个 TPU Hosts + 1 个 CPU Head Pod）**：
+  - **Trainer（1 × `2x2x4` Slice = 4 Hosts / 16 物理芯片 / 32 TensorCore）**：TorchTitan Actor (`FSDP2=8, CP=4, TP=1, EP=1`)；
+  - **Rollout（3 × `2x2x4` Slices = 12 Hosts / 48 物理芯片 / 96 TensorCore）**：3 个独立 vLLM Async Rollout Replicas（每个副本 `TP=32, EP=32`，合计 96 个 sampler worker ranks）；
+- **`EXCLUDE_NODEPOOLS` 排除坏盘与半占用节点池（已合入 [`run_ray_jobset_v7x_nap.sh`](../gke/run_ray_jobset_v7x_nap.sh)）**：
+  - 启动前对 `bodaborg-tpu7x-nap` 集群上的 `2x2x4` 节点池进行排查：发现 `nap-tpu7x-stand-4t-13ryoomz` 节点 `gke-bodaborg-tpu7x-n-nap-tpu7x-stand--9fa8e677-w9c5` 的挂载卷 `/data` 存在 `mkdir: Input/output error` 宿主机 I/O 故障，另有 6 个池被其他用户 1/4 节点任务部分占用；
+  - 通过 `EXCLUDE_NODEPOOLS="nap-tpu7x-stand-4t-13ryoomz,nap-tpu7x-stand-4t-1o71o48f,nap-tpu7x-stand-4t-1p4v1ri5,nap-tpu7x-stand-4t-9r5nozk4,nap-tpu7x-stand-4t-1w2840wy,nap-tpu7x-stand-4t-9mkyc6ug,nap-tpu7x-stand-4t-14vfng1m"` 注入 `cloud.google.com/gke-nodepool NotIn` 节点亲和性后，4 个 Slice 在 3 个健康空闲存量池（`1k4k5dbj`, `1df5e72s`, `a60bdzkc`）与 1 个新扩容池（`b1779xms`）上一次性完成调度（`17/17` Pods Running）。
+
+---
+
+### 8.2 Step 0 三副本（`3 × 32 = 96` ranks）逐元素 Raiden 权重同步核验（PASS）
+
+原始产物已归档至 [`results/p3c-retool-25s-01/raiden_exact_parity_step_0.json`](results/p3c-retool-25s-01/raiden_exact_parity_step_0.json)，全部校验项 100% 满足 §6.5.5 第 3 条要求：
+
+| 校验字段 | 期望值 | 实测值（`raiden_exact_parity_step_0.json`） | 结论 |
+| --- | --- | --- | --- |
+| `step` | `0` | `0` | **PASS** |
+| `expected_ranks` / `num_results` | `96` / `96` | **`96` / `96`** | **PASS（完整覆盖 3 个 Rollout Slices）** |
+| `expected_workers_per_replica` | `[32, 32, 32]` | **`[32, 32, 32]`** | **PASS（每个 Slice 精确 32 个 TPU 核心）** |
+| `expected_checked_per_rank` / `checked_per_rank` | `435` / `[435]` | **`435` / `[435]`** | **PASS（全 96 ranks 无遗漏）** |
+| `sum(r["checked"] for r in ranks)` | `41,760` (`96 × 435`) | **`41,760`** | **PASS（41,760 个分片逐元素 float32 比对）** |
+| `replica_rank_pairs` 唯一性与完整性 | 精确覆盖 `{0,1,2} × {0..31}` | **96 个 `(replica, rank)` 组合完整无重** | **PASS** |
+| `num_mismatched` / `num_unresolved` / `coverage_errors` | `0` / `0` / `[]` | **`0` / `0` / `[]`** | **PASS（零元素失配）** |
+| Step 0 跨 3 副本端到端同步耗时 | - | **`38.2628 s`**（`P2P: 26.2617s`, `Parity Check: 0.1821s`） | **PASS** |
+
+---
+
+### 8.3 Step 0 `n=30`（`1,800` 条轨迹）AIME 2024 / 2025 基线评估与 `num_turns` 离线对账（PASS）
+
+原始汇总已归档至 [`results/p3c-retool-25s-01/val0_gate3_summary.json`](results/p3c-retool-25s-01/val0_gate3_summary.json)：
+
+| 评估指标（Step 0，`n=30` 采样 / 题） | **TPU v7x 64-Chip `p3c-retool-25s-01` Step 0** | **GB200 64-GPU `g64-retool-smoke-04` Step 0（PR #17）** | **TPU v7x 32-Chip `p3c-retool-smoke-01` Step 0** | **Askhat v5p Regime 2 Step 0 (`4z5c8z9k`/`h9c210da`)** |
+| --- | --- | --- | --- | --- |
+| **AIME 2025 `acc/mean@30` (`pass@1`)** | **`31.78%`** (`286/900`, `0.317778`) | **`33.00%`** (`297/900`, `0.330000`) | **`33.22%`** (`299/900`, `0.332222`) | **`33.44%`** (`0.3344`) |
+| **AIME 2025 `acc/maj@30/mean`** | **`45.04%`** (`0.450433`) | `54.37%` (`0.543667`) | `51.83%` (`0.518333`) | - |
+| **AIME 2025 `acc/best@30/mean`** | **`71.74%`** (`0.717433`) | `72.45%` (`0.724467`) | `72.60%` (`0.726000`) | - |
+| **AIME 2025 `reward/mean@30`（Shaped）** | **`-0.2046`** (`-0.204556`) | `-0.1869` (`-0.186889`) | `-0.1846` (`-0.184556`) | - |
+| **AIME 2024 `acc/mean@30` (`pass@1`)** | **`44.78%`** (`403/900`, `0.447778`) | **`45.56%`** (`410/900`, `0.455556`) | **`46.78%`** (`421/900`, `0.467778`) | **`46.89%`** (`0.4689`) |
+| **AIME 2024 `acc/maj@30/mean`** | **`62.49%`** (`0.624933`) | `64.81%` (`0.648067`) | `64.26%` (`0.642600`) | - |
+| **AIME 2024 `acc/best@30/mean`** | **`79.25%`** (`0.792533`) | `84.99%` (`0.849933`) | `83.99%` (`0.839933`) | - |
+| **AIME 2024 `reward/mean@30`（Shaped）** | **`+0.0343`** (`+0.034333`) | `+0.0504` (`+0.050444`) | `+0.0726` (`+0.072556`) | - |
+| **评估多轮轮数 `val-aux/num_turns/mean` (`min`–`max`)** | **`8.2733`** (`2`–`32`) | `8.1400` (`2`–`32`) | `8.5878` (`2`–`32`) | `~8.5` |
+| **评估轨迹含 `<tool_response>` 比例** | **`1,773 / 1,800` (`98.50%`, `5,646` 次调用)** | `1,773 / 1,800` (`98.50%`, `5,526` 次调用) | `1,769 / 1,800` (`98.28%`, `5,863` 次调用) | - |
+| **`validation/0.jsonl` 离线 `num_turns` Shaped Reward 对账** | **`1,800 / 1,800` 100% 匹配（`0` mismatch）** | `1,800 / 1,800` 100% 匹配 | `1,800 / 1,800` 100% 匹配 | - |
+
+---
+
+### 8.4 Steps 1–3 在线放行门槛全量核验结果（PASS，已放行继续跑向 Step 25）
+
+原始汇总已归档至 [`results/p3c-retool-25s-01/steps_1_to_3_release_gate_summary.json`](results/p3c-retool-25s-01/steps_1_to_3_release_gate_summary.json)：
+
+| Step | `pg_loss` | `grad_norm` | `score/mean` | `resp_len/mean` | **`clip_ratio`（门槛 `<5%`）** | `num_turns/mean` | `<tool_response>` 轨迹占比 (`调用次数`) | **`-2.0` `reward_CLIP`** | **`rollout_audit` 掩码违规 (`8` 会话/步)** | **三副本范数校验 (`Replica 0,1,2`)** | **`gen` / `update_actor` / `update_weights`** | **`timing_s/step`** |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| **1** | `-0.0946` | `0.1705` | `-0.0611` | `1,578.9` | **`0.10%`** (`1/1024`) | `7.15` | `1,018 / 1,024` (`99.41%`, `2,639` 次) | **`0`** | **`0 / 8`** (`26` `tc=1`, `26` `tr=0`) | **3/3 PASS** (`L1 Δ=0.415`, `L2 Δ=0.000792`) | `654.46s` / `171.17s` / **`22.89s`** | `850.08s`（首步含 192 组预热+XLA 编译） |
+| **2** | `-0.1088` | `0.1355` | `-0.2478` | `2,462.7` | **`0.10%`** (`1/1024`) | `9.26` | `1,015 / 1,024` (`99.12%`, `3,718` 次) | **`0`** | **`0 / 8`** (`36` `tc=1`, `35` `tr=0`) | **3/3 PASS** (`L1 Δ=0.391`, `L2 Δ=0.000794`) | **`0.04s`** / `139.08s` / **`16.55s`** | **`156.77s`（`2m 37s`）** |
+| **3** | `-0.0477` | `0.1229` | `-0.2891` | `2,747.5` | **`0.20%`** (`2/1024`) | `9.44` | `1,013 / 1,024` (`98.93%`, `3,809` 次) | **`0`** | **`0 / 8`** (`17` `tc=1`, `17` `tr=0`) | **3/3 PASS** (`L1 Δ=0.146`, `L2 Δ=0.000793`) | **`0.04s`** / `128.22s` / **`15.06s`** | **`144.33s`（`2m 24s`）** |
+| **合计 / 稳态** | 全部正常 | `0.123–0.171` | Shaped 生效 | `1.58K–2.75K` | **`0.10%–0.20% << 5%`** | `7.15–9.44` | **`3,046 / 3,072` (`99.15%`, `10,166` 次调用)** | **`0 / 3,072`** | **`0 / 24` 会话（`0` 违规）** | **连续 3 步 × 3 副本 = 9 次全通过** | **稳态 `gen=0.04s`（100% 异步重叠），`update_weights=15.1s–16.5s`** | **稳态 `144.3s–156.8s/step`（`~2.5 min/step`）** |
+
+- **放行结论**：Steps 0–3 全部放行检查项（三副本 96 ranks `41,760` 分片零失配、Step 0 `1,800/1,800` `num_turns` 离线对账零偏差、Steps 1–3 连续 3 步三副本范数一致、`clip_ratio <= 0.20%`、`0` `-2.0` `reward_CLIP`、`24/24` 会话掩码零违规）**100% 通过**，且 3 个 Rollout Slices 在稳态下实现了 **`timing_s/gen = 0.04s` 的 100% 异步生成掩盖**，单步总耗时仅 **2.4–2.6 分钟**，正在继续跑完至 Step 25（及 Step 25 `n=30` 末次评估）。
+

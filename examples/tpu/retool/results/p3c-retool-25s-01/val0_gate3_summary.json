@@ -1,0 +1,33 @@
+{
+  "run_name": "p3c-retool-25s-01",
+  "wandb_run_url": "https://wandb.ai/google-trellis/verl-torchtpu-grpo-test/runs/smcnyyoh",
+  "step": 0,
+  "expected_n": 30,
+  "total_sessions": 1800,
+  "missing_num_turns": 0,
+  "recomputed_score_mismatches": 0,
+  "datasets": {
+    "aime_2025": {
+      "num_samples": 900,
+      "correct_samples": 286,
+      "acc_mean_at_30": 0.317778,
+      "acc_maj_at_30": 0.450433,
+      "acc_best_at_30": 0.717433,
+      "shaped_reward_mean_at_30": -0.204556,
+      "num_turns_mean": 8.2556,
+      "trajectories_with_tool_response": 882,
+      "total_tool_responses": 2815
+    },
+    "aime_2024": {
+      "num_samples": 900,
+      "correct_samples": 403,
+      "acc_mean_at_30": 0.447778,
+      "acc_maj_at_30": 0.624933,
+      "acc_best_at_30": 0.792533,
+      "shaped_reward_mean_at_30": 0.034333,
+      "num_turns_mean": 8.2911,
+      "trajectories_with_tool_response": 891,
+      "total_tool_responses": 2831
+    }
+  }
+}

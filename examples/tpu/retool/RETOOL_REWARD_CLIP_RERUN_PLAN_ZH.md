@@ -1,7 +1,11 @@
 # TPU v7x ReTool 对齐 Askhat 运行与重跑方案（TPU v7x Only）
 
-状态：**rev 5（已按 review 修正启动命令、`job_spec.json`、前五步表、队列时长上限与决策项）**（2026-11-04）。本文为 TPU v7x 专项对齐方案，尚未提交集群运行。
+状态：**rev 6（已落实 W&B Secret 模板注入与集群凭证校验、固定 `CODE_REF=697dd26a`、修正离线按 session 最终输出与 `skip_special_tokens=True` 对账口径）**（2026-11-04）。本文为 TPU v7x 专项对齐方案，尚未提交集群训练运行。
 
+- **rev 6**：
+  1. **落实 W&B Kubernetes Secret 注入并验证凭证权限（第 3.2 / 5 节）**：在 [`ray-jobset-v7x-nap.yaml`](../gke/ray-jobset-v7x-nap.yaml)、[`v7x_nap/render.py`](../gke/v7x_nap/render.py) 与 [`run_ray_jobset_v7x_nap.sh`](../gke/run_ray_jobset_v7x_nap.sh) 中实现 `WANDB_SECRET_NAME` / `WANDB_SECRET_KEY` 注入（向 `ray-head` 容器注入 `WANDB_API_KEY` 的 `secretKeyRef`，并在启动前由 launcher 校验集群 Secret 及 key 存在且非空）；已在 `bodaborg-tpu7x-nap` 的 `priority-dev` 与 `default` 命名空间创建 `secret/xiaotongyang-wandb`，并通过从集群 Secret 读取密钥调用 W&B GraphQL API 验证登录身份（`viewer.username=xiaotongyang, entity=google-trellis`）及目标项目 `google-trellis/verl-torchtpu-grpo-test` 写权限（`readOnly=False`）；
+  2. **固定 `CODE_REF` 并同步实验名 SHA 与 `run_record.json`（第 2 / 3.2 节）**：将包含上述 launcher Secret 注入的提交固定为 `CODE_REF=697dd26af95aaa2934f031854e540d96f57aa18f`（短 SHA `697dd26a`），同步更新 `JOBENV_EXPERIMENT_NAME="...-sha697dd26a"`，并附上 `DRY_RUN=1` 生成的 `run_record.json`、`job_spec.json` 与 `jobset.yaml` 注入片段（若合入 `tpu-main` 时使用 squash merge，启动前将 `CODE_REF` 与实验名后缀同步更新为合入后的 `tpu-main` commit SHA）；
+  3. **修正离线验收的 session 最终输出与解码口径（第 4.1 节第 3 项）**：多轮 agent 一个 session（`{uid}_{session_id}`）可产生多条 output（`{uid}_{session_id}_{output_index}`），由最终 output（最大 `output_index`）承载该 session 的 reward；因此 `validation/0.jsonl` 不写死 120 行，而是通过 [`summarize_validation_dump`](../../verl/trainer/ppo/v1/rollout_audit.py#L992)（`expected_n=2`）校验 60 道预期题目 × 每题 2 个独立 session（共 120 个 session），并取每个 session 的最终 output 对账 `acc` 与 `score`；训练 `rollout_audit/{1..5}.jsonl` 同样按 session 取最终 output，从 `record["reward_extra_info"]["acc"]` 读取准确率，并用与 [`NaiveRewardManager`](../../verl/workers/reward_manager/naive.py#L119) 相同的 `tokenizer.decode(record["response_ids"], skip_special_tokens=True)` 解码后再离线重算（避免 `record["response_text"]` 中 `skip_special_tokens=False` 保留的 `<|im_end|>` 等特殊 token 造成假不一致）。
 - **rev 5**：
   1. 修正第 1.1 / 1.4 节表格，使其与 [`askhat_runs_summary.json`](results/askhat-wandb-audit/askhat_runs_summary.json) 及 [`p3-retool-rl-11/train_metrics.json`](results/p3-retool-rl-11/train_metrics.json) 逐位一致，并标明 `ci0k54pl`（从 `fcze3xlx` Step 20 续跑）与 `hsodvfgr`（从 `rq1p980n` Step 80 续跑）的起止步数；
   2. 修正第 3.2 节启动命令：显式传 `JOB_SCRIPT=examples/tpu/retool/run_qwen3_30b_a3b_dapo_torchtitan.sh`、`JOBENV_VERIFY_PARITY=all`、`JOBENV_RELEASE_SYNC_BUFFERS=False`、`JOBENV_VERL_RAIDEN_RELEASE_BUFFERS=0` 与 `++data.apply_chat_template_kwargs.enable_thinking=True`，并附上 `DRY_RUN=1` 生成的 `job_spec.json` 核验结果；
@@ -106,7 +110,7 @@
 
 ## 2. TPU v7x 对齐实验矩阵（只跑 TPU v7x）
 
-全部运行从共享的 SFT checkpoint（`p2-retool-sft-01/checkpoint/global_step_372/huggingface`）出发，使用同一容器镜像（`verl-tpu@sha256:d92a2b3d6667584d67ea51874a721228a96c799263ab40f4aee168680476f64e`）和 `tpu-main` 代码（`05e4398a`）：
+全部运行从共享的 SFT checkpoint（`p2-retool-sft-01/checkpoint/global_step_372/huggingface`）出发，使用同一容器镜像（`verl-tpu@sha256:d92a2b3d6667584d67ea51874a721228a96c799263ab40f4aee168680476f64e`），并将运行代码版本显式固定到包含 launcher W&B Secret 注入修复的 commit（`CODE_REF=697dd26af95aaa2934f031854e540d96f57aa18f`，短 SHA `697dd26a`；若本 PR 采用 squash merge 合入 `tpu-main`，启动前将 `CODE_REF` 与 `EXPERIMENT_NAME` 后缀同步更新为合入后的 `tpu-main` commit SHA）：
 
 | 实验 ID | 对齐目标 | Scorer（`reward.custom_reward_function.path`） | `enable_thinking` | `max_response_length` / `max_user,assistant_turns` | `N_RESP_PER_PROMPT` | `ACTOR_LR` | 有效 `max_norm` | 状态 / 执行优先级 |
 |---|---|---|---|---|---|---|---|---|
@@ -132,9 +136,9 @@
 4. **Hydra 覆盖 `enable_thinking` 需使用 `++`**：
    - 因为 [`run_qwen3_30b_a3b_dapo_torchtitan.sh` L222](run_qwen3_30b_a3b_dapo_torchtitan.sh#L222) 已经写了 `+data.apply_chat_template_kwargs.enable_thinking=False`，在命令行末尾通过 `"$@"` 覆盖时必须使用 `++data.apply_chat_template_kwargs.enable_thinking=True`（若用单个 `+` 会触发 Hydra 重复 append 报错）。
 
-### 3.2 配置 C 5 步 Smoke 启动命令与 `DRY_RUN=1` 核验过的 `job_spec.json`
+### 3.2 配置 C 5 步 Smoke 启动命令与 `DRY_RUN=1` 核验过的 `run_record.json`、`job_spec.json`、`jobset.yaml`
 
-`run_ray_jobset_v7x_nap.sh` 通过环境变量 `JOB_SCRIPT` 指定脚本（默认是 0.6B/30B GRPO 脚本），所有位置参数都会作为参数传给 `JOB_SCRIPT`。配置 C 的 5 步 smoke 完整启动命令如下：
+`run_ray_jobset_v7x_nap.sh` 通过环境变量 `JOB_SCRIPT` 指定脚本（默认是 0.6B/30B GRPO 脚本），通过 `CODE_REF` 固定打包进 `code.tar.gz` 的 git commit（默认 `HEAD`，因此必须显式传入 `CODE_REF`），并通过 `WANDB_SECRET_NAME` / `WANDB_SECRET_KEY` 向 `ray-head` 容器注入 Kubernetes Secret（不经过 `JOBENV_*` 或 `job_spec.json`）。配置 C 的 5 步 smoke 完整启动命令如下：
 
 ```bash
 RUN_NAME=p3c-retool-smoke-01 \
@@ -145,6 +149,9 @@ RAY_NAMESPACE=priority-dev \
 PREWARM=1 \
 JOBSET_MAX_RESTARTS=1 \
 ALLOW_REQUEUE=0 \
+CODE_REF=697dd26af95aaa2934f031854e540d96f57aa18f \
+WANDB_SECRET_NAME=xiaotongyang-wandb \
+WANDB_SECRET_KEY=WANDB_API_KEY \
 IMAGE="us-west2-docker.pkg.dev/tpu-pytorch/raycluster/verl-tpu@sha256:d92a2b3d6667584d67ea51874a721228a96c799263ab40f4aee168680476f64e" \
 JOB_SCRIPT="examples/tpu/retool/run_qwen3_30b_a3b_dapo_torchtitan.sh" \
 JOBENV_LIBTPU_INIT_ARGS="--xla_tpu_use_enhanced_launch_barrier=false --xla_tpu_bf16_emission_mode=PROMOTE_F32" \
@@ -172,7 +179,7 @@ JOBENV_SAVE_FREQ="-1" \
 JOBENV_LOGGER_LIST="['console','tensorboard','wandb']" \
 JOBENV_PROJECT_NAME="verl-torchtpu-grpo-test" \
 JOBENV_WANDB_ENTITY="google-trellis" \
-JOBENV_EXPERIMENT_NAME="qwen3-30b-a3b-retool-dapo-v7x-16k-think-shaped-16t-smoke-01-sha05e4398a" \
+JOBENV_EXPERIMENT_NAME="qwen3-30b-a3b-retool-dapo-v7x-16k-think-shaped-16t-smoke-01-sha697dd26a" \
 JOBENV_TENSORBOARD_DIR="@RUN_DIR@/tensorboard" \
 bash examples/tpu/gke/run_ray_jobset_v7x_nap.sh \
   "trainer.rollout_data_dir=@RUN_DIR@/rollout" \
@@ -184,7 +191,53 @@ bash examples/tpu/gke/run_ray_jobset_v7x_nap.sh \
   "++data.apply_chat_template_kwargs.enable_thinking=True"
 ```
 
-已通过 `DRY_RUN=1` 在 `bodaborg-tpu7x-nap` API server 上通过 `jobset.yaml` 与 `prewarm.yaml` 校验，生成的 `job_spec.json` 如下（与 `p3-retool-rl-11/job_spec.json` 逐项核对无误）：
+已通过 `DRY_RUN=1` 在 `bodaborg-tpu7x-nap` API server 上通过集群 Secret 校验（`verified Secret xiaotongyang-wandb[WANDB_API_KEY] exists in namespace priority-dev`）以及 `jobset.yaml`、`prewarm.yaml` server-side dry-run 校验：
+
+1. **生成的 `run_record.json`（确认 `code_sha` 与 `EXPERIMENT_NAME` 后缀 `sha697dd26a` 完全一致，且记录了 Secret 引用名）**：
+
+```json
+{
+ "code_sha": "697dd26af95aaa2934f031854e540d96f57aa18f",
+ "created_at": "2026-11-04T02:57:25Z",
+ "driver_timeout_s": "6600",
+ "gcs_bucket": "ubench-logs",
+ "image": "us-west2-docker.pkg.dev/tpu-pytorch/raycluster/verl-tpu@sha256:d92a2b3d6667584d67ea51874a721228a96c799263ab40f4aee168680476f64e",
+ "inputs_root": "xiaotongyang/retool-v7x/inputs",
+ "jobset_max_restarts": "1",
+ "kube_context": "gke_cloud-tpu-shared-capacity_us-central1_bodaborg-tpu7x-nap",
+ "kueue_queue": "multislice-queue",
+ "node_rank_source": "job-index",
+ "node_wait_timeout_s": "1200",
+ "pod_tpu_accelerator_type": "tpu7x",
+ "priority_class": "medium",
+ "ray_namespace": "priority-dev",
+ "ray_tpu_per_host": "8",
+ "require_node_rank": "1",
+ "rollout_slices": "1",
+ "run_dir": "/data/xiaotongyang/retool-v7x/runs/p3c-retool-smoke-01",
+ "run_name": "p3c-retool-smoke-01",
+ "run_owner": "xiaotongyang",
+ "tpu_topology": "2x2x4",
+ "trainer_slices": "1",
+ "wandb_secret_key": "WANDB_API_KEY",
+ "wandb_secret_name": "xiaotongyang-wandb"
+}
+```
+
+2. **生成的 `jobset.yaml` 中 `ray-head` 容器环境变量片段（确认 `VERL_NAP_CODE_SHA` 与 `WANDB_API_KEY` `secretKeyRef` 注入）**：
+
+```yaml
+                    - name: VERL_NAP_CODE_SHA
+                      value: "697dd26af95aaa2934f031854e540d96f57aa18f"
+                    ...
+                    - name: WANDB_API_KEY
+                      valueFrom:
+                        secretKeyRef:
+                          name: "xiaotongyang-wandb"
+                          key: "WANDB_API_KEY"
+```
+
+3. **生成的 `job_spec.json`（确认不包含明文 `WANDB_API_KEY`，且与 `p3-retool-rl-11/job_spec.json` 逐项核对无误）**：
 
 ```json
 {
@@ -201,7 +254,7 @@ bash examples/tpu/gke/run_ray_jobset_v7x_nap.sh \
  ],
  "env_vars": {
   "ACTOR_LR": "2e-6",
-  "EXPERIMENT_NAME": "qwen3-30b-a3b-retool-dapo-v7x-16k-think-shaped-16t-smoke-01-sha05e4398a",
+  "EXPERIMENT_NAME": "qwen3-30b-a3b-retool-dapo-v7x-16k-think-shaped-16t-smoke-01-sha697dd26a",
   "LIBTPU_INIT_ARGS": "--xla_tpu_use_enhanced_launch_barrier=false --xla_tpu_bf16_emission_mode=PROMOTE_F32",
   "LOGGER_LIST": "['console','tensorboard','wandb']",
   "MAX_RESPONSE_LENGTH": "16384",
@@ -278,9 +331,10 @@ bash examples/tpu/gke/run_ray_jobset_v7x_nap.sh \
    - 结尾 `\boxed{41}`（错误，`num_turns=2, 3, 4, 6, 10`）→ `-1.0, -0.95, -0.9, -0.8, -0.6`
    - 仅有 `Answer: 42` 无 `\boxed{}`（`num_turns=2`）→ `-1.0`（`strict_box_verify=True` 判错，区别于默认 scorer 的 `+1.0`）
    - `\boxed{42}` 后缀超过 100 字符（`num_turns=2`）→ `-1.0`
-3. **实际运行样本与验证集一致性检查（硬门槛）**：
-   - `validation/0.jsonl`（`n=2`，120 行）和 `rollout_audit/{1..5}.jsonl`（40 个训练 session）的每一条记录，其日志中的 `acc` 和 `score` 都必须与离线调用 `retool_tpu.compute_score`（`strict_box_verify=True` + 按 `num_turns` shaping）重算的结果完全一致。
-   - 注：`n=2` 随机验证集不一定恰好抽到“答错且多轮”的样本，因此**不要求验证集随机样本一定出现 shaped 分数**；实际验证集与训练抽样中命中 shaping（`-0.95 ~ -0.6`）的条数单独统计记录。
+3. **实际运行样本与验证集一致性检查（硬门槛，按每个独立 session 的最终 output 对账）**：
+   - **验证集（`validation/0.jsonl`，`expected_n=2`）**：多轮 agent 的一个 session（`{uid}_{session_id}`）可能产生多条 output（`{uid}_{session_id}_{output_index}`），并由最终 output（最大 `output_index`）承载该 session 的 reward，因此验证集 JSONL 行数不写死为 120 行。必须使用 [`summarize_validation_dump`](../../verl/trainer/ppo/v1/rollout_audit.py#L992)（传入 `expected_n=2` 及 60 道预期题目的 `expected_questions`）校验 `complete == True` 且 `score_complete == True`（即 60 道预期题目 × 每题 2 个独立 session = 120 个完整 session），并取每个 session 的**最终 output**（`max(output_index)`），确认其记录的 `row["acc"]` 和 `row["score"]` 与离线调用 `retool_tpu.compute_score(data_source, row["output"], ground_truth, extra_info={"num_turns": row["num_turns"]})` 重算结果完全一致（`validation/0.jsonl` 的 `row["output"]` 已由 `ray_trainer.py` 以 `skip_special_tokens=True` 解码）。
+   - **训练审计样本（`rollout_audit/{1..5}.jsonl`，每步 8 个 session、共 40 个独立 session）**：按 `record["session"]` 分组并取每个 session 的**最终 output**（`max(output_index)`）。由于 `rollout_audit.py` 生成的 `record["response_text"]` 使用了 `skip_special_tokens=False`（保留了末尾 `<|im_end|>` 等特殊 token），而运行时 [`NaiveRewardManager`](../../verl/workers/reward_manager/naive.py#L119) 使用 `tokenizer.decode(valid_response_ids, skip_special_tokens=True)` 解码，因此离线重算必须先对 `record["response_ids"]` 执行完全相同的 `tokenizer.decode(record["response_ids"], skip_special_tokens=True)`，再调用 `retool_tpu.compute_score(..., extra_info={"num_turns": record["num_turns"]})`，确认重算的 `acc`、`pred`、`score` 与日志中的 `record["reward_extra_info"]["acc"]`、`record["reward_extra_info"]["pred"]` 及 `record["score"]` 100% 一致。
+   - 注：`n=2` 随机验证集不一定恰好抽到“答错且多轮”的样本，因此**不要求验证集随机样本一定出现 shaped 分数**；实际验证集（120 个 session 最终 output）与训练抽样（40 个 session 最终 output）中命中 shaping（`-0.95 ~ -0.6`）的条数单独统计记录。
 4. **Raiden 权重同步与训练稳定性检查（硬门槛）**：
    - Step-0 Raiden float32 逐元素比较 `0 / 13,920` mismatch（`env/raiden_exact_parity_step_0.json`），Steps 1–5 的 5 次 numel/L1 校验全部通过；
    - 40 条审计轨迹中 `0` 条 `response_mask` 违规；无异常或非有限 `grad_norm` 跳过更新告警；
@@ -305,17 +359,23 @@ bash examples/tpu/gke/run_ray_jobset_v7x_nap.sh \
 
 ---
 
-## 5. WandB 接入与密钥安全方案
+## 5. WandB 接入与密钥安全方案（已实现并通过集群与 W&B 权限核验）
 
 1. **目标 Project 与命名规范**：
    - `WANDB_ENTITY=google-trellis`、`PROJECT_NAME=verl-torchtpu-grpo-test`、`LOGGER_LIST="['console','tensorboard','wandb']"`。
    - `EXPERIMENT_NAME` 统一带平台、配置与代码版本标签：
-     - Smoke：`qwen3-30b-a3b-retool-dapo-v7x-16k-think-shaped-16t-smoke-01-sha<short_sha>`
+     - Smoke：`qwen3-30b-a3b-retool-dapo-v7x-16k-think-shaped-16t-smoke-01-sha697dd26a`
      - 25 步：`qwen3-30b-a3b-retool-dapo-v7x-16k-think-shaped-16t-25step-01-sha<short_sha>`
-2. **密钥安全传递（不落盘到代码库、`config.yaml`、`job_spec.json` 或 `driver.log`）**：
-   - [`PlatformTPU.get_ray_init_kwargs()`](../../verl/plugin/platform/platform_tpu.py#L616-L630) 原生从进程环境变量读取 `WANDB_API_KEY`、`WANDB_ENTITY`、`WANDB_PROJECT` 并通过 `runner_env_vars` 注入 `TaskRunner` Actor（[`main_ppo.py` L111-L113](../../verl/trainer/main_ppo.py#L111-L113)），不会写入 Hydra `config` 对象。
-   - 注意：① `run_ray_jobset_v7x_nap.sh` 会把所有 `JOBENV_*` 写入 GCS 上的 `job_spec.json`，因此**绝不使用 `JOBENV_WANDB_API_KEY`**；② `run_qwen3_30b_a3b_dapo_torchtitan.sh` 开启了 `set -xeuo pipefail`，若在未关闭 `-x` 的 shell 中直接赋值会把密钥打印到 `driver.log`。
-   - 因此采用 Kubernetes Secret（`xiaotongyang-wandb`，与集群现有的 `aaskhat-wandb` / `jialeic-wandb-secret` 同模式）注入 `ray-head` 容器环境变量（或在 `set +x` 保护块 / Python 进程内从受限文件读取），使 `WANDB_API_KEY` 既不出现在 `job_spec.json`，也不出现在 `driver.log`；同时 [`pod_env_snapshot.py`](../gke/v7x_nap/pod_env_snapshot.py#L31) 已对含 `_KEY` 的变量自动脱敏为 `<redacted>`。
+2. **模板与 Launcher 注入实现（不落盘到代码库、`config.yaml`、`job_spec.json` 或 `driver.log`）**：
+   - **容器层注入**：在 [`ray-jobset-v7x-nap.yaml`](../gke/ray-jobset-v7x-nap.yaml#L139)、[`v7x_nap/render.py`](../gke/v7x_nap/render.py#L70-L92) 和 [`run_ray_jobset_v7x_nap.sh`](../gke/run_ray_jobset_v7x_nap.sh#L33-L34) 中新增 `WANDB_SECRET_NAME`（默认空）与 `WANDB_SECRET_KEY`（默认 `WANDB_API_KEY`）。当设置 `WANDB_SECRET_NAME=xiaotongyang-wandb` 时，渲染器向 `ray-head` 容器注入 `valueFrom.secretKeyRef: {name: "xiaotongyang-wandb", key: "WANDB_API_KEY"}`；`run_record.json` 仅记录 Secret 名称与键名（`wandb_secret_name` / `wandb_secret_key`），**绝不通过 `JOBENV_WANDB_API_KEY` 写入 `job_spec.json`**。
+   - **提交前集群强校验**：[`run_ray_jobset_v7x_nap.sh`](../gke/run_ray_jobset_v7x_nap.sh#L179-L192) 在渲染 manifest 后、提交或 dry-run 前，执行 `kubectl get secret "${WANDB_SECRET_NAME}" -n "${RAY_NAMESPACE}" -o jsonpath="{.data.${WANDB_SECRET_KEY}}"`，若目标命名空间不存在该 Secret 或对应 key 为空则立即报错终止。
+   - **Ray Driver / TaskRunner 传递链路**：`ray-head` 容器环境变量中的 `WANDB_API_KEY` 由 `head_supervisor.py` 启动的本地 Ray head 继承；Ray job driver（`run_qwen3_30b_a3b_dapo_torchtitan.sh` → `verl.trainer.main_ppo`）在 head 节点运行并直接继承 `WANDB_API_KEY`（不在 shell 中赋值，因此 `set -x` 不会在 `driver.log` 中打印密钥）；随后 [`PlatformTPU.get_ray_init_kwargs()`](../../verl/plugin/platform/platform_tpu.py#L616-L630) 通过 `runner_env_vars` 将 `WANDB_API_KEY` 和 `WANDB_ENTITY` 转发给 `TaskRunner` Actor（[`main_ppo.py` L111-L125](../../verl/trainer/main_ppo.py#L111-L125)），由 [`Tracking`](../../verl/utils/tracking.py#L76-L86) 完成 `wandb.init(project="verl-torchtpu-grpo-test", entity="google-trellis", ...)`。同时 [`pod_env_snapshot.py`](../gke/v7x_nap/pod_env_snapshot.py#L31) 已对含 `_KEY` 的变量自动脱敏为 `<redacted>`。
+3. **集群 Secret 与 W&B 目标 Project 写权限实测结果**：
+   - 已在 `gke_cloud-tpu-shared-capacity_us-central1_bodaborg-tpu7x-nap` 的 `priority-dev` 与 `default` 命名空间创建 `Secret/xiaotongyang-wandb`（key 为 `WANDB_API_KEY`）。
+   - 已从集群 `priority-dev` 命名空间读取 `Secret/xiaotongyang-wandb` 中的 `WANDB_API_KEY`，直接向 `https://api.wandb.ai/graphql` 发起鉴权与项目权限核验，返回：
+     - `viewer`：`{"username": "xiaotongyang", "email": "xiaotongyang@google.com", "entity": "google-trellis"}`
+     - `project(name: "verl-torchtpu-grpo-test", entityName: "google-trellis")`：`{"id": "UHJvamVjdDp2MTp2ZXJsLXRvcmNodHB1LWdycG8tdGVzdDpnb29nbGUtdHJlbGxpcw==", "name": "verl-torchtpu-grpo-test", "readOnly": false, "access": "PRIVATE"}`
+   - 确认该集群 Secret 凭证有效且对 `google-trellis/verl-torchtpu-grpo-test` 具备写权限（`readOnly: false`）。
 
 ---
 

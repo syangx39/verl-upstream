@@ -1,7 +1,13 @@
 # TPU v7x ReTool 对齐 Askhat 运行与重跑方案（TPU v7x Only）
 
-状态：**rev 9（已完成 `p3c-retool-smoke-01` 32 卡早期部分验证、修正 64 卡 `r-b0f80` 启动命令及 `DRY_RUN=1` 产物一致性、补齐三副本在线放行 JSON Schema 与监控终止机制）**（2026-11-04）。
+状态：**rev 10（已完成 `p3c-retool-smoke-01` 32 卡早期部分验证、对齐 64 卡 `r-b0f80` 启动命令与 `DRY_RUN=1` 产物、校准 Raiden 训练后范数检查代码边界与人工早期监控定位、修正 §6.3 Askhat `mean_score`）**（2026-11-04）。
 
+- **rev 10**：
+  1. **校准 §6.5.5 中进程内自动校验与人工早期监控的真实边界（不虚称已入库自动 watcher 或 Step 3 阻塞屏障）**：
+     - 明确在固定代码版本 `CODE_REF=53bc215c8880483142caee0b4d25d57066a0a54f` 中，仅 Raiden 的 Step 0 逐元素对账与每步 `numel + L1` 校验具备进程内抛出 `RaidenParityError` 的自动中止机制；仓库中并未合入独立的后台 watcher 守护脚本，Trainer 也没有在 Step 3 结束时等待外部离线对账的同步暂停屏障（若外部检查延迟，训练可能已进入 Step 4）。因此将 `validation/0.jsonl`、`rollout_audit/{1..3}.jsonl` 及 `head.log` 检查明确表述为**人工/Agent 早期跟跑监控（发现异常后尽快手动执行 `kubectl delete jobset` 停止作业）**。
+  2. **校准 §6.4 / §6.5.5 对 `CODE_REF=53bc215c` 训练后 Raiden 范数检查（`_verify_weight_parity` / `_compare_replica_norms`）覆盖范围的描述**：
+     - 在 [`raiden_checkpoint_engine.py` L806-L919](../../verl/checkpoint_engine/raiden_checkpoint_engine.py#L806-L919) 中，Step 1+ 的 `_verify_weight_parity` 对每个 replica 仅检查返回的 `sampler_workers` 非空（未像 Step 0 那样显式断言 `len(sampler_workers) == 32` 或 rank 集合 `{0..31}`），且 `_compare_replica_norms` 的自动通过条件只判定逐张量与全局的 **`numel`（`delta_numel == 0`）和 `L1` 范数（`rel_tol = 1e-3`）**，`Global L2 Norm` 仅打印日志、不参与自动判定。文档已收窄承诺，并写明在 Steps 1–3 通过核对 `head.log` 中全部 3 个 replica（`[RAIDEN PARITY VERIFIED | Step k | Replica 0..2]`）的 `Total Parameters == 30,532,122,624`（分片张量缺失任一 TP/EP rank 会导致 `numel` 缺失）及人工核对打印的 `Global L2 Norm` delta 来补充确认。
+  3. **修正 §6.3 表中 Askhat `yjowd03u` Step 0 与 `ci0k54pl` Step 25 的 `mean_score`**：与 [`askhat_runs_summary.json`](results/askhat-wandb-audit/askhat_runs_summary.json) 逐位对齐（`yjowd03u` Step 0 为 **`+0.10625 / -0.22125`**；`ci0k54pl` Step 25 为 **`+0.249167 / -0.075`**）。
 - **rev 9**：
   1. **修正 §6.5 中 64 卡正式运行（`p3c-retool-25s-01`）启动命令，使其与 `DRY_RUN=1` 生成的 `run_record.json` / `job_spec.json` 100% 同源一致**：
      - 显式设置 `JOB_SCRIPT="examples/tpu/retool/run_qwen3_30b_a3b_dapo_torchtitan.sh"` 并移除位置参数中的 `-- bash ...`（避免 launcher 误选默认 GRPO 脚本）；
@@ -9,10 +15,10 @@
      - 显式传入 `JOBENV_LIBTPU_INIT_ARGS` 与 `JOBENV_NUM_WARMUP_BATCHES="2"`；将无效变量 `TOPOLOGY` / `WAIT_FOR_COMPLETION=0` 更正为 launcher 实际读取的 `TPU_TOPOLOGY="2x2x4"` 与 `KEEP_JOBSET=1`；
      - 统一使用 `p3c-retool-smoke-01` 实测 Pod 运行的同一镜像 digest `verl-tpu@sha256:d92a2b3d6667584d67ea51874a721228a96c799263ab40f4aee168680476f64e`（已由 `.pods.json` 的 `imageID` 与 `tests/special_tpu/gke/tpu-ci-image.env` 交叉核实）；
      - 补充动态预约命名空间 `r-b0f80` 的 W&B Secret（`Secret/xiaotongyang-wandb`）创建与启动前 `DRY_RUN=1 RAY_NAMESPACE=r-b0f80` 校验流程。
-  2. **按真实 `raiden_exact_parity_step_0.json` Schema、浮点容差 `abs_tol=1e-6` 与外部自动终止机制完善 §6.5.4 在线放行门槛**：
-     - 对齐 [`raiden_checkpoint_engine.py`](../../verl/checkpoint_engine/raiden_checkpoint_engine.py) 实际落盘字段：`num_results == 96`、`expected_ranks == 96`、`expected_workers_per_replica == [32, 32, 32]`、`checked_per_rank == [435]`、`replica_rank_pairs` 完整覆盖 `0..2 × 0..31`、`num_mismatched == 0`、`num_unresolved == 0`、`coverage_errors == []` 及 `sum(r["checked"] for r in ranks) == 41,760`；
-     - 离线 `score` 复算采用 `math.isclose(..., abs_tol=1e-6)` 避免 float32 舍入误报；明确由外部放行监控脚本实时轮询 `validation/0.jsonl` 与 `rollout_audit/{1..3}.jsonl`，一旦发现离线对账或 mask 异常立即执行 `kubectl delete jobset p3c-retool-25s-01 -n r-b0f80`。
-  3. **更正 §6.3 中 Askhat `ci0k54pl` Step 25 对照数值（`58.33% / 38.75%`）并同步全篇关于 32 卡“早期部分验证”的表述**：与 §1.1 及 [`askhat_runs_summary.json`](results/askhat-wandb-audit/askhat_runs_summary.json) 对齐。
+  2. **按真实 `raiden_exact_parity_step_0.json` Schema 与浮点容差 `abs_tol=1e-6` 完善 §6.5.5 检查项**：
+     - 对齐 [`raiden_checkpoint_engine.py`](../../verl/checkpoint_engine/raiden_checkpoint_engine.py) Step 0 实际落盘字段：`num_results == 96`、`expected_ranks == 96`、`expected_workers_per_replica == [32, 32, 32]`、`checked_per_rank == [435]`、`replica_rank_pairs` 完整覆盖 `0..2 × 0..31`、`num_mismatched == 0`、`num_unresolved == 0`、`coverage_errors == []` 及 `sum(r["checked"] for r in ranks) == 41,760`；
+     - 离线 `score` 复算采用 `math.isclose(..., abs_tol=1e-6)` 避免 float32 舍入误报。
+  3. **更正 §6.3 中 Askhat `ci0k54pl` Step 25 准确率（`58.33% / 38.75%`）并同步全篇关于 32 卡“早期部分验证”的表述**。
 - **rev 8**：
   1. **补入 `p3c-retool-smoke-01`（W&B [`uinjk8rs`](https://wandb.ai/google-trellis/verl-torchtpu-grpo-test/runs/uinjk8rs)）32 卡早期部分验证结果（第 6 节）**：
      - **完成范围说明**：已完成 Step 0 验证（`n=2`，120 个 session）、Step 0 单副本 13,920 分片逐元素校验、Step 1 完整训练（含 8 条 session 审计与 1 次分布式范数校验）及 Step 2 前向/反向更新；Step 2 在权重同步阶段因 `r-db36b` 动态预约到期被回收，Steps 3–5 未运行（原计划的 5 次同步检查、40 条审计轨迹与末次验证因此未在 32 卡上全部跑完，转由 64 卡正式 run 的前 3 步执行三副本放行检查）；
@@ -445,13 +451,13 @@ bash examples/tpu/gke/run_ray_jobset_v7x_nap.sh \
    - 对全部 120 个 session 调用 `retool_tpu.compute_score(data_source, row["output"], row["gts"], extra_info={"num_turns": row["num_turns"]})` 离线复算，与 `validation/0.jsonl` 中记录的 `row["acc"]` 和 `row["score"]` **`120 / 120` 完全一致（`0` 处 mismatch）**。
    - **78 / 120 个 session**（`aime_2024` 35 条、`aime_2025` 43 条，即全部答错样本）均触发了多轮工具调用（`num_turns > 2`），命中 ReTool shaped reward（`[-0.9, -0.6]`）；120 个 session 的 `num_turns` 分布为 `{4: 44, 6: 20, 8: 14, 10: 13, 12: 12, 14: 6, 16: 2, 18: 3, 20: 2, 22: 2, 24: 1, 28: 1}`（`min=4, mean=8.23, max=28`）。
    - **Step 0 小样本（`n=2`）初步验证结果与历史参考对比**：
-     - **更正说明**：与 §1.1 及 [`askhat_runs_summary.json`](results/askhat-wandb-audit/askhat_runs_summary.json) 对齐——Askhat Regime 2 的 `yjowd03u`（`16K, thinking=True, n=8`）在 **Step 0** 的记录值为 **`48.75% / 30.83%`**（`mean_score = +0.0121 / -0.2500`）；`ci0k54pl` 从 `fcze3xlx` 的 `global_step_20` 续训，其首个记录的 validation 位于 **Step 25**（`n=8`），记录值为 **`58.33% / 38.75%`**（`mean_score = +0.1933 / -0.1304`）；Askhat Regime 1（`8K, thinking=False, n=30`）的 `lb5cdzuq` Step 0 为 **`25.44% / 14.44%`**（更早一次独立 Step 0 评估为 `22.44% / 14.17%`）。
+     - **更正说明**：与 §1.1 及 [`askhat_runs_summary.json`](results/askhat-wandb-audit/askhat_runs_summary.json) 对齐——Askhat Regime 2 的 `yjowd03u`（`16K, thinking=True, n=8`）在 **Step 0** 的记录值为 **`48.75% / 30.83%`**（`mean_score = +0.10625 / -0.22125`）；`ci0k54pl` 从 `fcze3xlx` 的 `global_step_20` 续训，其首个记录的 validation 位于 **Step 25**（`n=8`），记录值为 **`58.33% / 38.75%`**（`mean_score = +0.249167 / -0.075`）；Askhat Regime 1（`8K, thinking=False, n=30`）的 `lb5cdzuq` Step 0 为 **`25.44% / 14.44%`**（`mean_score = -0.491111 / -0.711111`；更早一次独立 Step 0 评估为 `22.44% / 14.17%`）。
      - 本轮 `p3c-retool-smoke-01` 的 Step 0 仅采样 **`n=2`（每数据集 60 个样本）**，样本量较小、抽样方差较大，仅作为 `16K + thinking=True + shaped reward` 管线生效的初步冒烟参考，**不能单凭 `n=2` 结论声称与 Askhat `n=8` / `n=30` 完全对齐或独立证明显著提升**；正式基线对比以 64 卡运行的 Step 0 / Step 25 **`n=30`（每数据集 900 个样本，同时导出前 8 个 session 的 `mean@8`）** 为准。
 
 | 数据集 | 旧 v7x 基线 `p3-retool-rl-11` Step 0 (`8K`, `thinking=False`, `n=30`) | Askhat `lb5cdzuq` Step 0 (`8K`, `thinking=False`, `n=30`) | Askhat `yjowd03u` Step 0 (`16K`, `thinking=True`, `n=8`) | Askhat `ci0k54pl` **Step 25** (`from step 20`, `16K`, `thinking=True`, `n=8`) | **本轮 `p3c-retool-smoke-01` Step 0 (`16K`, `thinking=True`, `n=2` 小样本初测) Strict / Default Scorer** | **本轮 Step 0 (`n=2`) Mean Shaped Score** |
 | --- | --- | --- | --- | --- | --- | --- |
-| **AIME 2024** | `25.56%` (`-0.4889`) | `25.44%` (`-0.4911`) | **`48.75%`** (`+0.0121`) | **`58.33%`** (`+0.1933`) | **`41.67%` (`25 / 60`)** | **`-0.0200`** |
-| **AIME 2025** | `17.33%` (`-0.6533`) | `14.44%` (`-0.7111`) | **`30.83%`** (`-0.2500`) | **`38.75%`** (`-0.1304`) | **`28.33%` (`17 / 60`)** | **`-0.2383`** |
+| **AIME 2024** | `25.56%` (`-0.4889`) | `25.44%` (`-0.491111`) | **`48.75%`** (`+0.10625`) | **`58.33%`** (`+0.249167`) | **`41.67%` (`25 / 60`)** | **`-0.0200`** |
+| **AIME 2025** | `17.33%` (`-0.6533`) | `14.44%` (`-0.711111`) | **`30.83%`** (`-0.22125`) | **`38.75%`** (`-0.075`) | **`28.33%` (`17 / 60`)** | **`-0.2383`** |
 
 2. **Step 1 训练审计样本（`rollout_audit/1.jsonl`，已完成 8 / 40 个计划 session）对账**：
    - 对 Step 1 的 8 个 session 的 `response_ids` 执行 `tokenizer.decode(record["response_ids"], skip_special_tokens=True)` 后调用 `retool_tpu.compute_score(..., extra_info={"num_turns": record["num_turns"]})`，重算的 `acc`、`pred`、`score`（`abs_tol=1e-6`）与日志记录 **`8 / 8` 100% 一致**，且 **`0` 条 `response_mask` 违规**（注：Steps 2–5 的其余 32 条审计样本因作业在 Step 2 权重同步阶段被回收而未生成）：
@@ -699,13 +705,17 @@ bash examples/tpu/gke/run_ray_jobset_v7x_nap.sh \
 }
 ```
 
-#### 5. 64 卡正式运行前 3 步（Steps 0–3）在线放行门槛（In-Flight Release Gate）与监控终止机制
+#### 5. 64 卡正式运行前 3 步（Steps 0–3）早期监控与放行检查规范
 
-此前 32 卡（单 rollout replica）的验证结果不能直接证明 64 卡（三 rollout replica）同步通过。因此在 `p3c-retool-25s-01` 启动后，对 **Step 0 及 Steps 1–3** 实时执行以下多副本放行检查：
+此前 32 卡（单 rollout replica）的验证结果不能直接证明 64 卡（三 rollout replica）同步通过。因此在 `p3c-retool-25s-01` 启动后，对 **Step 0 及 Steps 1–3** 执行以下多副本检查：
 
-1. **自动报错与外部监控终止机制（谁来监控与如何停止）**：
-   - **进程内 Fail-Fast（Raiden 同步与范数校验）**：[`RaidenCheckpointEngine`](../../verl/checkpoint_engine/raiden_checkpoint_engine.py) 在 `VERIFY_PARITY=all` 下对 Step 0 逐元素对账和每步 `update_weights` 的三副本分布式范数/覆盖率执行进程内强校验；一旦出现任何 mismatch、unresolved shard 或 rank 缺失，直接抛出 `RuntimeError` 中止训练作业。
-   - **进程外实时监控哨兵（Resolved Config / Reward 对账 / Response Mask / 梯度检查）**：由于 `validation/0.jsonl` 与 `rollout_audit/{1..3}.jsonl` 的离线复算不会自动阻塞 Trainer 进入 Step 4，值守脚本（由执行 Agent 在作业启动后持续运行）实时轮询 `gs://ubench-logs/xiaotongyang/retool-v7x/runs/p3c-retool-25s-01/` 下新落盘的 `head.log`、`env/raiden_exact_parity_step_0.json`、`validation/0.jsonl` 与 `rollout_audit/{1..3}.jsonl`；**只要下述第 2–5 项任一检查不通过，值守脚本立即执行 `kubectl delete jobset p3c-retool-25s-01 -n r-b0f80` 终止作业**；全部通过则保持作业继续运行至 Step 25。
+1. **进程内自动校验与人工早期监控的真实边界（不虚称已入库自动暂停屏障）**：
+   - **已实现的进程内自动中止项（`CODE_REF=53bc215c` 内置）**：
+     1. **Step 0 逐元素与 96 ranks 覆盖校验**：[`RaidenCheckpointEngine._verify_exact_weight_parity_step0`](../../verl/checkpoint_engine/raiden_checkpoint_engine.py) 在进程内强制核对 `num_results == expected_ranks == 96`、`replica_rank_pairs` 覆盖 `0..2 × 0..31`、`num_mismatched == 0`、`num_unresolved == 0`、`coverage_errors == []`；若不满足直接抛出 `RaidenParityError` 中止训练。
+     2. **Step 1+ 每步 `update_weights` 的 `numel` 与 `L1` 范数校验**：[`_verify_weight_parity` / `_compare_replica_norms`（L806–L919）](../../verl/checkpoint_engine/raiden_checkpoint_engine.py#L806-L919) 对每个 replica 要求返回的 `sampler_workers` 非空，并自动校验逐张量及全局的 **`numel`（`delta_numel == 0`）与 `L1` 范数（`rel_tol = 1e-3`）**；若不满足直接抛出 `RaidenParityError`。
+   - **未内置自动阻塞屏障、需人工/Agent 早期跟跑监控并手动停止的项**：
+     - 当前 `CODE_REF=53bc215c` 代码库中**并未合入**独立的后台 watcher 守护脚本，Trainer 也没有在 Step 3 结束后暂停等待外部离线对账的阻塞机制；若外部检查存在延迟，训练进程可能已进入 Step 4。
+     - 因此，下述关于 Resolved Config、`head.log` 中 `Global L2 Norm` delta、`validation/0.jsonl` 与 `rollout_audit/{1..3}.jsonl` 离线 reward/mask 对账均定位为**人工/Agent 早期跟跑监控（Manual Early-Stage Monitoring）**：在作业启动后由操作员/Agent 紧盯 Step 0–3 产物落盘并立即执行离线核验，**一旦发现任何异常，尽快手动执行 `kubectl delete jobset p3c-retool-25s-01 -n r-b0f80` 停止作业**；全部通过则保持作业继续运行至 Step 25。
 2. **Multi-Replica 拓扑与 Resolved Config 检查（Step 0 启动时）**：
    - 确认实际创建了 **3 个独立的 vLLM Rollout Replica（`sampler0`、`sampler1`、`sampler2`）**，每个 replica 为 `TP=32, EP=32`，合计 **96 个 rollout worker ranks**。
    - 确认 Hydra resolved config 与 §6.1 所有字段完全一致。
@@ -720,10 +730,14 @@ bash examples/tpu/gke/run_ray_jobset_v7x_nap.sh \
    - 校验逐 rank 明细列表 `ranks`（`len(ranks) == 96`）：
      - 每个元素 `r` 均满足 `r["checked"] == r["expected_checked"] == 435`、`r["num_mismatched"] == 0`、`r["unresolved"] == []`、`r["all_mismatched"] == []`；
      - 全部 96 个 rank 累计检查分片数 **`sum(r["checked"] for r in ranks) == 41,760`**（即 `96 × 435`）。
-4. **Steps 1–3 三副本训练后分布式范数与梯度检查**：
-   - 在 Steps 1、2、3 每一步 `update_weights` 后，检查 **全部 3 个 rollout replica（96 ranks）** 的分布式参数范数（Global L1 / L2 norm 及 `total_numel = 30,532,122,624` across `579` tensors）与 Trainer 100% 匹配（日志输出 `[RAIDEN PARITY VERIFIED | Step k] 100% DISTRIBUTED NORM PARITY CONFIRMED!`）；
-   - 确认 Steps 1–3 的 `actor/grad_norm` 均为有限正数，`0` 次非有限梯度跳过更新，`actor/lr == 2.0e-6`。
-5. **Step 0 验证集（`validation/0.jsonl`，`n=30`）与 Steps 1–3 训练审计（`rollout_audit/{1..3}.jsonl`，24 个 session）对账**：
+4. **Steps 1–3 三副本训练后分布式范数与梯度检查（区分代码自动判定范围与人工日志核验）**：
+   - **代码自动判定边界说明**：[`raiden_checkpoint_engine.py` L806–L919](../../verl/checkpoint_engine/raiden_checkpoint_engine.py#L806-L919) 在 Step 1+ 对每个 replica 仅检查返回的 `sampler_workers` 列表非空（未直接断言 `len(sampler_workers) == 32`），且自动 pass 条件仅校验逐张量与全局的 **`numel`（`delta_numel == 0`）和 `L1` 范数（`delta_l1 <= 1e-3 * max(|L1|, 1.0)`）**；`Global L2 Norm` 仅打印在日志中、不参与代码自动判定。
+   - **人工补充核验方法**：
+     1. 核对 `head.log` 在 Steps 1、2、3 每一步均完整打印了 **3 个 replica（`[RAIDEN PARITY VERIFIED | Step k | Replica 0]`、`Replica 1`、`Replica 2`）** 的验证块；
+     2. 核对每个 replica 的 `Total Parameters: 30532122624 across 579 tensors`（由于 TP=32 / EP=32 切分张量的 `s_agg_numel` 为该 replica 各 worker 分片元素数之和，若某个 replica 少返回任一 worker rank，切分张量的 `s_agg_numel` 与 `total_sampler_numel` 会小于 `30,532,122,624` 并触发 `delta_numel != 0` 报错；同时结合 `ray status` 确认全部 96 个 rollout TPU chips 在线无掉线）；
+     3. 人工核对每个 replica 日志中打印的 `Global L1 Norm` delta 与 **`Global L2 Norm` delta**（要求 `total_l2_delta <= 1e-3 * Trainer_L2`）；
+     4. 确认 Steps 1–3 的 `actor/grad_norm` 均为有限正数，`0` 次非有限梯度跳过更新，`actor/lr == 2.0e-6`。
+5. **Step 0 验证集（`validation/0.jsonl`，`n=30`）与 Steps 1–3 训练审计（`rollout_audit/{1..3}.jsonl`，24 个 session）人工早期离线对账**：
    - `validation/0.jsonl` 通过 `summarize_validation_dump(..., expected_n=30)` 完整性校验（`60 × 30 = 1,800` 个完整 session，`missing_num_turns == 0`）；对全部 1,800 个 session 离线调用 `retool_tpu.compute_score` 复算，`acc` 100% 一致，且 `score` 在浮点容差 **`math.isclose(recomputed_score, recorded_score, abs_tol=1e-6)`** 下 100% 一致（避免 float32 舍入造成误判）；
    - `rollout_audit/{1..3}.jsonl`（每步 8 个 session，共 24 个 session）离线重算 `acc`、`pred` 完全一致、`score` 满足 `math.isclose(..., abs_tol=1e-6)`，且 **`0` 条 `response_mask` 违规（`<tool_response>` 零泄漏）**；
    - W&B 新 Run 实时收到 Step 0 验证与 Steps 1–3 训练指标。

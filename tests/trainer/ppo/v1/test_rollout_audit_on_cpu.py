@@ -836,11 +836,10 @@ def test_validate_dump_writes_data_source_and_question_id(tmp_path, monkeypatch)
     for row in rows:
         assert row["question_id"] == expected_ids[row["data_source"]]
         assert {"input", "output", "gts", "score", "step", "acc", "num_turns", "uid"} <= row.keys()
-        _, session_idx, _ = split_trajectory_key(row["uid"])
+        _, session_key, _ = split_trajectory_key(row["uid"])
+        session_idx = int(session_key.rsplit("_", 1)[1])
         assert row["num_turns"] == expected_session_turns[(row["data_source"], session_idx)]
-        expected_score = (
-            1.0 if session_idx == 0 else min(-0.6, -1.0 + (row["num_turns"] - 2) / 2 * 0.1)
-        )
+        expected_score = 1.0 if session_idx == 0 else min(-0.6, -1.0 + (row["num_turns"] - 2) / 2 * 0.1)
         assert row["score"] == pytest.approx(expected_score)
     summary = summarize_validation_dump(
         rows, expected_n=n, expected_questions={source: [qid] for source, qid in expected_ids.items()}
@@ -859,11 +858,11 @@ def test_validate_dump_writes_data_source_and_question_id(tmp_path, monkeypatch)
 def test_validate_dump_writes_num_turns_and_reconciles_shaped_reward(tmp_path):
     """CPU-only regression test for PPOTrainer._validate dump num_turns without transfer_queue/torchtitan."""
     import ast
+    import os
+    import uuid
     from collections import defaultdict
     from concurrent.futures import ThreadPoolExecutor
-    import os
     from types import SimpleNamespace
-    import uuid
 
     repo_root = Path(verl.__file__).parent.parent
 
@@ -882,9 +881,7 @@ def test_validate_dump_writes_num_turns_and_reconciles_shaped_reward(tmp_path):
 
     # AST-extract PPOTrainer._validate and dump helpers from verl/trainer/ppo/v1/trainer_base.py
     tb_tree = ast.parse((repo_root / "verl/trainer/ppo/v1/trainer_base.py").read_text())
-    ppo_cls_node = next(
-        node for node in tb_tree.body if isinstance(node, ast.ClassDef) and node.name == "PPOTrainer"
-    )
+    ppo_cls_node = next(node for node in tb_tree.body if isinstance(node, ast.ClassDef) and node.name == "PPOTrainer")
     wanted = {
         "_validate",
         "_write_generations",
@@ -892,9 +889,7 @@ def test_validate_dump_writes_num_turns_and_reconciles_shaped_reward(tmp_path):
         "_init_dump_executor",
         "_shutdown_dump_executor",
     }
-    method_nodes = [
-        node for node in ppo_cls_node.body if isinstance(node, ast.FunctionDef) and node.name in wanted
-    ]
+    method_nodes = [node for node in ppo_cls_node.body if isinstance(node, ast.FunctionDef) and node.name in wanted]
     cls_def = ast.ClassDef(name="ExtractedPPOTrainer", bases=[], keywords=[], body=method_nodes, decorator_list=[])
     ast.fix_missing_locations(cls_def)
 
@@ -1025,10 +1020,9 @@ def test_validate_dump_writes_num_turns_and_reconciles_shaped_reward(tmp_path):
     by_session = {}
     for r in rows:
         assert "num_turns" in r
-        uid, sid, oidx = split_trajectory_key(r["uid"])
-        skey = f"{uid}_{sid}"
-        if skey not in by_session or oidx > by_session[skey][0]:
-            by_session[skey] = (oidx, r)
+        _, session_key, oidx = split_trajectory_key(r["uid"])
+        if session_key not in by_session or oidx > by_session[session_key][0]:
+            by_session[session_key] = (oidx, r)
     assert len(by_session) == 4
     for _, r in by_session.values():
         recomputed = retool_compute_score(

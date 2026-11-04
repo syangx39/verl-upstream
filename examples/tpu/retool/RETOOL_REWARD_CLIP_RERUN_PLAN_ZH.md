@@ -143,10 +143,11 @@
 ### 3.2 配置 C 5 步 Smoke 启动命令与 `DRY_RUN=1` 核验过的 `run_record.json`、`job_spec.json`、`jobset.yaml`
 
 `run_ray_jobset_v7x_nap.sh` 通过环境变量 `JOB_SCRIPT` 指定脚本（默认是 0.6B/30B GRPO 脚本），通过 `CODE_REF` 固定打包进 `code.tar.gz` 的 git commit（默认 `HEAD`，因此必须显式传入 `CODE_REF`），并通过 `WANDB_SECRET_NAME` / `WANDB_SECRET_KEY` 向 `ray-head` 容器注入 Kubernetes Secret（不经过 `JOBENV_*` 或 `job_spec.json`）。
-**注意**：`CODE_REF` 只决定打包上传到 GCS `code.tar.gz` 的代码版本，**不会替换当前 shell 执行的本地 `examples/tpu/gke/run_ray_jobset_v7x_nap.sh` 和 `v7x_nap/render.py`**。因此启动命令开头显式执行 `git merge-base --is-ancestor 00298962e462b2e260ad4c305d3181c49f01fe7d HEAD` 校验当前工作目录 checkout 已包含 launcher Secret 注入与 validation dump `num_turns` 修复。配置 C 的 5 步 smoke 完整启动命令如下：
+**注意**：`CODE_REF` 只决定打包上传到 GCS `code.tar.gz` 的代码版本，**不会替换当前 shell 执行的本地 `examples/tpu/gke/run_ray_jobset_v7x_nap.sh` 和 `v7x_nap/render.py`**。因此启动命令开头显式执行 `git merge-base --is-ancestor 00298962e462b2e260ad4c305d3181c49f01fe7d HEAD && test -z "$(git status --porcelain --untracked-files=no)"` 校验当前工作目录 checkout 已包含修复且没有未提交修改。配置 C 的 5 步 smoke 完整启动命令如下：
 
 ```bash
 git merge-base --is-ancestor 00298962e462b2e260ad4c305d3181c49f01fe7d HEAD && \
+test -z "$(git status --porcelain --untracked-files=no)" && \
 RUN_NAME=p3c-retool-smoke-01 \
 GCS_BUCKET=ubench-logs \
 RUN_ROOT=xiaotongyang/retool-v7x/runs \
@@ -309,7 +310,7 @@ bash examples/tpu/gke/run_ray_jobset_v7x_nap.sh \
   - **预约命名空间（`r-*`）**：不在 `TEAM_LIMITS` 中，由 `calendar_schedule_daemon.py` 按预约时间窗口（`start_time` 至 `end_time`）放行。
 - 单纯调大客户端脚本的 `DRIVER_TIMEOUT_MIN` **不会**延长集群 `time-limit-controller` 的驱逐上限。
 - **执行策略**：
-  1. **5 步 Smoke（`p3c-retool-smoke-01`）**：预计总耗时 `~30–40` 分钟，完全在 `priority-dev` 的 120 分钟上限之内。同时从 smoke 实测配置 C 在 `2 × 2x2x4` 上的准确单步耗时（`timing_s/step`）与生成吞吐。
+  1. **5 步 Smoke（`p3c-retool-smoke-01`）**：虽然 `TEST_FREQ=100`，[`trainer_base.py` L507-L516](../../verl/trainer/ppo/v1/trainer_base.py#L507-L516) 在 `is_last_step` 时仍会触发评估，因此包含 Step 0 和 Step 5 两次 `n=2` validation，预计总耗时 `~35–45` 分钟，完全在 `priority-dev` 的 120 分钟上限之内。同时从 smoke 实测配置 C 在 `2 × 2x2x4` 上的准确单步耗时（`timing_s/step`）与验证耗时。
   2. **25 步正式运行（`p3c-retool-rl-01`）**：根据 smoke 实测的单步耗时计算 25 步 + 评估所需总时长：
      - 若单次运行在 110 分钟以内，可在 `priority-dev` 直接运行；
      - 若需要 120–170 分钟，可在 `default`（180 分钟上限，视集群空闲借用情况）或申请 `r-*` 预约窗口运行；
@@ -338,7 +339,7 @@ bash examples/tpu/gke/run_ray_jobset_v7x_nap.sh \
    - 仅有 `Answer: 42` 无 `\boxed{}`（`num_turns=2`）→ `-1.0`（`strict_box_verify=True` 判错，区别于默认 scorer 的 `+1.0`）
    - `\boxed{42}` 后缀超过 100 字符（`num_turns=2`）→ `-1.0`
 3. **实际运行样本与验证集一致性检查（硬门槛，按每个独立 session 的最终 output 对账）**：
-   - **验证集（`validation/0.jsonl`，`expected_n=2`）**：多轮 agent 的一个 session（`{uid}_{session_id}`）可能产生多条 output（`{uid}_{session_id}_{output_index}`），并由最终 output（最大 `output_index`）承载该 session 的 reward，因此验证集 JSONL 行数不写死为 120 行。[`verl/trainer/ppo/v1/trainer_base.py` L1229-L1232](../../verl/trainer/ppo/v1/trainer_base.py#L1229-L1232) 已按 `session_final_indices` 将每个 session 的 `sample_turns` 写入 `validation/{step}.jsonl` 的 `num_turns` 字段（回归测试见 [`test_rollout_audit_on_cpu.py`](../../tests/trainer/ppo/v1/test_rollout_audit_on_cpu.py#L722-L1035)）。验收时使用 [`summarize_validation_dump`](../../verl/trainer/ppo/v1/rollout_audit.py#L992)（传入 `expected_n=2` 及 60 道预期题目的 `expected_questions`）校验 `complete == True` 且 `score_complete == True`（即 60 道预期题目 × 每题 2 个独立 session = 120 个完整 session），并取每个 session 的**最终 output**（`max(output_index)`），确认其记录的 `row["acc"]` 和 `row["score"]` 与离线调用 `retool_tpu.compute_score(data_source, row["output"], ground_truth, extra_info={"num_turns": row["num_turns"]})` 重算结果完全一致（`validation/0.jsonl` 的 `row["output"]` 已由 [`trainer_base.py` L1151](../../verl/trainer/ppo/v1/trainer_base.py#L1151) 以 `skip_special_tokens=True` 解码）。
+   - **验证集（`validation/0.jsonl` 与最后一歩触发的 `validation/5.jsonl`，`expected_n=2`）**：多轮 agent 的一个 session（`{uid}_{session_id}`）可能产生多条 output（`{uid}_{session_id}_{output_index}`），并由最终 output（最大 `output_index`）承载该 session 的 reward，因此验证集 JSONL 行数不写死为 120 行。[`verl/trainer/ppo/v1/trainer_base.py` L1229-L1232](../../verl/trainer/ppo/v1/trainer_base.py#L1229-L1232) 已按 `session_final_indices` 将每个 session 的 `sample_turns` 写入 `validation/{step}.jsonl` 的 `num_turns` 字段（回归测试见 [`test_rollout_audit_on_cpu.py`](../../tests/trainer/ppo/v1/test_rollout_audit_on_cpu.py#L722-L1035)）。验收时对 `validation/0.jsonl`（及 `validation/5.jsonl`）使用 [`summarize_validation_dump`](../../verl/trainer/ppo/v1/rollout_audit.py#L992)（传入 `expected_n=2` 及 60 道预期题目的 `expected_questions`）校验 `complete == True` 且 `score_complete == True`（即 60 道预期题目 × 每题 2 个独立 session = 120 个完整 session），并取每个 session 的**最终 output**（`max(output_index)`），确认其记录的 `row["acc"]` 和 `row["score"]` 与离线调用 `retool_tpu.compute_score(data_source, row["output"], ground_truth, extra_info={"num_turns": row["num_turns"]})` 重算结果完全一致（`validation/{step}.jsonl` 的 `row["output"]` 已由 [`trainer_base.py` L1151](../../verl/trainer/ppo/v1/trainer_base.py#L1151) 以 `skip_special_tokens=True` 解码）。
    - **训练审计样本（`rollout_audit/{1..5}.jsonl`，每步 8 个 session、共 40 个独立 session）**：按 `record["session"]` 分组并取每个 session 的**最终 output**（`max(output_index)`）。由于 `rollout_audit.py` 生成的 `record["response_text"]` 使用了 `skip_special_tokens=False`（保留了末尾 `<|im_end|>` 等特殊 token），而运行时 [`NaiveRewardManager`](../../verl/workers/reward_manager/naive.py#L119) 使用 `tokenizer.decode(valid_response_ids, skip_special_tokens=True)` 解码，因此离线重算必须先对 `record["response_ids"]` 执行完全相同的 `tokenizer.decode(record["response_ids"], skip_special_tokens=True)`，再调用 `retool_tpu.compute_score(..., extra_info={"num_turns": record["num_turns"]})`，确认重算的 `acc`、`pred`、`score` 与日志中的 `record["reward_extra_info"]["acc"]`、`record["reward_extra_info"]["pred"]` 及 `record["score"]` 100% 一致。
    - 注：`n=2` 随机验证集不一定恰好抽到“答错且多轮”的样本，因此**不要求验证集随机样本一定出现 shaped 分数**；实际验证集（120 个 session 最终 output）与训练抽样（40 个 session 最终 output）中命中 shaping（`-0.95 ~ -0.6`）的条数单独统计记录。
 4. **Raiden 权重同步与训练稳定性检查（硬门槛）**：

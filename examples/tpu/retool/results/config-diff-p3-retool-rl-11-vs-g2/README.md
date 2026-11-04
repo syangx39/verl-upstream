@@ -24,6 +24,8 @@ python examples/tpu/retool/results/config-diff-p3-retool-rl-11-vs-g2/diff_resolv
 | `schema` | 20 | keys that only one verl version has: rollout and reward-model quantization config objects (both off), `rollout.topk_log_probs` (GPU `0`), `algorithm.rollout_correction.score_centering` (GPU `False`), `distillation.distillation_loss.tail_mass_eps` (distillation not used) |
 | `review` | 0 | - |
 
-Every other key is equal, including the learning rate, `optim.clip_grad` (`0.088` on both sides, though the effective TorchTitan threshold is `1.0` on both), batch sizes, `n`, `max_turns`, response length, KL settings, clip ratios, rollout correction, validation `n`, sampling parameters and the reward config (`reward.custom_reward_function.path: None` on both sides). The training and validation files are the same datasets; only their path prefix differs (listed under `paths/naming`).
+The `platform` and `token-budget` rows are system differences, not differences shown to be harmless: attention kernels, precision, parallel layout, vLLM batching and micro-batch splitting can change numerics and sampling. Section 6 of the re-run plan lists what to check.
+
+Every other key is equal, including the learning rate, `optim.clip_grad` (`0.088` on both sides, though the effective TorchTitan threshold is `1.0` on both), batch sizes, `n`, `multi_turn.max_user_turns` and `multi_turn.max_assistant_turns` (both `8`), response length, KL settings, clip ratios, rollout correction, validation `n`, sampling parameters and the reward config (`reward.custom_reward_function.path: None` on both sides). The training and validation files are the same datasets; only their path prefix differs (listed under `paths/naming`).
 
 The `schema` rows only show that the two verl versions have different config fields; they do not show that the algorithm code is the same. That still has to be checked in the source of the two commits (see the re-run plan, section 6).

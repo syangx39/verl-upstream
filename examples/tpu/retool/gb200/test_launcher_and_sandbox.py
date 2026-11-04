@@ -543,6 +543,36 @@ exit 0
                     f"uid-obj-{w + 3}",
                 )
 
+    def test_gpus_per_node_validation_and_pod_resource_matching(self):
+        """Verify GPUS_PER_NODE rejects >4 or <1 and renders matching Pod GPU requests/limits and EXPECT_GIT_SHA."""
+        launcher = REPO_ROOT / "examples" / "tpu" / "retool" / "gb200" / "run_ray_jobset_gb200.sh"
+        with tempfile.TemporaryDirectory() as td:
+            bin_dir = self._make_mock_bins(Path(td), fail_on_create_idx=99)
+            for bad_gpus in ("0", "5", "8", "abc"):
+                env = os.environ.copy()
+                env.update(
+                    {
+                        "PATH": f"{bin_dir}:{env.get('PATH', '')}",
+                        "RUN_NAME": "bad-gpu-run",
+                        "GPUS_PER_NODE": bad_gpus,
+                        "KUBE_CONTEXT": "mock-ctx",
+                        "NODEPOOL": "mock-pool",
+                        "GCS_BUCKET": "mock-bucket",
+                        "RUN_ROOT": "mock-runs",
+                        "INPUTS_ROOT": "mock-inputs",
+                        "IMAGE": "mock-image:latest",
+                    }
+                )
+                res = subprocess.run(["bash", str(launcher)], env=env, capture_output=True, text=True)
+                self.assertNotEqual(res.returncode, 0)
+                self.assertIn("GPUS_PER_NODE must be an integer between 1 and 4", res.stderr)
+
+        src = launcher.read_text(encoding="utf-8")
+        self.assertEqual(src.count('nvidia.com/gpu: "${GPUS_PER_NODE}"'), 4)
+        self.assertNotIn('nvidia.com/gpu: "4"', src)
+        self.assertEqual(src.count("- name: EXPECT_GIT_SHA"), 2)
+
+
 
 class TestG0ManifestCompositeHashCheck(unittest.TestCase):
     """Verify verify_g0_gb200.verify_checkpoint_manifest checks --expect-composite-sha256."""

@@ -47,8 +47,8 @@ if ! [[ "${NUM_NODES}" =~ ^[0-9]+$ ]] || [[ "${NUM_NODES}" -lt 2 ]]; then
     echo "ERROR: NUM_NODES must be an integer >= 2 (got NUM_NODES='${NUM_NODES}')" >&2
     exit 1
 fi
-if ! [[ "${GPUS_PER_NODE}" =~ ^[0-9]+$ ]] || [[ "${GPUS_PER_NODE}" -lt 1 ]]; then
-    echo "ERROR: GPUS_PER_NODE must be an integer >= 1 (got GPUS_PER_NODE='${GPUS_PER_NODE}')" >&2
+if ! [[ "${GPUS_PER_NODE}" =~ ^[0-9]+$ ]] || [[ "${GPUS_PER_NODE}" -lt 1 ]] || [[ "${GPUS_PER_NODE}" -gt 4 ]]; then
+    echo "ERROR: GPUS_PER_NODE must be an integer between 1 and 4 on 4xGB200 nodes (got GPUS_PER_NODE='${GPUS_PER_NODE}')" >&2
     exit 1
 fi
 NUM_WORKERS=$((NUM_NODES - 1))
@@ -67,6 +67,7 @@ RUN_DIR="/data/${RUN_ROOT}/${RUN_NAME}"
 INPUTS_DIR="/data/${INPUTS_ROOT}"
 TENSORBOARD_DIR="${TENSORBOARD_DIR:-${JOBENV_TENSORBOARD_DIR:-${RUN_DIR}/tensorboard}}"
 EXPECT_CHECKPOINT_SHA256="${EXPECT_CHECKPOINT_SHA256:-${JOBENV_EXPECT_CHECKPOINT_SHA256:-59247a00c13f2364a12aab5ab6b88b6d971d59ff643c57aad8ac4e55a71231b0}}"
+EXPECT_GIT_SHA="${EXPECT_GIT_SHA:-${JOBENV_EXPECT_GIT_SHA:-}}"
 
 EXTRA_ARGS=()
 for arg in "$@"; do
@@ -79,7 +80,7 @@ JOBENV_YAML=""
 while IFS='=' read -r name val; do
     if [[ "${name}" == JOBENV_* ]]; then
         env_key="${name#JOBENV_}"
-        if [[ "${env_key}" == "SANDBOX_FUSION_HOST" || "${env_key}" == "SANDBOX_FUSION_PORT" || "${env_key}" == "SANDBOX_FUSION_URL" || "${env_key}" == "TENSORBOARD_DIR" || "${env_key}" == "EXPECT_CHECKPOINT_SHA256" ]]; then
+        if [[ "${env_key}" == "SANDBOX_FUSION_HOST" || "${env_key}" == "SANDBOX_FUSION_PORT" || "${env_key}" == "SANDBOX_FUSION_URL" || "${env_key}" == "TENSORBOARD_DIR" || "${env_key}" == "EXPECT_CHECKPOINT_SHA256" || "${env_key}" == "EXPECT_GIT_SHA" ]]; then
             continue
         fi
         escaped_val="${val//\"/\\\"}"
@@ -410,17 +411,19 @@ spec:
       value: "${TENSORBOARD_DIR}"
     - name: EXPECT_CHECKPOINT_SHA256
       value: "${EXPECT_CHECKPOINT_SHA256}"
+    - name: EXPECT_GIT_SHA
+      value: "${EXPECT_GIT_SHA}"
 ${JOBENV_YAML}    resources:
       claims:
       - name: compute-domain-channel
       requests:
         cpu: "64"
         memory: 500Gi
-        nvidia.com/gpu: "4"
+        nvidia.com/gpu: "${GPUS_PER_NODE}"
       limits:
         cpu: "120"
         memory: 750Gi
-        nvidia.com/gpu: "4"
+        nvidia.com/gpu: "${GPUS_PER_NODE}"
     volumeMounts:
     - name: dshm
       mountPath: /dev/shm
@@ -438,6 +441,11 @@ ${JOBENV_YAML}    resources:
         git checkout -f "\${EXPECT_GIT_SHA}"
       fi
       nvidia-smi -L > "${RUN_DIR}/env/\${HOST_TAG}-nvidia-smi-L.txt"
+      ACTUAL_GPUS="\$(grep -c '^GPU ' "${RUN_DIR}/env/\${HOST_TAG}-nvidia-smi-L.txt" || true)"
+      if [[ "\${ACTUAL_GPUS}" -ne ${GPUS_PER_NODE} ]]; then
+        echo "ERROR: expected GPUS_PER_NODE=${GPUS_PER_NODE} visible GPUs on \${HOST_TAG}, but nvidia-smi reported \${ACTUAL_GPUS}" >&2
+        exit 1
+      fi
       nvidia-smi topo -m > "${RUN_DIR}/env/\${HOST_TAG}-topo.txt" || true
       python3 examples/tpu/retool/gb200/verify_venv_lock.py \
         /workspace/verl-pin \
@@ -448,7 +456,8 @@ ${JOBENV_YAML}    resources:
         --require-torchtitan \
         --require-rl-moe-helper \
         --require-gpu \
-        --require-gb200 > "${RUN_DIR}/env/\${HOST_TAG}-precheck.json"
+        --require-gb200 > "${RUN_DIR}/env/${LAUNCH_ID}-\${HOST_TAG}-precheck.json"
+      cp -f "${RUN_DIR}/env/${LAUNCH_ID}-\${HOST_TAG}-precheck.json" "${RUN_DIR}/env/\${HOST_TAG}-precheck.json"
 
       MODEL_SRC="\${MODEL_SRC_PATH:-/data/runs/p2-retool-sft-01/checkpoint/global_step_372/huggingface}"
       MODEL_DST="\${MODEL_PATH:-/dev/shm/models/multiturn-sft-qwen3-30b-a3b-tpu7x}"
@@ -617,17 +626,19 @@ spec:
       value: "${TENSORBOARD_DIR}"
     - name: EXPECT_CHECKPOINT_SHA256
       value: "${EXPECT_CHECKPOINT_SHA256}"
+    - name: EXPECT_GIT_SHA
+      value: "${EXPECT_GIT_SHA}"
 ${JOBENV_YAML}    resources:
       claims:
       - name: compute-domain-channel
       requests:
         cpu: "64"
         memory: 500Gi
-        nvidia.com/gpu: "4"
+        nvidia.com/gpu: "${GPUS_PER_NODE}"
       limits:
         cpu: "120"
         memory: 750Gi
-        nvidia.com/gpu: "4"
+        nvidia.com/gpu: "${GPUS_PER_NODE}"
     volumeMounts:
     - name: dshm
       mountPath: /dev/shm
@@ -645,6 +656,11 @@ ${JOBENV_YAML}    resources:
         git checkout -f "\${EXPECT_GIT_SHA}"
       fi
       nvidia-smi -L > "${RUN_DIR}/env/\${HOST_TAG}-nvidia-smi-L.txt"
+      ACTUAL_GPUS="\$(grep -c '^GPU ' "${RUN_DIR}/env/\${HOST_TAG}-nvidia-smi-L.txt" || true)"
+      if [[ "\${ACTUAL_GPUS}" -ne ${GPUS_PER_NODE} ]]; then
+        echo "ERROR: expected GPUS_PER_NODE=${GPUS_PER_NODE} visible GPUs on \${HOST_TAG}, but nvidia-smi reported \${ACTUAL_GPUS}" >&2
+        exit 1
+      fi
       nvidia-smi topo -m > "${RUN_DIR}/env/\${HOST_TAG}-topo.txt" || true
       python3 examples/tpu/retool/gb200/verify_venv_lock.py \
         /workspace/verl-pin \
@@ -655,7 +671,8 @@ ${JOBENV_YAML}    resources:
         --require-torchtitan \
         --require-rl-moe-helper \
         --require-gpu \
-        --require-gb200 > "${RUN_DIR}/env/\${HOST_TAG}-precheck.json"
+        --require-gb200 > "${RUN_DIR}/env/${LAUNCH_ID}-\${HOST_TAG}-precheck.json"
+      cp -f "${RUN_DIR}/env/${LAUNCH_ID}-\${HOST_TAG}-precheck.json" "${RUN_DIR}/env/\${HOST_TAG}-precheck.json"
 
       ray start --head --port=6379 --dashboard-port=8265 --num-gpus=${GPUS_PER_NODE}
 
@@ -685,11 +702,11 @@ ${JOBENV_YAML}    resources:
         tar -xzf "\${CACHE_DIR}/vllm_cache_sm100a.tar.gz" -C /root/.cache || true
       fi
 
-      # Wait for ${NUM_NODES} nodes (${TOTAL_GPUS} GPUs) and all nodes' G0 manifest files matching this LAUNCH_ID; fail explicitly on timeout
+      # Wait for ${NUM_NODES} nodes (${TOTAL_GPUS} GPUs) and all nodes' precheck + G0 manifest files matching this LAUNCH_ID; fail explicitly on timeout
       CLUSTER_G0_READY=0
       for _ in \$(seq 1 200); do
-        if ray status 2>/dev/null | grep -q "${TOTAL_GPUS}.0 GPU" && [[ \$(ls -1 "${RUN_DIR}/env/${LAUNCH_ID}-"*-g0-verify.json 2>/dev/null | wc -l) -ge ${NUM_NODES} ]]; then
-          python3 -c 'import glob, json, sys; files = sorted(glob.glob(sys.argv[1] + "/" + sys.argv[2] + "-*-g0-verify.json")); expected = int(sys.argv[3]); digests = {f: json.load(open(f))["g0_checkpoint_manifest"]["composite_sha256"] for f in files}; print("[g0-cross-node] digests:", digests, flush=True); assert len(files) >= expected and len(set(digests.values())) == 1, f"Cross-node manifest mismatch (expected >= {expected}): {digests}"' "${RUN_DIR}/env" "${LAUNCH_ID}" "${NUM_NODES}"
+        if ray status 2>/dev/null | grep -q "${TOTAL_GPUS}.0 GPU" && [[ \$(ls -1 "${RUN_DIR}/env/${LAUNCH_ID}-"*-g0-verify.json 2>/dev/null | wc -l) -ge ${NUM_NODES} ]] && [[ \$(ls -1 "${RUN_DIR}/env/${LAUNCH_ID}-"*-precheck.json 2>/dev/null | wc -l) -ge ${NUM_NODES} ]]; then
+          python3 -c 'import glob, json, sys; env_dir, lid, expected, expect_sha = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]; g0_files = sorted(glob.glob(f"{env_dir}/{lid}-*-g0-verify.json")); pre_files = sorted(glob.glob(f"{env_dir}/{lid}-*-precheck.json")); digests = {f: json.load(open(f))["g0_checkpoint_manifest"]["composite_sha256"] for f in g0_files}; shas = {f: json.load(open(f)).get("git_sha") for f in pre_files}; print("[g0-cross-node] digests:", digests, "git_shas:", shas, flush=True); assert len(g0_files) >= expected and len(set(digests.values())) == 1, f"Cross-node manifest mismatch (expected >= {expected}): {digests}"; assert len(pre_files) >= expected and len(set(shas.values())) == 1, f"Cross-node git_sha mismatch (expected >= {expected}): {shas}"; assert not expect_sha or next(iter(shas.values())) == expect_sha, f"Cross-node git_sha {shas} != EXPECT_GIT_SHA {expect_sha}"' "${RUN_DIR}/env" "${LAUNCH_ID}" "${NUM_NODES}" "\${EXPECT_GIT_SHA:-}"
           CLUSTER_G0_READY=1
           break
         fi

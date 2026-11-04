@@ -367,6 +367,27 @@ spec:
     targetPort: 8265
 EOF
 
+NODE_AFFINITY_YAML=""
+if [[ -n "${EXCLUDE_NODES:-}" ]]; then
+    NODE_AFFINITY_YAML="$(python3 -c '
+import sys
+nodes = [n.strip() for n in sys.argv[1].split(",") if n.strip()]
+if nodes:
+    print("    nodeAffinity:")
+    print("      requiredDuringSchedulingIgnoredDuringExecution:")
+    print("        nodeSelectorTerms:")
+    print("        - matchExpressions:")
+    print("          - key: kubernetes.io/hostname")
+    print("            operator: NotIn")
+    print("            values:")
+    for n in nodes:
+        print(f"            - {n}")
+' "${EXCLUDE_NODES}")"
+    if [[ -n "${NODE_AFFINITY_YAML}" ]]; then
+        NODE_AFFINITY_YAML="${NODE_AFFINITY_YAML}"$'\n'
+    fi
+fi
+
 for ((w = 0; w < NUM_WORKERS; w++)); do
     WORKER_POD_NAME="${WORKER_POD_NAMES[$w]}"
     WORKER_LABEL="worker-${w}"
@@ -390,7 +411,7 @@ spec:
   nodeSelector:
     cloud.google.com/gke-nodepool: ${NODEPOOL}
   affinity:
-    podAntiAffinity:
+${NODE_AFFINITY_YAML}    podAntiAffinity:
       requiredDuringSchedulingIgnoredDuringExecution:
       - labelSelector:
           matchExpressions:
@@ -485,6 +506,11 @@ ${WANDB_EXTRA_ENV}${JOBENV_YAML}    resources:
         echo "ERROR: expected GPUS_PER_NODE=${GPUS_PER_NODE} visible GPUs on \${HOST_TAG}, but nvidia-smi reported \${ACTUAL_GPUS}" >&2
         exit 1
       fi
+      UNCORR_ECC="\$(nvidia-smi --query-gpu=ecc.errors.uncorrected.volatile.total --format=csv,noheader,nounits 2>/dev/null | awk '{s+=\$1} END {print s+0}')"
+      if [[ "\${UNCORR_ECC}" -gt 0 ]]; then
+        echo "ERROR: detected \${UNCORR_ECC} uncorrected volatile GPU ECC error(s) on \${HOST_TAG}; failing fast" >&2
+        exit 1
+      fi
       nvidia-smi topo -m > "${RUN_DIR}/env/\${HOST_TAG}-topo.txt" || true
       python3 examples/tpu/retool/gb200/verify_venv_lock.py \
         /workspace/verl-pin \
@@ -519,7 +545,6 @@ ${WANDB_EXTRA_ENV}${JOBENV_YAML}    resources:
       mkdir -p /root/.cache
       if [[ -f "\${CACHE_DIR}/flashinfer_cache_sm100a.tar.gz" ]]; then
         tar -xzf "\${CACHE_DIR}/flashinfer_cache_sm100a.tar.gz" -C /root/.cache || true
-        python3 -c 'import os, time; from pathlib import Path; root = Path("/root/.cache/flashinfer"); t_o = int(time.time()) + 86400; t_so = t_o + 1; [os.utime(p, (t_o, t_o)) for p in root.rglob("*.o")]; [os.utime(p, (t_so, t_so)) for p in root.rglob("*.so")]; [nlog.write_text("\n".join(["\t".join(parts[:2] + [str(Path(parts[3]).stat().st_mtime_ns if Path(parts[3]).exists() else parts[2])] + parts[3:]) if (len(parts := ln.split("\t")) == 5 and not ln.startswith("#")) else ln for ln in nlog.read_text(encoding="utf-8").splitlines()]) + "\n", encoding="utf-8") for nlog in root.rglob(".ninja_log")]' || true
       fi
       if [[ -f "\${CACHE_DIR}/vllm_cache_sm100a.tar.gz" ]]; then
         tar -xzf "\${CACHE_DIR}/vllm_cache_sm100a.tar.gz" -C /root/.cache || true
@@ -613,7 +638,7 @@ spec:
   nodeSelector:
     cloud.google.com/gke-nodepool: ${NODEPOOL}
   affinity:
-    podAntiAffinity:
+${NODE_AFFINITY_YAML}    podAntiAffinity:
       requiredDuringSchedulingIgnoredDuringExecution:
       - labelSelector:
           matchExpressions:
@@ -708,6 +733,11 @@ ${WANDB_EXTRA_ENV}${JOBENV_YAML}    resources:
         echo "ERROR: expected GPUS_PER_NODE=${GPUS_PER_NODE} visible GPUs on \${HOST_TAG}, but nvidia-smi reported \${ACTUAL_GPUS}" >&2
         exit 1
       fi
+      UNCORR_ECC="\$(nvidia-smi --query-gpu=ecc.errors.uncorrected.volatile.total --format=csv,noheader,nounits 2>/dev/null | awk '{s+=\$1} END {print s+0}')"
+      if [[ "\${UNCORR_ECC}" -gt 0 ]]; then
+        echo "ERROR: detected \${UNCORR_ECC} uncorrected volatile GPU ECC error(s) on \${HOST_TAG}; failing fast" >&2
+        exit 1
+      fi
       nvidia-smi topo -m > "${RUN_DIR}/env/\${HOST_TAG}-topo.txt" || true
       python3 examples/tpu/retool/gb200/verify_venv_lock.py \
         /workspace/verl-pin \
@@ -744,7 +774,6 @@ ${WANDB_EXTRA_ENV}${JOBENV_YAML}    resources:
       mkdir -p /root/.cache
       if [[ -f "\${CACHE_DIR}/flashinfer_cache_sm100a.tar.gz" ]]; then
         tar -xzf "\${CACHE_DIR}/flashinfer_cache_sm100a.tar.gz" -C /root/.cache || true
-        python3 -c 'import os, time; from pathlib import Path; root = Path("/root/.cache/flashinfer"); t_o = int(time.time()) + 86400; t_so = t_o + 1; [os.utime(p, (t_o, t_o)) for p in root.rglob("*.o")]; [os.utime(p, (t_so, t_so)) for p in root.rglob("*.so")]; [nlog.write_text("\n".join(["\t".join(parts[:2] + [str(Path(parts[3]).stat().st_mtime_ns if Path(parts[3]).exists() else parts[2])] + parts[3:]) if (len(parts := ln.split("\t")) == 5 and not ln.startswith("#")) else ln for ln in nlog.read_text(encoding="utf-8").splitlines()]) + "\n", encoding="utf-8") for nlog in root.rglob(".ninja_log")]' || true
       fi
       if [[ -f "\${CACHE_DIR}/vllm_cache_sm100a.tar.gz" ]]; then
         tar -xzf "\${CACHE_DIR}/vllm_cache_sm100a.tar.gz" -C /root/.cache || true

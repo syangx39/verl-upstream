@@ -456,8 +456,11 @@ ${JOBENV_YAML}    resources:
         --require-torchtitan \
         --require-rl-moe-helper \
         --require-gpu \
-        --require-gb200 > "${RUN_DIR}/env/${LAUNCH_ID}-\${HOST_TAG}-precheck.json"
+        --require-gb200 \
+        --output-json "${RUN_DIR}/env/${LAUNCH_ID}-\${HOST_TAG}-precheck.json" \
+        > "${RUN_DIR}/env/${LAUNCH_ID}-\${HOST_TAG}-precheck.log"
       cp -f "${RUN_DIR}/env/${LAUNCH_ID}-\${HOST_TAG}-precheck.json" "${RUN_DIR}/env/\${HOST_TAG}-precheck.json"
+      cp -f "${RUN_DIR}/env/${LAUNCH_ID}-\${HOST_TAG}-precheck.log" "${RUN_DIR}/env/\${HOST_TAG}-precheck.log"
 
       MODEL_SRC="\${MODEL_SRC_PATH:-/data/runs/p2-retool-sft-01/checkpoint/global_step_372/huggingface}"
       MODEL_DST="\${MODEL_PATH:-/dev/shm/models/multiturn-sft-qwen3-30b-a3b-tpu7x}"
@@ -671,8 +674,11 @@ ${JOBENV_YAML}    resources:
         --require-torchtitan \
         --require-rl-moe-helper \
         --require-gpu \
-        --require-gb200 > "${RUN_DIR}/env/${LAUNCH_ID}-\${HOST_TAG}-precheck.json"
+        --require-gb200 \
+        --output-json "${RUN_DIR}/env/${LAUNCH_ID}-\${HOST_TAG}-precheck.json" \
+        > "${RUN_DIR}/env/${LAUNCH_ID}-\${HOST_TAG}-precheck.log"
       cp -f "${RUN_DIR}/env/${LAUNCH_ID}-\${HOST_TAG}-precheck.json" "${RUN_DIR}/env/\${HOST_TAG}-precheck.json"
+      cp -f "${RUN_DIR}/env/${LAUNCH_ID}-\${HOST_TAG}-precheck.log" "${RUN_DIR}/env/\${HOST_TAG}-precheck.log"
 
       ray start --head --port=6379 --dashboard-port=8265 --num-gpus=${GPUS_PER_NODE}
 
@@ -706,7 +712,7 @@ ${JOBENV_YAML}    resources:
       CLUSTER_G0_READY=0
       for _ in \$(seq 1 200); do
         if ray status 2>/dev/null | grep -q "${TOTAL_GPUS}.0 GPU" && [[ \$(ls -1 "${RUN_DIR}/env/${LAUNCH_ID}-"*-g0-verify.json 2>/dev/null | wc -l) -ge ${NUM_NODES} ]] && [[ \$(ls -1 "${RUN_DIR}/env/${LAUNCH_ID}-"*-precheck.json 2>/dev/null | wc -l) -ge ${NUM_NODES} ]]; then
-          python3 -c 'import glob, json, sys; env_dir, lid, expected, expect_sha = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]; g0_files = sorted(glob.glob(f"{env_dir}/{lid}-*-g0-verify.json")); pre_files = sorted(glob.glob(f"{env_dir}/{lid}-*-precheck.json")); digests = {f: json.load(open(f))["g0_checkpoint_manifest"]["composite_sha256"] for f in g0_files}; shas = {f: json.load(open(f)).get("git_sha") for f in pre_files}; print("[g0-cross-node] digests:", digests, "git_shas:", shas, flush=True); assert len(g0_files) >= expected and len(set(digests.values())) == 1, f"Cross-node manifest mismatch (expected >= {expected}): {digests}"; assert len(pre_files) >= expected and len(set(shas.values())) == 1, f"Cross-node git_sha mismatch (expected >= {expected}): {shas}"; assert not expect_sha or next(iter(shas.values())) == expect_sha, f"Cross-node git_sha {shas} != EXPECT_GIT_SHA {expect_sha}"' "${RUN_DIR}/env" "${LAUNCH_ID}" "${NUM_NODES}" "\${EXPECT_GIT_SHA:-}"
+          python3 -c 'import glob, json, sys; env_dir, lid, expected, expect_sha = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]; g0_files = sorted(glob.glob(f"{env_dir}/{lid}-*-g0-verify.json")); pre_files = sorted(glob.glob(f"{env_dir}/{lid}-*-precheck.json")); digests = {f: json.load(open(f))["g0_checkpoint_manifest"]["composite_sha256"] for f in g0_files}; pre_records = {f: json.load(open(f)) for f in pre_files}; shas = {f: rec.get("git_sha") for f, rec in pre_records.items()}; statuses = {f: rec.get("status") for f, rec in pre_records.items()}; print("[g0-cross-node] digests:", digests, "git_shas:", shas, flush=True); assert len(g0_files) >= expected and len(set(digests.values())) == 1, f"Cross-node manifest mismatch (expected >= {expected}): {digests}"; assert len(pre_files) >= expected and set(statuses.values()) == {"PASS"} and None not in shas.values() and len(set(shas.values())) == 1, f"Cross-node precheck/git_sha mismatch (expected >= {expected}): statuses={statuses} shas={shas}"; assert not expect_sha or next(iter(shas.values())) == expect_sha, f"Cross-node git_sha {shas} != EXPECT_GIT_SHA {expect_sha}"' "${RUN_DIR}/env" "${LAUNCH_ID}" "${NUM_NODES}" "\${EXPECT_GIT_SHA:-}"
           CLUSTER_G0_READY=1
           break
         fi

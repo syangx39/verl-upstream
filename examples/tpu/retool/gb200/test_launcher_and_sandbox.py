@@ -17,6 +17,7 @@
 import asyncio
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -515,7 +516,7 @@ exit 0
         """Verify NUM_NODES=16 (64 GPUs) creates worker-0..worker-14 and cleans up all created pods on failure."""
         launcher = REPO_ROOT / "examples" / "tpu" / "retool" / "gb200" / "run_ray_jobset_gb200.sh"
         with tempfile.TemporaryDirectory() as td:
-            # Objects: 1=CD, 2=Service, 3..17=worker-0..worker-14, 18=head. Fail on 18 (head) after all 15 workers created.
+            # Objects: 1=CD, 2=Service, 3..17=worker-0..worker-14, 18=head. Fail on 18 (head).
             bin_dir = self._make_mock_bins(Path(td), fail_on_create_idx=18)
             env = os.environ.copy()
             env.update(
@@ -535,7 +536,7 @@ exit 0
             res = subprocess.run(["bash", str(launcher)], env=env, capture_output=True, text=True)
             self.assertNotEqual(res.returncode, 0)
             deleted = dict(_MockKubeProxyHandler.deletes)
-            # Should delete CD (uid-obj-1), Service (uid-obj-2), and 15 workers worker-0..worker-14 (uid-obj-3..uid-obj-17)
+            # Delete CD (uid-obj-1), Service (uid-obj-2), and 15 workers worker-0..worker-14 (uid-obj-3..uid-obj-17).
             self.assertEqual(len(deleted), 17, f"Expected 17 atomic deletes for NUM_NODES=16, got {len(deleted)}")
             for w in range(15):
                 self.assertEqual(
@@ -571,6 +572,67 @@ exit 0
         self.assertEqual(src.count('nvidia.com/gpu: "${GPUS_PER_NODE}"'), 4)
         self.assertNotIn('nvidia.com/gpu: "4"', src)
         self.assertEqual(src.count("- name: EXPECT_GIT_SHA"), 2)
+
+    def test_precheck_json_emission_and_cross_node_readiness_parsing(self):
+        """Verify verify_venv_lock writes structured JSON and the launcher readiness snippet parses it end-to-end."""
+        from examples.tpu.retool.gb200 import verify_venv_lock
+
+        launcher = REPO_ROOT / "examples" / "tpu" / "retool" / "gb200" / "run_ray_jobset_gb200.sh"
+        src = launcher.read_text(encoding="utf-8")
+        self.assertEqual(
+            src.count('--output-json "${RUN_DIR}/env/${LAUNCH_ID}-\\${HOST_TAG}-precheck.json"'),
+            2,
+        )
+        m = re.search(r"python3 -c '([^']+)' \"\$\{RUN_DIR\}/env\"", src)
+        self.assertIsNotNone(m, "Failed to extract cross-node readiness Python snippet from launcher")
+        readiness_code = m.group(1)
+
+        with tempfile.TemporaryDirectory() as td:
+            env_dir = Path(td)
+            lid = "launch-001"
+            expected_sha = "a2cbde47ba729d0cba7e881da1692df20d8e05e4"
+            lock_sha = "df508db0b957fa181c229fb75885cd3863cb651fd5233d0fa5af95e990bda0be"
+            comp_sha = "1" * 64
+
+            for host in ("head", "worker-0"):
+                verify_venv_lock.write_precheck_json(
+                    str(env_dir / f"{lid}-{host}-precheck.json"),
+                    repo="/workspace/verl-pin",
+                    head_sha=expected_sha,
+                    lock_sha=lock_sha,
+                    expect_git_sha=expected_sha,
+                    expect_lock_sha256=lock_sha,
+                    checked_packages={"torch": "2.13.0+cu130", "vllm": "0.32.0"},
+                )
+                (env_dir / f"{lid}-{host}-g0-verify.json").write_text(
+                    json.dumps({"g0_checkpoint_manifest": {"composite_sha256": comp_sha}}),
+                    encoding="utf-8",
+                )
+
+            ok_res = subprocess.run(
+                [sys.executable, "-c", readiness_code, str(env_dir), lid, "2", expected_sha],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(ok_res.returncode, 0, msg=ok_res.stderr)
+            self.assertIn(expected_sha, ok_res.stdout)
+
+            # Mismatched EXPECT_GIT_SHA must fail
+            bad_expect = subprocess.run(
+                [sys.executable, "-c", readiness_code, str(env_dir), lid, "2", "deadbeef" * 5],
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(bad_expect.returncode, 0)
+
+            # Plain-text non-JSON in *-precheck.json must fail with JSONDecodeError
+            (env_dir / f"{lid}-worker-0-precheck.json").write_text("plain text output\n", encoding="utf-8")
+            bad_json = subprocess.run(
+                [sys.executable, "-c", readiness_code, str(env_dir), lid, "2", expected_sha],
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(bad_json.returncode, 0)
 
 
 

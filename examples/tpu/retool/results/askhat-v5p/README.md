@@ -7,12 +7,12 @@
 
 ## 结论速览
 
-1. **四条 RL 线在 W&B 里记录的 SFT 起点和超参相同，配置上的区别只在并行方式**（§2）。不过每次提交的代码包不完全一样（§2.2 的“Ray 代码包”列）。它们的 reward 曲线基本重合（§4），可以把四条线看成同一配置的四次重复，用来估计噪声。
+1. **四条 RL 线记录了相同的 SFT 路径和部分关键超参**（§2）；checkpoint 内容尚未核对。它们的并行方式、部分资源规模和代码包不同，部分 run 的恢复关系也是推断（§2.3）。reward 曲线走势接近（§4），但不能当作同配置的四次独立重复来估计噪声。
 2. **评估结果**（每题采样 8 次，AIME 每年 30 题）：Step 25 时 AIME 2024 在 56–60%，AIME 2025 在 39–47%。Step 50 之后不再明显上升，基本在 base 模型（没做 SFT 的原始 Qwen3-30B-A3B）附近波动。具体数字见 §3 的“关键数字”。
-3. **单个评估点的噪声不小**：同一步上四条线之间的极差，AIME 2024 是 3.75 pp，AIME 2025 是 7.92 pp（Step 25）。同一条线相邻两个评估点也能差 7–8 pp，例如 `cp1-opt` 的 AIME 2024 从 step 75 到 100 是 72.50% → 65.00%，`cp1-pr115` 的 AIME 2025 从 step 75 到 100 是 57.08% → 49.17%。所以比较单个评估点时要考虑这个幅度。
+3. **评估结果有明显的观察波动**：Step 25 四条线之间的极差，AIME 2024 是 3.75 pp，AIME 2025 是 7.92 pp。同一条线相邻两个评估点也能差 7–8 pp，例如 `cp1-opt` 的 AIME 2024 从 step 75 到 100 是 72.50% → 65.00%，`cp1-pr115` 的 AIME 2025 从 step 75 到 100 是 57.08% → 49.17%。这些差异混合了训练、配置、恢复和评估采样的影响，不能直接作为评估噪声或 parity 容差。
 4. **训练动态**：训练 reward 在前 25 步从约 −0.3 升到 +0.48，之后缓慢升到 +0.66–0.70；平均响应长度从约 2K token 涨到约 5.7–6.0K token；`num_turns/mean` 从约 8.6 降到约 6.5。
-5. **速度**：并行方式主要影响速度。扣掉 checkpoint 保存时间后，`cp1-pr115` 和 `cp1-pr115-async` 每步约 250–455 s，`cp2` 和 `cp1-opt` 每步约 660–1,400 s。同步保存一次完整 checkpoint（model + optimizer + extra）约 1,400 s。开了 `async_save` 的 `zyrnkte8` 每次只阻塞约 55 s，但它跑的代码和其他 run 不同，在我们的 fork 里只设 `async_save=True` 得不到这个效果，反而会让自动恢复失效（§2.4）。
-6. **与我们的对照**（§6，仅供参考）：我们 GB200 64 卡 25 步的 run（用我们自己的 SFT，每题采样 30 次）在 Step 25 是 AIME 2024 54.00% / AIME 2025 41.78%。AIME 2025 落在 Askhat 四条线的范围内；AIME 2024 比范围下限低 2.25 pp，这个差距小于 Askhat 自己四条线之间的极差（3.75 pp）。
+5. **速度**：不同运行记录的步时差异较大，无法仅凭这些 run 归因于并行方式。扣掉 checkpoint 保存时间后，`cp1-pr115` 和 `cp1-pr115-async` 每步约 250–455 s，`cp2` 和 `cp1-opt` 每步约 660–1,400 s。配置为同步保存 model + optimizer + extra 的运行，记录的单次保存耗时约 1,400 s。开了 `async_save` 的 `zyrnkte8` 每次只阻塞约 55 s，但它跑的代码和其他 run 不同，在我们的 fork 里只设 `async_save=True` 得不到这个效果，反而会让自动恢复失效（§2.4）。
+6. **与我们的对照**（§6，仅供参考）：我们 GB200 64 卡 25 步的 run（用我们自己的 SFT，每题采样 30 次）在 Step 25 是 AIME 2024 54.00% / AIME 2025 41.78%。AIME 2025 落在 Askhat 四条线的范围内；AIME 2024 比范围下限低 2.25 pp。不同 run 的配置、checkpoint 和采样数尚未严格对齐，这个数值差异不能单独作为 parity 判断。
 
 ## 1. Run 总览
 
@@ -35,15 +35,15 @@
 | [`4fl4zl1d`](https://wandb.ai/google-trellis/verl-torchtpu-grpo-test/runs/4fl4zl1d) | `retool-eval-base-qwen3-30b-a3b-v5p-n8` | base 模型评估 | finished | 0–0 | 2026-10-29 01:54 | 原始 `Qwen3-30B-A3B`（无 SFT），`val_only`，`n=8` |
 | [`5lo8ruji`](https://wandb.ai/google-trellis/verl-torchtpu-grpo-test/runs/5lo8ruji) | `retool-dapo-qwen3-30b-a3b-v5p-cp2` | RL | failed | 1–1 | 2026-10-29 07:51 | 只记录了 step 1 |
 | [`fcze3xlx`](https://wandb.ai/google-trellis/verl-torchtpu-grpo-test/runs/fcze3xlx) | `retool-dapo-qwen3-30b-a3b-v5p-cp2` | RL | crashed | 1–23 | 2026-10-29 09:39 |  |
-| [`ci0k54pl`](https://wandb.ai/google-trellis/verl-torchtpu-grpo-test/runs/ci0k54pl) | `retool-dapo-qwen3-30b-a3b-v5p-cp2` | RL | finished | 21–150 | 2026-10-29 21:18 | 从 `fcze3xlx` 的 step 20 checkpoint 恢复（见下文“恢复关系”） |
+| [`ci0k54pl`](https://wandb.ai/google-trellis/verl-torchtpu-grpo-test/runs/ci0k54pl) | `retool-dapo-qwen3-30b-a3b-v5p-cp2` | RL | finished | 21–150 | 2026-10-29 21:18 | 推测从 `fcze3xlx` 的 step 20 checkpoint 恢复（见下文“恢复关系”） |
 | [`rq1p980n`](https://wandb.ai/google-trellis/verl-torchtpu-grpo-test/runs/rq1p980n) | `retool-dapo-qwen3-30b-a3b-v5p-cp1-opt` | RL | crashed | 1–80 | 2026-10-30 23:47 |  |
-| [`hsodvfgr`](https://wandb.ai/google-trellis/verl-torchtpu-grpo-test/runs/hsodvfgr) | `retool-dapo-qwen3-30b-a3b-v5p-cp1-opt` | RL | finished | 81–150 | 2026-11-01 00:09 | 从 `rq1p980n` 的 step 80 checkpoint 恢复（见下文“恢复关系”） |
+| [`hsodvfgr`](https://wandb.ai/google-trellis/verl-torchtpu-grpo-test/runs/hsodvfgr) | `retool-dapo-qwen3-30b-a3b-v5p-cp1-opt` | RL | finished | 81–150 | 2026-11-01 00:09 | 推测从 `rq1p980n` 的 step 80 checkpoint 恢复（见下文“恢复关系”） |
 | [`yrcsp4z6`](https://wandb.ai/google-trellis/verl-torchtpu-grpo-test/runs/yrcsp4z6) | `retool-dapo-qwen3-30b-a3b-v5p-cp1-pr115` | RL | crashed | 1–117 | 2026-11-03 09:17 |  |
 | [`zyrnkte8`](https://wandb.ai/google-trellis/verl-torchtpu-grpo-test/runs/zyrnkte8) | `retool-dapo-qwen3-30b-a3b-v5p-cp1-pr115-async` | RL | finished | 1–150 | 2026-11-04 02:39 |  |
 <!-- END AUTO-GENERATED inventory -->
 
 - 四条 RL 线按 W&B 名称后缀区分：`cp2`、`cp1-opt`、`cp1-pr115`、`cp1-pr115-async`。
-- `cp2` 和 `cp1-opt` 中途 crash 后从 checkpoint 恢复，按 step 拼接成一条曲线（§2.3）。`yrcsp4z6`（`cp1-pr115`）在 step 117 crash，之后没有恢复；同配置加异步 checkpoint 保存的 `zyrnkte8`（`cp1-pr115-async`）完整跑完了 150 步。
+- `cp2` 和 `cp1-opt` 中途 crash 后疑似从 checkpoint 恢复，按记录的 step 拼接成一条曲线（§2.3）。`yrcsp4z6`（`cp1-pr115`）在 step 117 crash，之后没有恢复；同配置加异步 checkpoint 保存的 `zyrnkte8`（`cp1-pr115-async`）完整跑完了 150 步。
 - SFT 吞吐 sweep（`v5p-sweep-sft-*`）只是测吞吐，没有评估指标，后面不再展开。
 
 ## 2. 配置
@@ -98,7 +98,7 @@
 - 芯片数 = 主机数 × 每台主机 4 颗芯片（`trainer.nnodes × trainer.n_gpus_per_node`，rollout 同理）。除 `fcze3xlx`（rollout 16 颗）外，都是 trainer 16 颗 + rollout 32 颗 = 48 颗 v5p。
 - `cp2` 恢复时把 rollout 从 16 颗换成了 32 颗（`fcze3xlx` → `ci0k54pl`），所以 `cp2` 前 20 步明显比之后慢（§4 的速度表）。
 - 从名字看，`pr115` 对应 jialei777/verl-upstream#115（v5p trainer 性能优化：Tokamax fused log-prob、rollout DP、async all-gather）。这个对应关系是按名称推断的。配置里能看到的差异是：rollout 从 TP16 改成 TP4 × DP8（EP32），`max_num_seqs` 从 512 改成 256。
-- `-async` 相比 `cp1-pr115` 只多了 `actor.checkpoint.async_save=True`。
+- 记录的配置中，`-async` 相比 `cp1-pr115` 增加了 `actor.checkpoint.async_save=True`；两者代码包不同，具体代码差异未知。
 - “Ray 代码包”是 `PYTHONPATH` 里 Ray `working_dir` 包哈希的前 8 位。Ray 按上传的代码内容算这个哈希，内容变了哈希就变。W&B 没有记录 git commit，所以只能看出各 run 的代码是否相同，看不出具体改了什么：
   - `cp2` 恢复前后的代码不同。
   - `cp1-opt` 恢复前后的代码相同。
@@ -113,7 +113,7 @@
 | `cp1-opt` | `rq1p980n`（1–80，crashed） | `hsodvfgr`（81–150，finished） | `/data/aaskhat/checkpoint/retool-dapo-qwen3-30b-a3b-v5p-cp1-opt` | `auto` / `10` |
 <!-- END AUTO-GENERATED resume -->
 
-两段 run 用的是同一个 `default_local_dir`，并且都设置了 `resume_mode=auto` 和 `save_freq=10`。后一段 run 记录的第一步紧接在前一段最后一个 10 的倍数之后（21 和 81），所以可以判断它是从 step 20 / step 80 的 checkpoint 恢复的。`fcze3xlx` 记录的 21–23 步被 `ci0k54pl` 重新跑过，画曲线时 `cp2` 用的是 `fcze3xlx` 的 1–20 步加 `ci0k54pl` 的 21–150 步。
+两段 run 用的是同一个 `default_local_dir`，并且都设置了 `resume_mode=auto` 和 `save_freq=10`。后一段 run 记录的第一步紧接在前一段最后一个 10 的倍数之后（21 和 81），因此推测它是从 step 20 / step 80 的 checkpoint 恢复的；尚未核对恢复日志或 checkpoint 指纹。`fcze3xlx` 记录的 21–23 步被 `ci0k54pl` 重新跑过，画曲线时 `cp2` 用的是 `fcze3xlx` 的 1–20 步加 `ci0k54pl` 的 21–150 步。
 
 ### 2.4 Checkpoint 保存
 
@@ -128,7 +128,7 @@
 | `cp1-pr115-async` | `zyrnkte8` | `10` | `['model', 'optimizer', 'extra']` / `['model', 'optimizer', 'extra']` | `True` | `2` | 15 | `55.2`（`46.3`–`60.4`） | `1.3%` |
 <!-- END AUTO-GENERATED ckpt -->
 
-- 所有 RL run 都保存完整状态（model + optimizer + extra），保留最近 2 个。同步保存每次约 1,400 s。`yrcsp4z6` 每步本身只要 250–450 s，所以保存时间占到了它 wall time 的 25.6%。
+- 所有 RL run 均配置为保存 model + optimizer + extra，保留最近 2 个；尚未核验各 checkpoint 的实际内容或异步保存后的恢复。配置为同步保存的 run 每次记录约 1,400 s。`yrcsp4z6` 每步本身只要 250–450 s，所以保存时间占到了它 wall time 的 25.6%。
 - 开了 `async_save` 的 `zyrnkte8` 每次只阻塞约 55 s，占 wall time 1.3%。
 - “保存耗时 / wall time”的分母是这个 run 第一条到最后一条 step 记录之间的时间，包含验证时间。
 
@@ -138,7 +138,7 @@
 > - **它跑的代码和 `yrcsp4z6` 不同。** 在 W&B 完整配置里，两者只有 8 个字段不同：`async_save`、实验名和相关路径、W&B telemetry，以及 Ray `working_dir` 包的哈希（`_ray_pkg_fbcc65e0b8e098c1` 对 `_ray_pkg_2bf155927c5ab5a2`）。Ray 按上传的代码内容算这个哈希，所以两次提交的代码不一样。W&B 里没有记录 git commit。
 > - **在我们的 fork（`tpu-main` `c4726400`）里，只设 `async_save=True` 没用，还有副作用：**
 >   - TorchTitan engine 不读 `async_save`：[`transformer_impl.py` L251-L257](https://github.com/syangx39/verl-upstream/blob/c4726400d1816939adf78ea26dd25f3b8d662ea3/verl/workers/engine/torchtitan/transformer_impl.py#L251-L257) 里的 `CheckpointManager.Config` 没有设异步模式，保存仍然是同步的。
->   - V1 trainer 在 `async_save=True` 时不会写 `latest_checkpointed_iteration.txt`：[`trainer_base.py` L1044-L1054](https://github.com/syangx39/verl-upstream/blob/c4726400d1816939adf78ea26dd25f3b8d662ea3/verl/trainer/ppo/v1/trainer_base.py#L1044-L1054)。这样 `resume_mode=auto` 找不到 checkpoint，会直接从头训练：[`trainer_base.py` L889-L897](https://github.com/syangx39/verl-upstream/blob/c4726400d1816939adf78ea26dd25f3b8d662ea3/verl/trainer/ppo/v1/trainer_base.py#L889-L897)。
+>   - V1 trainer 在 `async_save=True` 时不会写 `latest_checkpointed_iteration.txt`：[`trainer_base.py` L1044-L1054](https://github.com/syangx39/verl-upstream/blob/c4726400d1816939adf78ea26dd25f3b8d662ea3/verl/trainer/ppo/v1/trainer_base.py#L1044-L1054)。若没有已有 tracker，`resume_mode=auto` 会从头训练；若旧 tracker 仍存在，则可能恢复到旧 checkpoint：[`trainer_base.py` L889-L897](https://github.com/syangx39/verl-upstream/blob/c4726400d1816939adf78ea26dd25f3b8d662ea3/verl/trainer/ppo/v1/trainer_base.py#L889-L897)。
 > - **`zyrnkte8` 没有发生过恢复**，所以它在 `async_save=True` 下能不能恢复也没有验证过。这一点需要和 Askhat 确认。
 
 ## 3. 评估结果
@@ -272,7 +272,7 @@
 
 这不是严格对照，主要有四点不同：
 
-1. **SFT checkpoint 不同**：我们用的是自己的 `p2-retool-sft-01/global_step_372`，Askhat 用的是 `multiturn-sft-qwen3-30b-a3b-v5p`。
+1. **SFT 来源和路径不同**：我们用的是 `p2-retool-sft-01/global_step_372`，Askhat 记录的路径是 `multiturn-sft-qwen3-30b-a3b-v5p`；权重是否一致尚未通过 hash 对账。
 2. **评估采样数不同**：我们每题采样 30 次，Askhat 采样 8 次。
 3. **硬件不同**：我们是 GB200，Askhat 是 v5p。
 4. **Askhat 没有 Step 0 评估**，所以没法比较各自从起点涨了多少。
@@ -292,7 +292,7 @@ python3 plot_askhat_v5p.py --check README.md  # 校验本文件中的表格与 J
 
 ## 8. 证据边界
 
-- W&B history 按 `history(samples: 2000)` 抓取。最长的 run 也只有 372 行，所以没有被降采样。
+- W&B history 按 `history(samples: 2000)` 抓取并过滤，只保留所需指标；快照中的步数覆盖范围见 §1。过滤后的行数不能证明原始 history 没有降采样。
 - 有三处对应关系是按名称或记录的步数推断的，不是从 W&B 元数据直接读到的：恢复关系、SFT checkpoint 与 RL `model_path` 的对应、`pr115` 与 PR #115 的对应。
 - W&B 没有记录 git commit 和镜像。各 run 提交的代码包（Ray `working_dir` 哈希）不完全相同，所以“配置相同”不等于“代码相同”。
 - 快照之后 Askhat 新跑的 run 不在这里，重新运行 `fetch_askhat_v5p.py` 可以更新。

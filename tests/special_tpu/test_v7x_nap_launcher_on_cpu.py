@@ -190,6 +190,37 @@ def test_manifest_wandb_secret_ref_injection():
     }
 
 
+def test_exclude_nodepools_affinity_in_manifest_and_prewarm():
+    values = _values(EXCLUDE_NODEPOOLS="nap-tpu7x-stand-4t-pool1, nap-tpu7x-stand-4t-pool2")
+    text = render.render_manifest(values)
+    assert render.check_manifest(text, values) == []
+    (jobset,) = [d for d in yaml.safe_load_all(text) if d]
+    want_affinity = {
+        "nodeAffinity": {
+            "requiredDuringSchedulingIgnoredDuringExecution": {
+                "nodeSelectorTerms": [
+                    {
+                        "matchExpressions": [
+                            {
+                                "key": "cloud.google.com/gke-nodepool",
+                                "operator": "NotIn",
+                                "values": ["nap-tpu7x-stand-4t-pool1", "nap-tpu7x-stand-4t-pool2"],
+                            }
+                        ]
+                    }
+                ]
+            }
+        }
+    }
+    for rj in jobset["spec"]["replicatedJobs"][1:]:
+        assert rj["template"]["spec"]["template"]["spec"]["affinity"] == want_affinity
+    for _, doc_text in render.render_prewarm_docs(values):
+        (doc,) = [d for d in yaml.safe_load_all(doc_text) if d]
+        assert doc["spec"]["replicatedJobs"][0]["template"]["spec"]["template"]["spec"]["affinity"] == want_affinity
+    with pytest.raises(ValueError, match="EXCLUDE_NODEPOOLS"):
+        render.render_manifest(_values(EXCLUDE_NODEPOOLS="Bad_Pool_Name"))
+
+
 def test_check_manifest_reports_violations():
     values = _values()
     (jobset,) = [d for d in yaml.safe_load_all(render.render_manifest(values)) if d]

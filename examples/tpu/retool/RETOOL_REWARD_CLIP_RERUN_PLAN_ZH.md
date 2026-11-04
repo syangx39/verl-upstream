@@ -1,11 +1,11 @@
 # TPU v7x ReTool 对齐 Askhat 运行与重跑方案（TPU v7x Only）
 
-状态：**rev 7（已补齐 V1 validation dump `num_turns` 落盘与 CPU 回归测试、更新 `CODE_REF=00298962` 并重新生成 dry-run manifest、补充本地 launcher checkout 校验）**（2026-11-04）。本文为 TPU v7x 专项对齐方案，尚未提交集群训练运行。
+状态：**rev 7（已补齐 V1 validation dump `num_turns` 落盘与 CPU 回归测试、更新 `CODE_REF=53bc215c` 并重新生成 dry-run manifest、补充本地 launcher checkout 校验）**（2026-11-04）。本文为 TPU v7x 专项对齐方案，尚未提交集群训练运行。
 
 - **rev 7**：
   1. **补齐 V1 Validation Dump 的 `num_turns` 字段并新增 CPU 回归测试（第 4.1 节第 3 项）**：在 [`verl/trainer/ppo/v1/trainer_base.py` L1229-L1232](../../verl/trainer/ppo/v1/trainer_base.py#L1229-L1232) 的 `_validate()` 中按 `session_final_indices` 将 `sample_turns` 写入 `validation/{step}.jsonl` 的 `num_turns` 字段（`{"num_turns": [sample_turns[i] for i in session_final_indices]}`），并在 [`tests/trainer/ppo/v1/test_rollout_audit_on_cpu.py`](../../tests/trainer/ppo/v1/test_rollout_audit_on_cpu.py#L722-L1035) 中补充了多输出 session 的 `num_turns` 落盘与 `retool_tpu.compute_score` 离线重算对账 CPU 回归测试；
-  2. **将 `CODE_REF` 与实验名更新到包含上述修复的 commit `00298962e462b2e260ad4c305d3181c49f01fe7d`（短 SHA `00298962`），并重新生成 `DRY_RUN=1` 的 `run_record.json`、`jobset.yaml` 和 `job_spec.json`（第 2 / 3.2 节）**；
-  3. **在启动命令中加入本地 launcher checkout 强校验（第 3.2 节）**：由于 `CODE_REF` 只决定打包进 `code.tar.gz` 的代码版本、不会替换当前 shell 执行的本地 `examples/tpu/gke/run_ray_jobset_v7x_nap.sh` 与 `v7x_nap/render.py`，启动命令前显式校验当前工作树包含 `00298962e462b2e260ad4c305d3181c49f01fe7d`（`git merge-base --is-ancestor 00298962e462b2e260ad4c305d3181c49f01fe7d HEAD`）。
+  2. **将 `CODE_REF` 与实验名更新到包含上述修复的 commit `53bc215c8880483142caee0b4d25d57066a0a54f`（短 SHA `53bc215c`），并重新生成 `DRY_RUN=1` 的 `run_record.json`、`jobset.yaml` 和 `job_spec.json`（第 2 / 3.2 节）**；
+  3. **在启动命令中加入本地 launcher checkout 强校验（第 3.2 节）**：由于 `CODE_REF` 只决定打包进 `code.tar.gz` 的代码版本、不会替换当前 shell 执行的本地 `examples/tpu/gke/run_ray_jobset_v7x_nap.sh` 与 `v7x_nap/render.py`，启动命令前显式校验当前工作树包含 `53bc215c8880483142caee0b4d25d57066a0a54f`（`git merge-base --is-ancestor 53bc215c8880483142caee0b4d25d57066a0a54f HEAD`）。
 - **rev 6**：
   1. **落实 W&B Kubernetes Secret 注入并验证凭证权限（第 3.2 / 5 节）**：在 [`ray-jobset-v7x-nap.yaml`](../gke/ray-jobset-v7x-nap.yaml)、[`v7x_nap/render.py`](../gke/v7x_nap/render.py) 与 [`run_ray_jobset_v7x_nap.sh`](../gke/run_ray_jobset_v7x_nap.sh) 中实现 `WANDB_SECRET_NAME` / `WANDB_SECRET_KEY` 注入（向 `ray-head` 容器注入 `WANDB_API_KEY` 的 `secretKeyRef`，并在启动前由 launcher 校验集群 Secret 及 key 存在且非空）；已在 `bodaborg-tpu7x-nap` 的 `priority-dev` 与 `default` 命名空间创建 `secret/xiaotongyang-wandb`，并通过从集群 Secret 读取密钥调用 W&B GraphQL API 验证登录身份（`viewer.username=xiaotongyang, entity=google-trellis`）及目标项目 `google-trellis/verl-torchtpu-grpo-test` 写权限（`readOnly=False`）；
   2. **固定 `CODE_REF` 并同步实验名 SHA 与 `run_record.json`（第 2 / 3.2 节）**；
@@ -114,7 +114,7 @@
 
 ## 2. TPU v7x 对齐实验矩阵（只跑 TPU v7x）
 
-全部运行从共享的 SFT checkpoint（`p2-retool-sft-01/checkpoint/global_step_372/huggingface`）出发，使用同一容器镜像（`verl-tpu@sha256:d92a2b3d6667584d67ea51874a721228a96c799263ab40f4aee168680476f64e`），并将运行代码版本显式固定到包含 launcher W&B Secret 注入与 V1 validation dump `num_turns` 落盘修复的 commit（`CODE_REF=00298962e462b2e260ad4c305d3181c49f01fe7d`，短 SHA `00298962`；若本 PR 采用 squash merge 合入 `tpu-main`，启动前将 `CODE_REF` 与 `EXPERIMENT_NAME` 后缀同步更新为合入后的 `tpu-main` commit SHA）：
+全部运行从共享的 SFT checkpoint（`p2-retool-sft-01/checkpoint/global_step_372/huggingface`）出发，使用同一容器镜像（`verl-tpu@sha256:d92a2b3d6667584d67ea51874a721228a96c799263ab40f4aee168680476f64e`），并将运行代码版本显式固定到包含 launcher W&B Secret 注入与 V1 validation dump `num_turns` 落盘修复的 commit（`CODE_REF=53bc215c8880483142caee0b4d25d57066a0a54f`，短 SHA `53bc215c`；若本 PR 采用 squash merge 合入 `tpu-main`，启动前将 `CODE_REF` 与 `EXPERIMENT_NAME` 后缀同步更新为合入后的 `tpu-main` commit SHA）：
 
 | 实验 ID | 对齐目标 | Scorer（`reward.custom_reward_function.path`） | `enable_thinking` | `max_response_length` / `max_user,assistant_turns` | `N_RESP_PER_PROMPT` | `ACTOR_LR` | 有效 `max_norm` | 状态 / 执行优先级 |
 |---|---|---|---|---|---|---|---|---|
@@ -143,10 +143,10 @@
 ### 3.2 配置 C 5 步 Smoke 启动命令与 `DRY_RUN=1` 核验过的 `run_record.json`、`job_spec.json`、`jobset.yaml`
 
 `run_ray_jobset_v7x_nap.sh` 通过环境变量 `JOB_SCRIPT` 指定脚本（默认是 0.6B/30B GRPO 脚本），通过 `CODE_REF` 固定打包进 `code.tar.gz` 的 git commit（默认 `HEAD`，因此必须显式传入 `CODE_REF`），并通过 `WANDB_SECRET_NAME` / `WANDB_SECRET_KEY` 向 `ray-head` 容器注入 Kubernetes Secret（不经过 `JOBENV_*` 或 `job_spec.json`）。
-**注意**：`CODE_REF` 只决定打包上传到 GCS `code.tar.gz` 的代码版本，**不会替换当前 shell 执行的本地 `examples/tpu/gke/run_ray_jobset_v7x_nap.sh` 和 `v7x_nap/render.py`**。因此启动命令开头显式执行 `git merge-base --is-ancestor 00298962e462b2e260ad4c305d3181c49f01fe7d HEAD && test -z "$(git status --porcelain --untracked-files=no)"` 校验当前工作目录 checkout 已包含修复且没有未提交修改。配置 C 的 5 步 smoke 完整启动命令如下：
+**注意**：`CODE_REF` 只决定打包上传到 GCS `code.tar.gz` 的代码版本，**不会替换当前 shell 执行的本地 `examples/tpu/gke/run_ray_jobset_v7x_nap.sh` 和 `v7x_nap/render.py`**。因此启动命令开头显式执行 `git merge-base --is-ancestor 53bc215c8880483142caee0b4d25d57066a0a54f HEAD && test -z "$(git status --porcelain --untracked-files=no)"` 校验当前工作目录 checkout 已包含修复且没有未提交修改。配置 C 的 5 步 smoke 完整启动命令如下：
 
 ```bash
-git merge-base --is-ancestor 00298962e462b2e260ad4c305d3181c49f01fe7d HEAD && \
+git merge-base --is-ancestor 53bc215c8880483142caee0b4d25d57066a0a54f HEAD && \
 test -z "$(git status --porcelain --untracked-files=no)" && \
 RUN_NAME=p3c-retool-smoke-01 \
 GCS_BUCKET=ubench-logs \
@@ -156,7 +156,7 @@ RAY_NAMESPACE=priority-dev \
 PREWARM=1 \
 JOBSET_MAX_RESTARTS=1 \
 ALLOW_REQUEUE=0 \
-CODE_REF=00298962e462b2e260ad4c305d3181c49f01fe7d \
+CODE_REF=53bc215c8880483142caee0b4d25d57066a0a54f \
 WANDB_SECRET_NAME=xiaotongyang-wandb \
 WANDB_SECRET_KEY=WANDB_API_KEY \
 IMAGE="us-west2-docker.pkg.dev/tpu-pytorch/raycluster/verl-tpu@sha256:d92a2b3d6667584d67ea51874a721228a96c799263ab40f4aee168680476f64e" \
@@ -186,7 +186,7 @@ JOBENV_SAVE_FREQ="-1" \
 JOBENV_LOGGER_LIST="['console','tensorboard','wandb']" \
 JOBENV_PROJECT_NAME="verl-torchtpu-grpo-test" \
 JOBENV_WANDB_ENTITY="google-trellis" \
-JOBENV_EXPERIMENT_NAME="qwen3-30b-a3b-retool-dapo-v7x-16k-think-shaped-16t-smoke-01-sha00298962" \
+JOBENV_EXPERIMENT_NAME="qwen3-30b-a3b-retool-dapo-v7x-16k-think-shaped-16t-smoke-01-sha53bc215c" \
 JOBENV_TENSORBOARD_DIR="@RUN_DIR@/tensorboard" \
 bash examples/tpu/gke/run_ray_jobset_v7x_nap.sh \
   "trainer.rollout_data_dir=@RUN_DIR@/rollout" \
@@ -200,11 +200,11 @@ bash examples/tpu/gke/run_ray_jobset_v7x_nap.sh \
 
 已从包含修复的本地 checkout 执行 `DRY_RUN=1`，在 `bodaborg-tpu7x-nap` API server 上通过集群 Secret 校验（`verified Secret xiaotongyang-wandb[WANDB_API_KEY] exists in namespace priority-dev`）以及 `jobset.yaml`、`prewarm.yaml` server-side dry-run 校验：
 
-1. **生成的 `run_record.json`（确认 `code_sha` 与 `EXPERIMENT_NAME` 后缀 `sha00298962` 完全一致，且记录了 Secret 引用名）**：
+1. **生成的 `run_record.json`（确认 `code_sha` 与 `EXPERIMENT_NAME` 后缀 `sha53bc215c` 完全一致，且记录了 Secret 引用名）**：
 
 ```json
 {
- "code_sha": "00298962e462b2e260ad4c305d3181c49f01fe7d",
+ "code_sha": "53bc215c8880483142caee0b4d25d57066a0a54f",
  "created_at": "2026-11-04T03:30:58Z",
  "driver_timeout_s": "6600",
  "gcs_bucket": "ubench-logs",
@@ -235,7 +235,7 @@ bash examples/tpu/gke/run_ray_jobset_v7x_nap.sh \
 
 ```yaml
                     - name: VERL_NAP_CODE_SHA
-                      value: "00298962e462b2e260ad4c305d3181c49f01fe7d"
+                      value: "53bc215c8880483142caee0b4d25d57066a0a54f"
                     ...
                     - name: WANDB_API_KEY
                       valueFrom:
@@ -261,7 +261,7 @@ bash examples/tpu/gke/run_ray_jobset_v7x_nap.sh \
  ],
  "env_vars": {
   "ACTOR_LR": "2e-6",
-  "EXPERIMENT_NAME": "qwen3-30b-a3b-retool-dapo-v7x-16k-think-shaped-16t-smoke-01-sha00298962",
+  "EXPERIMENT_NAME": "qwen3-30b-a3b-retool-dapo-v7x-16k-think-shaped-16t-smoke-01-sha53bc215c",
   "LIBTPU_INIT_ARGS": "--xla_tpu_use_enhanced_launch_barrier=false --xla_tpu_bf16_emission_mode=PROMOTE_F32",
   "LOGGER_LIST": "['console','tensorboard','wandb']",
   "MAX_RESPONSE_LENGTH": "16384",
@@ -371,7 +371,7 @@ bash examples/tpu/gke/run_ray_jobset_v7x_nap.sh \
 1. **目标 Project 与命名规范**：
    - `WANDB_ENTITY=google-trellis`、`PROJECT_NAME=verl-torchtpu-grpo-test`、`LOGGER_LIST="['console','tensorboard','wandb']"`。
    - `EXPERIMENT_NAME` 统一带平台、配置与代码版本标签：
-     - Smoke：`qwen3-30b-a3b-retool-dapo-v7x-16k-think-shaped-16t-smoke-01-sha00298962`
+     - Smoke：`qwen3-30b-a3b-retool-dapo-v7x-16k-think-shaped-16t-smoke-01-sha53bc215c`
      - 25 步：`qwen3-30b-a3b-retool-dapo-v7x-16k-think-shaped-16t-25step-01-sha<short_sha>`
 2. **模板与 Launcher 注入实现（不落盘到代码库、`config.yaml`、`job_spec.json` 或 `driver.log`）**：
    - **容器层注入**：在 [`ray-jobset-v7x-nap.yaml`](../gke/ray-jobset-v7x-nap.yaml#L139)、[`v7x_nap/render.py`](../gke/v7x_nap/render.py#L70-L92) 和 [`run_ray_jobset_v7x_nap.sh`](../gke/run_ray_jobset_v7x_nap.sh#L33-L34) 中新增 `WANDB_SECRET_NAME`（默认空）与 `WANDB_SECRET_KEY`（默认 `WANDB_API_KEY`）。当设置 `WANDB_SECRET_NAME=xiaotongyang-wandb` 时，渲染器向 `ray-head` 容器注入 `valueFrom.secretKeyRef: {name: "xiaotongyang-wandb", key: "WANDB_API_KEY"}`；`run_record.json` 仅记录 Secret 名称与键名（`wandb_secret_name` / `wandb_secret_key`），**绝不通过 `JOBENV_WANDB_API_KEY` 写入 `job_spec.json`**。

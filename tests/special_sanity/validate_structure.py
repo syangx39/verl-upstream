@@ -80,7 +80,7 @@ def main() -> None:
     parser.add_argument(
         "--allow-dirs",
         nargs="*",
-        default=["special_e2e", "special_sanity", "special_standalone", "special_distributed"],
+        default=["special_e2e", "special_sanity", "special_standalone", "special_distributed", "special_tpu"],
         help="Extra top-level test folders that are exempt from the rule",
     )
     parser.add_argument(

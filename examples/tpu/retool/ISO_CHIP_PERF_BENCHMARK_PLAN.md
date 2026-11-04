@@ -158,7 +158,7 @@
 
 ### 3.2 Tier B（32 物理加速器扩展对照：`32 × TPU v7x 物理芯片` vs `32 × NVIDIA GB200 GPU`）与 Askhat PR #108 (`64 × TPU v6e`) 对照表
 
-> **Askhat 参考数据来源说明**：下表第一列严格引用 Askhat 在 [`jialei777/verl-upstream#108`](https://github.com/jialei777/verl-upstream/pull/108) 正文报告的 **`Qwen3-30B-A3B` 8K response length / 8-turn ReTool DAPO run（`2 × v6e-32` = 64 颗 TPU v6e 物理芯片）** 实测数字（`timing_s/step = 108.1 s`、`update_actor = 94.2 s`、`Raiden P2P update_weights = 13.2 s`、AIME 2024 `22.44% -> 30.00%` at Step 25），不混用早期 v5p 或 16K/16-turn 变体数据。
+> **Askhat 参考数据来源说明**：下表第一列严格引用 Askhat 在 [`jialei777/verl-upstream#108`](https://github.com/jialei777/verl-upstream/pull/108) 正文报告的 **`Qwen3-30B-A3B` 8K response length / 8-turn ReTool DAPO run（`2 × v6e-32` = 64 颗 TPU v6e 物理芯片）** 实测数字（`timing_s/step = 108.1 s`、`update_actor = 94.2 s`、`Raiden P2P update_weights = 13.2 s`；PR #108 正文报告的 AIME 2024 `22.44%` 与 `30.00%` 经 PR #15 运行审计确认来自不同运行，不解释为单次连续训练提升），不混用早期 v5p 或 16K/16-turn 变体数据。
 
 | 指标维度 | Askhat PR #108 基线（`64 × TPU v6e 物理芯片`，`2 × v6e-32`） | TPU v7x `Stage P3`（`32 × 物理芯片 / 64 逻辑核`，已完成；本表待填） | NVIDIA GB200（`32 × GPU`，`8 × 4-GPU 节点`，待运行） |
 | --- | --- | --- | --- |

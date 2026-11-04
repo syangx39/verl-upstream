@@ -244,7 +244,7 @@ bash examples/tpu/retool/gb200/run_ray_jobset_gb200.sh
 | **GB200 64-GPU Strong Scaling (`G64-A..D`, Planned)** | **16 nodes × 4 GB200 (`64 GPUs`)** | `G64-A`: `32 GPU (FSDP2=32)` + `32 GPU (8 × TP=4)`<br>`G64-D`: `16 GPU (FSDP2=16)` + `48 GPU (12 × TP=4)` | Profile 1: `64 × 8 = 512`<br>Profile 2: `64 × 16 = 1,024` (`25` steps) | TBD | TBD | TBD | TBD | Planned (`NUM_NODES=16` supported in launcher) |
 | **TPU v7x `P3c` / Tier C (`p3c-retool-25s-01`, Iso-64-Chip)** | **4 × `2×2×4` (`64 v7x chips` / 128 cores)** | `16 chips (FSDP2=8, CP=4)` + `48 chips (3 × TP=32, EP=32)` | Profile 2: `64 × 16 = 1,024` (`25` steps, 16K thinking, shaped reward) | TBD (32-chip early partial smoke verified in PR #15; Steps 0–3 64-chip gate pending) | TBD | TBD | TBD | Scheduled on `r-b0f80` (`64` chips) |
 | **TPU v7x `P3` / Tier B (Iso-32-Chip)** | **2 × `2×2×4` (`32 v7x chips` / 64 cores)** | `16 chips (FSDP2=8, CP=4)` + `16 chips (TP=32, EP=32)` | `64 × 8 = 512` (`25` steps) | See [`REPRO_RESULTS_TPU7X.md`](../REPRO_RESULTS_TPU7X.md) | See results | See results | See results | 25 steps completed; compare only after matching scorer and measurement windows |
-| **Askhat TPU v6e Baseline ([`#108`](https://github.com/jialei777/verl-upstream/pull/108))** | **2 × `v6e-32` (`64 v6e chips`)** | `32 chips (FSDP2=8, CP=4)` + `32 chips (TP=32, EP=32)` | `64 × 8 = 512` (`25+` steps) | `108.1 s` | - | `22.44% -> 30.00%` (`+7.56 pp`) | - | Reference |
+| **Askhat TPU v6e Baseline ([`#108`](https://github.com/jialei777/verl-upstream/pull/108))** | **2 × `v6e-32` (`64 v6e chips`)** | `32 chips (FSDP2=8, CP=4)` + `32 chips (TP=32, EP=32)` | `64 × 8 = 512` (`yjowd03u` Steps 0–15 + `ci0k54pl` Steps 15–25) | `108.1 s` | - | PR #108 reports `22.44%` (Step 0) and `30.00%` (Step 25) from two separate runs (not a single continuous run; audited `mean@8`: `yjowd03u` `26.25% -> 29.58%` Steps 0–15, `ci0k54pl` `29.17% -> 33.75%` Steps 15–25) | PR #108 reports `14.17%` and `18.33%` from two separate runs (`mean@8`: `yjowd03u` `14.58% -> 20.42%`, `ci0k54pl` `20.00% -> 22.92%`) | Reference |
 
 ---
 
@@ -316,7 +316,7 @@ bash examples/tpu/retool/gb200/run_ray_jobset_gb200.sh
 
 > **Important Notes on `ROLLOUT_TP` and `EXPECT_GIT_SHA`**:
 > 1. **`ROLLOUT_TP`**: In [`run_qwen3_30b_a3b_dapo_torchtitan_gb200.sh`](./run_qwen3_30b_a3b_dapo_torchtitan_gb200.sh), `ROLLOUT_TP` defaults to `TOTAL_ROLLOUT_GPUS`. For multi-node rollout (`16`, `32`, or `48` rollout GPUs), always pass `JOBENV_ROLLOUT_TP=4` explicitly so `verl` instantiates `4`, `8`, or `12` independent `TP=4` vLLM replicas.
-> 2. **`EXPECT_GIT_SHA` (Must point to the `gb200-retool-runtime` lineage matching the image's `uv.lock`)**: The prebuilt image `@sha256:087366ae...` was built from commit `a2cbde47ba729d0cba7e881da1692df20d8e05e4` on the `gb200-retool-runtime` branch (whose `uv.lock` SHA-256 is `df508db0b957fa181c229fb75885cd3863cb651fd5233d0fa5af95e990bda0be` and matches all 264 locked packages in `/workspace/verl-pin/.venv`). Because `tpu-main` is based on an earlier upstream `uv.lock` (`d30f7e35...`), checking out a `tpu-main` commit inside the GB200 container would fail `verify_venv_lock.py --expect-lock-sha256 df508db0...`. Instead, pass `EXPECT_GIT_SHA="ca9efb6d090c50cbaee913ee3f499925c0638cf8"` (on `gb200-retool-runtime`, directly on top of `a2cbde47`, with zero diff in `uv.lock`, `pyproject.toml`, or `verl/` and containing the updated `run_qwen3_30b_a3b_dapo_torchtitan_gb200.sh`, `run_ray_jobset_gb200.sh`, and `verify_venv_lock.py --output-json`) so every Pod checks out `ca9efb6d...`, verifies both `uv.lock` (`df508db0...`) and `git_sha` via `verify_venv_lock.py --output-json "${RUN_DIR}/env/${LAUNCH_ID}-${HOST_TAG}-precheck.json"`, and passes the cross-node JSON readiness gate.
+> 2. **`EXPECT_GIT_SHA` (Must point to the `gb200-retool-runtime` lineage matching the image's `uv.lock`)**: The prebuilt image `@sha256:087366ae...` was built from commit `a2cbde47ba729d0cba7e881da1692df20d8e05e4` on the `gb200-retool-runtime` branch (whose `uv.lock` SHA-256 is `df508db0b957fa181c229fb75885cd3863cb651fd5233d0fa5af95e990bda0be` and matches all 264 locked packages in `/workspace/verl-pin/.venv`). Because `tpu-main` is based on an earlier upstream `uv.lock` (`d30f7e35...`), checking out a `tpu-main` commit inside the GB200 container would fail `verify_venv_lock.py --expect-lock-sha256 df508db0...`. Instead, pass `EXPECT_GIT_SHA="32cbf016aa0de19bc4b70802c350aa78b3a4da3b"` (on `gb200-retool-runtime`, directly on top of `a2cbde47`, with zero diff in `uv.lock` or `pyproject.toml`, containing the V1 validation `num_turns` dump fix in `verl/trainer/ppo/v1/trainer_base.py` for offline shaped-reward reconciliation plus the updated `run_qwen3_30b_a3b_dapo_torchtitan_gb200.sh`, `run_ray_jobset_gb200.sh`, and `verify_venv_lock.py --output-json`) so every Pod checks out `32cbf016...`, verifies both `uv.lock` (`df508db0...`) and `git_sha` via `verify_venv_lock.py --output-json "${RUN_DIR}/env/${LAUNCH_ID}-${HOST_TAG}-precheck.json"`, and passes the cross-node JSON readiness gate.
 
 #### Example 64-GPU Launch Commands (`NUM_NODES=16`)
 
@@ -325,7 +325,7 @@ bash examples/tpu/retool/gb200/run_ray_jobset_gb200.sh
    RUN_NAME="g64a-retool-rl-25step-$(date -u +%Y%m%d-%H%M%S)" \
    NUM_NODES="16" \
    GPUS_PER_NODE="4" \
-   EXPECT_GIT_SHA="ca9efb6d090c50cbaee913ee3f499925c0638cf8" \
+   EXPECT_GIT_SHA="32cbf016aa0de19bc4b70802c350aa78b3a4da3b" \
    KUBE_CONTEXT="<YOUR_GB200_KUBE_CONTEXT>" \
    NODEPOOL="<YOUR_4xGB200_NV18_NODEPOOL>" \
    GCS_BUCKET="<YOUR_GCS_BUCKET>" \
@@ -364,7 +364,7 @@ bash examples/tpu/retool/gb200/run_ray_jobset_gb200.sh
    RUN_NAME="g64d-p3c-parity-25s-$(date -u +%Y%m%d-%H%M%S)" \
    NUM_NODES="16" \
    GPUS_PER_NODE="4" \
-   EXPECT_GIT_SHA="ca9efb6d090c50cbaee913ee3f499925c0638cf8" \
+   EXPECT_GIT_SHA="32cbf016aa0de19bc4b70802c350aa78b3a4da3b" \
    KUBE_CONTEXT="<YOUR_GB200_KUBE_CONTEXT>" \
    NODEPOOL="<YOUR_4xGB200_NV18_NODEPOOL>" \
    GCS_BUCKET="<YOUR_GCS_BUCKET>" \

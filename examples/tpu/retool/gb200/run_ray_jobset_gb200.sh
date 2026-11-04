@@ -445,6 +445,12 @@ spec:
       value: "${EXPECT_CHECKPOINT_SHA256}"
     - name: EXPECT_GIT_SHA
       value: "${EXPECT_GIT_SHA}"
+    - name: GLOO_SOCKET_IFNAME
+      value: "eth0"
+    - name: NCCL_SOCKET_IFNAME
+      value: "eth0"
+    - name: NCCL_SOCKET_FAMILY
+      value: "AF_INET"
 ${WANDB_EXTRA_ENV}${JOBENV_YAML}    resources:
       claims:
       - name: compute-domain-channel
@@ -466,6 +472,19 @@ ${WANDB_EXTRA_ENV}${JOBENV_YAML}    resources:
     - |
       set -xeuo pipefail
       HOST_TAG="\$(hostname)"
+      sysctl -w net.ipv6.conf.eth0.disable_ipv6=1 >/dev/null 2>&1 || true
+      ip -6 addr flush dev eth0 >/dev/null 2>&1 || true
+      if [[ -w /etc/gai.conf ]] || [[ -w /etc ]]; then
+        grep -q '^precedence ::ffff:0:0/96  100' /etc/gai.conf 2>/dev/null || echo 'precedence ::ffff:0:0/96  100' >> /etc/gai.conf
+      fi
+      if [[ -w /etc/hosts ]]; then
+        HOST_IPV4="\$(ip -4 -o addr show dev eth0 2>/dev/null | awk '{split(\$4,a,"/"); print a[1]; exit}')"
+        grep -v -E '^[0-9a-fA-F]*:[0-9a-fA-F:]+[[:space:]]' /etc/hosts > /tmp/hosts.ipv4 || true
+        if [[ -n "\${HOST_IPV4}" ]] && ! grep -q "\${HOST_IPV4}[[:space:]].*\${HOST_TAG}" /tmp/hosts.ipv4; then
+          echo "\${HOST_IPV4} \${HOST_TAG}" >> /tmp/hosts.ipv4
+        fi
+        cat /tmp/hosts.ipv4 > /etc/hosts || true
+      fi
       mkdir -p "${RUN_DIR}/env"
       rm -f "${RUN_DIR}/exit_code.txt"
       if [[ -n "\${EXPECT_GIT_SHA:-}" && "\$(git rev-parse HEAD)" != "\${EXPECT_GIT_SHA}" ]]; then
@@ -663,6 +682,12 @@ spec:
       value: "${EXPECT_CHECKPOINT_SHA256}"
     - name: EXPECT_GIT_SHA
       value: "${EXPECT_GIT_SHA}"
+    - name: GLOO_SOCKET_IFNAME
+      value: "eth0"
+    - name: NCCL_SOCKET_IFNAME
+      value: "eth0"
+    - name: NCCL_SOCKET_FAMILY
+      value: "AF_INET"
 ${WANDB_EXTRA_ENV}${JOBENV_YAML}    resources:
       claims:
       - name: compute-domain-channel
@@ -684,6 +709,19 @@ ${WANDB_EXTRA_ENV}${JOBENV_YAML}    resources:
     - |
       set -xeuo pipefail
       HOST_TAG="\$(hostname)"
+      sysctl -w net.ipv6.conf.eth0.disable_ipv6=1 >/dev/null 2>&1 || true
+      ip -6 addr flush dev eth0 >/dev/null 2>&1 || true
+      if [[ -w /etc/gai.conf ]] || [[ -w /etc ]]; then
+        grep -q '^precedence ::ffff:0:0/96  100' /etc/gai.conf 2>/dev/null || echo 'precedence ::ffff:0:0/96  100' >> /etc/gai.conf
+      fi
+      if [[ -w /etc/hosts ]]; then
+        HOST_IPV4="\$(ip -4 -o addr show dev eth0 2>/dev/null | awk '{split(\$4,a,"/"); print a[1]; exit}')"
+        grep -v -E '^[0-9a-fA-F]*:[0-9a-fA-F:]+[[:space:]]' /etc/hosts > /tmp/hosts.ipv4 || true
+        if [[ -n "\${HOST_IPV4}" ]] && ! grep -q "\${HOST_IPV4}[[:space:]].*\${HOST_TAG}" /tmp/hosts.ipv4; then
+          echo "\${HOST_IPV4} \${HOST_TAG}" >> /tmp/hosts.ipv4
+        fi
+        cat /tmp/hosts.ipv4 > /etc/hosts || true
+      fi
       mkdir -p "${RUN_DIR}/env" "${RUN_DIR}/rollout" "${RUN_DIR}/validation" "${RUN_DIR}/rollout_audit" "${TENSORBOARD_DIR}"
       rm -f "${RUN_DIR}/exit_code.txt"
       if [[ -n "\${EXPECT_GIT_SHA:-}" && "\$(git rev-parse HEAD)" != "\${EXPECT_GIT_SHA}" ]]; then
@@ -742,7 +780,7 @@ ${WANDB_EXTRA_ENV}${JOBENV_YAML}    resources:
 
       # Wait for ${NUM_NODES} nodes (${TOTAL_GPUS} GPUs) and all nodes' precheck + G0 manifest files matching this LAUNCH_ID; fail explicitly on timeout
       CLUSTER_G0_READY=0
-      for _ in \$(seq 1 200); do
+      for _ in \$(seq 1 400); do
         if ray status 2>/dev/null | grep -q "${TOTAL_GPUS}.0 GPU" && [[ \$(ls -1 "${RUN_DIR}/env/${LAUNCH_ID}-"*-g0-verify.json 2>/dev/null | wc -l) -ge ${NUM_NODES} ]] && [[ \$(ls -1 "${RUN_DIR}/env/${LAUNCH_ID}-"*-precheck.json 2>/dev/null | wc -l) -ge ${NUM_NODES} ]]; then
           python3 -c 'import glob, json, sys; env_dir, lid, expected, expect_sha = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]; g0_files = sorted(glob.glob(f"{env_dir}/{lid}-*-g0-verify.json")); pre_files = sorted(glob.glob(f"{env_dir}/{lid}-*-precheck.json")); digests = {f: json.load(open(f))["g0_checkpoint_manifest"]["composite_sha256"] for f in g0_files}; pre_records = {f: json.load(open(f)) for f in pre_files}; shas = {f: rec.get("git_sha") for f, rec in pre_records.items()}; statuses = {f: rec.get("status") for f, rec in pre_records.items()}; print("[g0-cross-node] digests:", digests, "git_shas:", shas, flush=True); assert len(g0_files) >= expected and len(set(digests.values())) == 1, f"Cross-node manifest mismatch (expected >= {expected}): {digests}"; assert len(pre_files) >= expected and set(statuses.values()) == {"PASS"} and None not in shas.values() and len(set(shas.values())) == 1, f"Cross-node precheck/git_sha mismatch (expected >= {expected}): statuses={statuses} shas={shas}"; assert not expect_sha or next(iter(shas.values())) == expect_sha, f"Cross-node git_sha {shas} != EXPECT_GIT_SHA {expect_sha}"' "${RUN_DIR}/env" "${LAUNCH_ID}" "${NUM_NODES}" "\${EXPECT_GIT_SHA:-}"
           CLUSTER_G0_READY=1

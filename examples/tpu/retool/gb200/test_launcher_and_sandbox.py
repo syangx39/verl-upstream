@@ -691,6 +691,25 @@ class TestG0ManifestCompositeHashCheck(unittest.TestCase):
             self.assertEqual(rep_bad["expected_composite_sha256"], "0" * 64)
             self.assertFalse(rep_bad["composite_sha256_match"])
 
+            ref_dir = Path(td) / "ref"
+            ref_dir.mkdir()
+            for p in model_dir.iterdir():
+                if p.is_file():
+                    (ref_dir / p.name).write_bytes(p.read_bytes())
+
+            rep_ref_ok = verify_g0_gb200.verify_checkpoint_manifest(
+                model_dir, ref_dir=ref_dir, expect_composite_sha256=actual
+            )
+            self.assertTrue(rep_ref_ok["ref_match"])
+            self.assertEqual(rep_ref_ok["ref_composite_sha256"], actual)
+
+            (ref_dir / "model-00001-of-00016.safetensors").write_bytes(b"corrupted-size")
+            rep_ref_bad = verify_g0_gb200.verify_checkpoint_manifest(
+                model_dir, ref_dir=ref_dir, expect_composite_sha256=actual
+            )
+            self.assertFalse(rep_ref_bad["ref_match"])
+            self.assertIn("model-00001-of-00016.safetensors", rep_ref_bad["mismatches"])
+
 
 class TestV1ValidateDumpNumTurns(unittest.TestCase):
     """Verify V1 PPOTrainer._validate writes session num_turns for shaped reward reconciliation."""

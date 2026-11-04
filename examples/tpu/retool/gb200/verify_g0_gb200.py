@@ -134,15 +134,23 @@ def verify_checkpoint_manifest(
     ref_composite_sha256 = None
     mismatches: list[str] = []
     if ref_dir is not None and ref_dir.exists():
-        ref_paths = [ref_dir / name for name in all_names]
-        with ThreadPoolExecutor(max_workers=workers) as ex:
-            ref_rows = list(ex.map(_sha256_file, ref_paths))
-        ref_manifest = {name: {"size_bytes": size_b, "sha256": digest} for name, size_b, digest in ref_rows}
-        ref_composite_sha256 = hashlib.sha256(json.dumps(ref_manifest, sort_keys=True).encode("utf-8")).hexdigest()
-        for name in all_names:
-            if manifest[name] != ref_manifest[name]:
-                mismatches.append(name)
-        ref_match = len(mismatches) == 0
+        if expected_composite is not None and composite_sha256_match:
+            for name in all_names:
+                rp = ref_dir / name
+                if not rp.is_file() or rp.stat().st_size != manifest[name]["size_bytes"]:
+                    mismatches.append(name)
+            ref_match = len(mismatches) == 0
+            ref_composite_sha256 = expected_composite if ref_match else None
+        else:
+            ref_paths = [ref_dir / name for name in all_names]
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                ref_rows = list(ex.map(_sha256_file, ref_paths))
+            ref_manifest = {name: {"size_bytes": size_b, "sha256": digest} for name, size_b, digest in ref_rows}
+            ref_composite_sha256 = hashlib.sha256(json.dumps(ref_manifest, sort_keys=True).encode("utf-8")).hexdigest()
+            for name in all_names:
+                if manifest[name] != ref_manifest[name]:
+                    mismatches.append(name)
+            ref_match = len(mismatches) == 0
 
     return {
         "model_dir": str(model_dir),

@@ -18,6 +18,9 @@ set -xeuo pipefail
 
 export VERL_PLATFORM=nvidia
 export VLLM_USE_V1="${VLLM_USE_V1:-1}"
+export GLOO_SOCKET_IFNAME="${GLOO_SOCKET_IFNAME:-eth0}"
+export NCCL_SOCKET_IFNAME="${NCCL_SOCKET_IFNAME:-eth0}"
+export NCCL_SOCKET_FAMILY="${NCCL_SOCKET_FAMILY:-AF_INET}"
 export RAY_OVERRIDE_JOB_RUNTIME_ENV=1
 export PYTHONUNBUFFERED=1
 export RAY_memory_monitor_refresh_ms=0
@@ -288,6 +291,9 @@ python3 -m verl.trainer.main_ppo \
     "+ray_kwargs.ray_init.runtime_env.env_vars.SANDBOX_FUSION_PORT='${SANDBOX_FUSION_PORT}'" \
     "+ray_kwargs.ray_init.runtime_env.env_vars.SANDBOX_DISABLE_AUTO_START='${SANDBOX_DISABLE_AUTO_START:-0}'" \
     "+ray_kwargs.ray_init.runtime_env.env_vars.VLLM_USE_V1='${VLLM_USE_V1}'" \
+    "+ray_kwargs.ray_init.runtime_env.env_vars.GLOO_SOCKET_IFNAME='${GLOO_SOCKET_IFNAME}'" \
+    "+ray_kwargs.ray_init.runtime_env.env_vars.NCCL_SOCKET_IFNAME='${NCCL_SOCKET_IFNAME}'" \
+    "+ray_kwargs.ray_init.runtime_env.env_vars.NCCL_SOCKET_FAMILY='${NCCL_SOCKET_FAMILY}'" \
     "${DUMP_ARGS[@]}" \
     trainer.use_v1=True \
     trainer.v1.trainer_mode=separate_async \

@@ -132,6 +132,8 @@ NODE_RANK_TIMEOUT_S="${NODE_RANK_TIMEOUT_S:-600}"
 RUN_NAME="${RUN_NAME:-v7x-${RUN_OWNER:0:8}-$(date -u +%m%d-%H%M)}"
 CODE_REF="${CODE_REF:-HEAD}"
 JOB_SCRIPT="${JOB_SCRIPT:-examples/tpu/grpo/run_qwen3_30b_a3b_torchtitan.sh}"
+WANDB_SECRET_NAME="${WANDB_SECRET_NAME:-}"
+WANDB_SECRET_KEY="${WANDB_SECRET_KEY:-WANDB_API_KEY}"
 # Run-time limit the cluster enforces from the pods becoming ready (shorter in the dev and regression namespaces).
 case "${RAY_NAMESPACE}" in
   default) DEFAULT_RUN_LIMIT_MIN=180 ;;
@@ -200,7 +202,7 @@ export POD_TPU_ACCELERATOR_TYPE GCS_BUCKET GCSFUSE_MOUNT_OPTIONS DATA_MOUNT RUN_
 export HEAD_NODEPOOL HEAD_NUM_CPUS HEAD_OBJECT_STORE_BYTES HEAD_DSHM_SIZE TPU_DSHM_SIZE TPU_TOPOLOGY
 export TRAINER_SLICES ROLLOUT_SLICES RAY_TPU_PER_HOST WORKER_NUM_CPUS JOBSET_MAX_RESTARTS JOBSET_TTL_SECONDS
 export NODE_WAIT_TIMEOUT_S NODE_RANK_SOURCE NODE_RANK_TIMEOUT_S DRIVER_TIMEOUT_S REQUIRE_NODE_RANK PREWARM_HOLD_S KUBE_CONTEXT
-export MAX_ATTEMPTS
+export MAX_ATTEMPTS WANDB_SECRET_NAME WANDB_SECRET_KEY
 
 k() { kubectl --context "${KUBE_CONTEXT}" -n "${RAY_NAMESPACE}" "$@"; }
 
@@ -298,7 +300,8 @@ import time
 keys = (
     "RUN_NAME RUN_OWNER CODE_SHA IMAGE KUBE_CONTEXT RAY_NAMESPACE KUEUE_QUEUE PRIORITY_CLASS TPU_TOPOLOGY "
     "TRAINER_SLICES ROLLOUT_SLICES RAY_TPU_PER_HOST POD_TPU_ACCELERATOR_TYPE GCS_BUCKET RUN_DIR INPUTS_ROOT "
-    "DRIVER_TIMEOUT_S NODE_WAIT_TIMEOUT_S NODE_RANK_SOURCE REQUIRE_NODE_RANK JOBSET_MAX_RESTARTS"
+    "DRIVER_TIMEOUT_S NODE_WAIT_TIMEOUT_S NODE_RANK_SOURCE REQUIRE_NODE_RANK JOBSET_MAX_RESTARTS "
+    "WANDB_SECRET_NAME WANDB_SECRET_KEY"
 ).split()
 record = {k.lower(): os.environ.get(k, "") for k in keys}
 record["created_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -322,6 +325,9 @@ log "  chips     ${TOTAL_CHIPS} (${TOTAL_HOSTS} hosts) + CPU head on ${HEAD_NODE
 log "  run dir   ${RUN_GCS} (pods: ${RUN_DIR})"
 log "  job       bash ${JOB_SCRIPT} $* (driver deadline ${DRIVER_TIMEOUT_MIN} min after head start)"
 log "  reruns    at most ${MAX_ATTEMPTS} attempt(s): JOBSET_MAX_RESTARTS=${JOBSET_MAX_RESTARTS} ALLOW_REQUEUE=${ALLOW_REQUEUE} (head-enforced)"
+if [[ -n "${WANDB_SECRET_NAME}" ]]; then
+  log "  wandb     Secret ${WANDB_SECRET_NAME}[${WANDB_SECRET_KEY}] -> head WANDB_API_KEY"
+fi
 log "  manifest  ${MANIFEST}"
 log "==================================================================================="
 python3 - "${JOB_SPEC}" <<'PY'
@@ -343,6 +349,13 @@ CLUSTER_QUEUE="$(k get localqueue "${KUEUE_QUEUE}" -o jsonpath='{.spec.clusterQu
 [[ -n "${CLUSTER_QUEUE}" ]] || die "LocalQueue ${KUEUE_QUEUE} not found in namespace ${RAY_NAMESPACE}"
 if k get jobset "${RUN_NAME}" >/dev/null 2>&1; then
   die "JobSet ${RUN_NAME} already exists; every run needs a new RUN_NAME"
+fi
+if [[ -n "${WANDB_SECRET_NAME}" ]]; then
+  SECRET_HAS_KEY="$(k get secret "${WANDB_SECRET_NAME}" -o jsonpath="{.data.${WANDB_SECRET_KEY}}" 2>/dev/null || true)"
+  [[ -n "${SECRET_HAS_KEY}" ]] \
+    || die "Secret ${WANDB_SECRET_NAME} (key ${WANDB_SECRET_KEY}) not found or empty in namespace ${RAY_NAMESPACE}"
+  unset SECRET_HAS_KEY
+  log "verified Secret ${WANDB_SECRET_NAME}[${WANDB_SECRET_KEY}] exists in namespace ${RAY_NAMESPACE}"
 fi
 CQ_JSON="${LOG_DIR}/clusterqueue.json"
 if kubectl --context "${KUBE_CONTEXT}" get clusterqueue "${CLUSTER_QUEUE}" -o json >"${CQ_JSON}" 2>/dev/null; then

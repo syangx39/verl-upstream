@@ -51,6 +51,8 @@ TENSORCORES_PER_CHIP = 2
 # JobSet pod hostnames are `<jobset>-<replicatedJob>-<job index>-<pod index>` and must stay a DNS label (<= 63).
 MAX_RUN_NAME_LEN = 30
 DNS_LABEL = re.compile(r"^[a-z]([-a-z0-9]*[a-z0-9])?$")
+SECRET_NAME = re.compile(r"^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$")
+SECRET_KEY = re.compile(r"^[-._a-zA-Z0-9]+$")
 TOPOLOGY = re.compile(r"^[1-9][0-9]*x[1-9][0-9]*x[1-9][0-9]*$")
 # Keys that must be set (non-empty) in the environment for each template.
 MANIFEST_KEYS = (
@@ -198,6 +200,25 @@ def expected_slices(values: Mapping[str, str]) -> str:
     return ",".join(f"{sl.ray_resource}={hosts}" for sl in plan_slices(*_slice_counts(values)))
 
 
+def head_extra_env(values: Mapping[str, str]) -> str:
+    """Optional Kubernetes Secret ``secretKeyRef`` snippet injecting ``WANDB_API_KEY`` into ``ray-head``."""
+    secret_name = str(values.get("WANDB_SECRET_NAME", "")).strip()
+    if not secret_name:
+        return ""
+    if len(secret_name) > 253 or not SECRET_NAME.match(secret_name):
+        raise ValueError(f"WANDB_SECRET_NAME {secret_name!r} is not a valid Kubernetes Secret name")
+    secret_key = str(values.get("WANDB_SECRET_KEY", "") or "WANDB_API_KEY").strip()
+    if not SECRET_KEY.match(secret_key):
+        raise ValueError(f"WANDB_SECRET_KEY {secret_key!r} is not a valid Kubernetes Secret key")
+    return (
+        "                    - name: WANDB_API_KEY\n"
+        "                      valueFrom:\n"
+        "                        secretKeyRef:\n"
+        f'                          name: "{secret_name}"\n'
+        f'                          key: "{secret_key}"'
+    )
+
+
 def render_manifest(values: Mapping[str, str]) -> str:
     """Render the JobSet (head plus one replicatedJob per TPU slice)."""
     _require(values, MANIFEST_KEYS)
@@ -208,6 +229,7 @@ def render_manifest(values: Mapping[str, str]) -> str:
     full = {
         **values,
         "EXPECTED_SLICES": expected_slices(values),
+        "HEAD_EXTRA_ENV": head_extra_env(values),
         "WORKER_NUM_CPUS": values.get("WORKER_NUM_CPUS", ""),
         "TPU_REPLICATED_JOBS": "".join(jobs).rstrip("\n"),
     }
@@ -280,6 +302,14 @@ def check_manifest(text: str, values: Mapping[str, str]) -> list[str]:
         if rj_name == "head":
             if spec.get("nodeSelector", {}).get("cloud.google.com/gke-nodepool") != values.get("HEAD_NODEPOOL"):
                 problems.append("head: not pinned to the head node pool")
+            secret_name = str(values.get("WANDB_SECRET_NAME", "")).strip()
+            if secret_name:
+                secret_key = str(values.get("WANDB_SECRET_KEY", "") or "WANDB_API_KEY").strip()
+                head_envs = {e["name"]: e for e in spec.get("containers", [{}])[0].get("env", [])}
+                want_ref = {"name": secret_name, "key": secret_key}
+                got_ref = (head_envs.get("WANDB_API_KEY") or {}).get("valueFrom", {}).get("secretKeyRef")
+                if got_ref != want_ref:
+                    problems.append(f"head: WANDB_API_KEY secretKeyRef {got_ref!r} != {want_ref!r}")
             continue
         if rj.get("replicas") != 1:
             problems.append(f"{rj_name}: replicas must be 1 (replicas > 1 makes GKE inject MEGASCALE_*)")

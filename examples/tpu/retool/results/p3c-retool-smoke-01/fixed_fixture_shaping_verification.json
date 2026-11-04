@@ -1,0 +1,216 @@
+{
+  "all_passed": true,
+  "verified_via_get_custom_reward_fn": true,
+  "verified_via_naive_reward_manager": true,
+  "custom_reward_function_path": "pkg://examples.tpu.retool.retool_tpu",
+  "custom_reward_function_name": "compute_score",
+  "fixtures": [
+    {
+      "case": "correct_boxed_t2",
+      "solution_str": "Let us solve this.\n\\boxed{42}",
+      "ground_truth": "42",
+      "num_turns": 2,
+      "expected_score": 1.0,
+      "expected_acc": true,
+      "actual": {
+        "score": 1.0,
+        "acc": true,
+        "pred": "42"
+      },
+      "naive_reward_manager": {
+        "non_tensor_num_turns": 2,
+        "reward_tensor_last_valid_token_index": 2,
+        "reward_tensor_last_valid_token_value": 1.0,
+        "reward_tensor_non_terminal_tokens_all_zero": true,
+        "reward_extra_info_score": 1.0,
+        "reward_extra_info_acc": true,
+        "reward_extra_info_pred": "42"
+      },
+      "passed": true
+    },
+    {
+      "case": "correct_boxed_t8",
+      "solution_str": "Tool call done.\n\\boxed{42}",
+      "ground_truth": "42",
+      "num_turns": 8,
+      "expected_score": 1.0,
+      "expected_acc": true,
+      "actual": {
+        "score": 1.0,
+        "acc": true,
+        "pred": "42"
+      },
+      "naive_reward_manager": {
+        "non_tensor_num_turns": 8,
+        "reward_tensor_last_valid_token_index": 2,
+        "reward_tensor_last_valid_token_value": 1.0,
+        "reward_tensor_non_terminal_tokens_all_zero": true,
+        "reward_extra_info_score": 1.0,
+        "reward_extra_info_acc": true,
+        "reward_extra_info_pred": "42"
+      },
+      "passed": true
+    },
+    {
+      "case": "wrong_boxed_t2",
+      "solution_str": "\\boxed{41}",
+      "ground_truth": "42",
+      "num_turns": 2,
+      "expected_score": -1.0,
+      "expected_acc": false,
+      "actual": {
+        "score": -1.0,
+        "acc": false,
+        "pred": "41"
+      },
+      "naive_reward_manager": {
+        "non_tensor_num_turns": 2,
+        "reward_tensor_last_valid_token_index": 2,
+        "reward_tensor_last_valid_token_value": -1.0,
+        "reward_tensor_non_terminal_tokens_all_zero": true,
+        "reward_extra_info_score": -1.0,
+        "reward_extra_info_acc": false,
+        "reward_extra_info_pred": "41"
+      },
+      "passed": true
+    },
+    {
+      "case": "wrong_boxed_t3",
+      "solution_str": "\\boxed{41}",
+      "ground_truth": "42",
+      "num_turns": 3,
+      "expected_score": -0.95,
+      "expected_acc": false,
+      "actual": {
+        "score": -0.95,
+        "acc": false,
+        "pred": "41"
+      },
+      "naive_reward_manager": {
+        "non_tensor_num_turns": 3,
+        "reward_tensor_last_valid_token_index": 2,
+        "reward_tensor_last_valid_token_value": -0.95,
+        "reward_tensor_non_terminal_tokens_all_zero": true,
+        "reward_extra_info_score": -0.95,
+        "reward_extra_info_acc": false,
+        "reward_extra_info_pred": "41"
+      },
+      "passed": true
+    },
+    {
+      "case": "wrong_boxed_t4",
+      "solution_str": "\\boxed{41}",
+      "ground_truth": "42",
+      "num_turns": 4,
+      "expected_score": -0.9,
+      "expected_acc": false,
+      "actual": {
+        "score": -0.9,
+        "acc": false,
+        "pred": "41"
+      },
+      "naive_reward_manager": {
+        "non_tensor_num_turns": 4,
+        "reward_tensor_last_valid_token_index": 2,
+        "reward_tensor_last_valid_token_value": -0.9,
+        "reward_tensor_non_terminal_tokens_all_zero": true,
+        "reward_extra_info_score": -0.9,
+        "reward_extra_info_acc": false,
+        "reward_extra_info_pred": "41"
+      },
+      "passed": true
+    },
+    {
+      "case": "wrong_boxed_t6",
+      "solution_str": "\\boxed{41}",
+      "ground_truth": "42",
+      "num_turns": 6,
+      "expected_score": -0.8,
+      "expected_acc": false,
+      "actual": {
+        "score": -0.8,
+        "acc": false,
+        "pred": "41"
+      },
+      "naive_reward_manager": {
+        "non_tensor_num_turns": 6,
+        "reward_tensor_last_valid_token_index": 2,
+        "reward_tensor_last_valid_token_value": -0.8,
+        "reward_tensor_non_terminal_tokens_all_zero": true,
+        "reward_extra_info_score": -0.8,
+        "reward_extra_info_acc": false,
+        "reward_extra_info_pred": "41"
+      },
+      "passed": true
+    },
+    {
+      "case": "wrong_boxed_t10",
+      "solution_str": "\\boxed{41}",
+      "ground_truth": "42",
+      "num_turns": 10,
+      "expected_score": -0.6,
+      "expected_acc": false,
+      "actual": {
+        "score": -0.6,
+        "acc": false,
+        "pred": "41"
+      },
+      "naive_reward_manager": {
+        "non_tensor_num_turns": 10,
+        "reward_tensor_last_valid_token_index": 2,
+        "reward_tensor_last_valid_token_value": -0.6,
+        "reward_tensor_non_terminal_tokens_all_zero": true,
+        "reward_extra_info_score": -0.6,
+        "reward_extra_info_acc": false,
+        "reward_extra_info_pred": "41"
+      },
+      "passed": true
+    },
+    {
+      "case": "answer_prefix_no_box_t2",
+      "solution_str": "Therefore, Answer: 42",
+      "ground_truth": "42",
+      "num_turns": 2,
+      "expected_score": -1.0,
+      "expected_acc": false,
+      "actual": {
+        "score": -1.0,
+        "acc": false,
+        "pred": ""
+      },
+      "naive_reward_manager": {
+        "non_tensor_num_turns": 2,
+        "reward_tensor_last_valid_token_index": 2,
+        "reward_tensor_last_valid_token_value": -1.0,
+        "reward_tensor_non_terminal_tokens_all_zero": true,
+        "reward_extra_info_score": -1.0,
+        "reward_extra_info_acc": false,
+        "reward_extra_info_pred": ""
+      },
+      "passed": true
+    },
+    {
+      "case": "boxed_with_long_suffix_gt_100_chars_t2",
+      "solution_str": "\\boxed{42}xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "ground_truth": "42",
+      "num_turns": 2,
+      "expected_score": -1.0,
+      "expected_acc": false,
+      "actual": {
+        "score": -1.0,
+        "acc": false,
+        "pred": ""
+      },
+      "naive_reward_manager": {
+        "non_tensor_num_turns": 2,
+        "reward_tensor_last_valid_token_index": 2,
+        "reward_tensor_last_valid_token_value": -1.0,
+        "reward_tensor_non_terminal_tokens_all_zero": true,
+        "reward_extra_info_score": -1.0,
+        "reward_extra_info_acc": false,
+        "reward_extra_info_pred": ""
+      },
+      "passed": true
+    }
+  ]
+}

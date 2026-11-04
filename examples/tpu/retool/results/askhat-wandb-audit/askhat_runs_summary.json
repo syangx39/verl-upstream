@@ -1,0 +1,1421 @@
+{
+  "wandb_project": "google-trellis/verl-torchtpu-grpo-test",
+  "audited_at": "2026-11-04",
+  "runs": [
+    {
+      "run_id": "ozkz5d07",
+      "display_name": "qwen3-30b-a3b-retool-dapo-tpu-64chips-4xtp8-full-40steps",
+      "created_at": "2026-10-23T16:19:30Z",
+      "state": "crashed",
+      "resumed_from": null,
+      "regime": "Regime_1_8K_nothink_default_scorer",
+      "config": {
+        "use_v1": true,
+        "top_level_custom_reward_path": "/data/verl/recipe/retool/retool.py",
+        "v1_reward_custom_reward_path": null,
+        "effective_scorer": "default math_dapo (strict_box_verify=False, no shaping)",
+        "enable_thinking": false,
+        "max_prompt_length": 2048,
+        "max_response_length": 16384,
+        "max_user_turns": 16,
+        "max_assistant_turns": 16,
+        "rollout_n": 16,
+        "val_n": 30,
+        "actor_lr": 1e-06,
+        "min_lr_factor": 0.733,
+        "lr_warmup_steps_ratio": 0,
+        "configured_clip_grad": 1,
+        "effective_torchtitan_max_norm": 1.0,
+        "train_batch_size": 256,
+        "ppo_mini_batch_size": 32,
+        "ppo_max_token_len_per_gpu": 4608,
+        "context_parallel_size": 4,
+        "data_parallel_shard_size": 8,
+        "torchtitan_max_seq_len": 18432,
+        "rollout_tp": 8,
+        "rollout_ep": 8,
+        "rollout_gpu_memory_utilization": 0.62,
+        "trainer_nnodes": 4,
+        "trainer_n_gpus_per_node": 8
+      },
+      "training_summary": {
+        "num_logged_steps": 10,
+        "min_logged_step": 1,
+        "max_logged_step": 10,
+        "steps_1_to_5_rewards": [
+          {
+            "step": 1,
+            "reward": -0.2114
+          },
+          {
+            "step": 2,
+            "reward": -0.3364
+          },
+          {
+            "step": 3,
+            "reward": -0.2451
+          },
+          {
+            "step": 4,
+            "reward": -0.1611
+          },
+          {
+            "step": 5,
+            "reward": -0.2812
+          }
+        ],
+        "steps_21_to_25_rewards": [],
+        "reward_mean_steps_1_to_5": -0.247,
+        "reward_mean_steps_21_to_25": null,
+        "grad_norm_median": 0.2439,
+        "grad_norm_max": 0.3095,
+        "response_length_mean": 980.9,
+        "response_clip_ratio_mean": 0.00083,
+        "num_turns_mean": 6.32
+      },
+      "validations": [
+        {
+          "step": 0,
+          "n_val": 30,
+          "aime_2024_acc": 0.256667,
+          "aime_2024_maj": 0.4167,
+          "aime_2024_score": -0.486667,
+          "aime_2024_shaping_delta": 0.0,
+          "aime_2025_acc": 0.175556,
+          "aime_2025_maj": 0.295067,
+          "aime_2025_score": -0.648889,
+          "aime_2025_shaping_delta": -0.0
+        },
+        {
+          "step": 5,
+          "n_val": 30,
+          "aime_2024_acc": 0.308889,
+          "aime_2024_maj": 0.497433,
+          "aime_2024_score": -0.382222,
+          "aime_2024_shaping_delta": -0.0,
+          "aime_2025_acc": 0.193333,
+          "aime_2025_maj": 0.350567,
+          "aime_2025_score": -0.613333,
+          "aime_2025_shaping_delta": -0.0
+        },
+        {
+          "step": 10,
+          "n_val": 30,
+          "aime_2024_acc": 0.332222,
+          "aime_2024_maj": 0.528867,
+          "aime_2024_score": -0.335556,
+          "aime_2024_shaping_delta": -0.0,
+          "aime_2025_acc": 0.228889,
+          "aime_2025_maj": 0.420067,
+          "aime_2025_score": -0.542222,
+          "aime_2025_shaping_delta": 0.0
+        }
+      ]
+    },
+    {
+      "run_id": "dj6g4b0i",
+      "display_name": "qwen3-30b-a3b-retool-dapo-p5b-400steps",
+      "created_at": "2026-10-25T03:35:01Z",
+      "state": "failed",
+      "resumed_from": null,
+      "regime": "Regime_1_8K_nothink_default_scorer",
+      "config": {
+        "use_v1": true,
+        "top_level_custom_reward_path": "/data/verl/recipe/retool/retool.py",
+        "v1_reward_custom_reward_path": null,
+        "effective_scorer": "default math_dapo (strict_box_verify=False, no shaping)",
+        "enable_thinking": false,
+        "max_prompt_length": 2048,
+        "max_response_length": 8192,
+        "max_user_turns": 8,
+        "max_assistant_turns": 8,
+        "rollout_n": 8,
+        "val_n": 30,
+        "actor_lr": 1.4e-06,
+        "min_lr_factor": 1,
+        "lr_warmup_steps_ratio": 0,
+        "configured_clip_grad": 0.088,
+        "effective_torchtitan_max_norm": 1.0,
+        "train_batch_size": 64,
+        "ppo_mini_batch_size": 64,
+        "ppo_max_token_len_per_gpu": 4608,
+        "context_parallel_size": 4,
+        "data_parallel_shard_size": 8,
+        "torchtitan_max_seq_len": 18432,
+        "rollout_tp": 8,
+        "rollout_ep": 8,
+        "rollout_gpu_memory_utilization": 0.62,
+        "trainer_nnodes": 4,
+        "trainer_n_gpus_per_node": 8
+      },
+      "training_summary": {
+        "num_logged_steps": 48,
+        "min_logged_step": 1,
+        "max_logged_step": 48,
+        "steps_1_to_5_rewards": [
+          {
+            "step": 1,
+            "reward": -0.1172
+          },
+          {
+            "step": 2,
+            "reward": -0.5117
+          },
+          {
+            "step": 3,
+            "reward": -0.4453
+          },
+          {
+            "step": 4,
+            "reward": -0.2422
+          },
+          {
+            "step": 5,
+            "reward": -0.2617
+          }
+        ],
+        "steps_21_to_25_rewards": [
+          {
+            "step": 21,
+            "reward": -0.2109
+          },
+          {
+            "step": 22,
+            "reward": -0.0977
+          },
+          {
+            "step": 23,
+            "reward": -0.0273
+          },
+          {
+            "step": 24,
+            "reward": -0.168
+          },
+          {
+            "step": 25,
+            "reward": -0.0742
+          }
+        ],
+        "reward_mean_steps_1_to_5": -0.3156,
+        "reward_mean_steps_21_to_25": -0.1156,
+        "grad_norm_median": 0.1916,
+        "grad_norm_max": 0.3664,
+        "response_length_mean": 1126.1,
+        "response_clip_ratio_mean": 0.00415,
+        "num_turns_mean": 6.42
+      },
+      "validations": [
+        {
+          "step": 0,
+          "n_val": 30,
+          "aime_2024_acc": 0.23,
+          "aime_2024_maj": 0.430667,
+          "aime_2024_score": -0.54,
+          "aime_2024_shaping_delta": 0.0,
+          "aime_2025_acc": 0.158889,
+          "aime_2025_maj": 0.308333,
+          "aime_2025_score": -0.682222,
+          "aime_2025_shaping_delta": 0.0
+        },
+        {
+          "step": 25,
+          "n_val": 30,
+          "aime_2024_acc": 0.288889,
+          "aime_2024_maj": 0.464733,
+          "aime_2024_score": -0.422222,
+          "aime_2024_shaping_delta": 0.0,
+          "aime_2025_acc": 0.213333,
+          "aime_2025_maj": 0.3424,
+          "aime_2025_score": -0.573333,
+          "aime_2025_shaping_delta": -0.0
+        }
+      ]
+    },
+    {
+      "run_id": "lb5cdzuq",
+      "display_name": "qwen3-30b-a3b-retool-dapo-p5b-400steps-v2",
+      "created_at": "2026-10-26T08:21:56Z",
+      "state": "failed",
+      "resumed_from": null,
+      "regime": "Regime_1_8K_nothink_default_scorer",
+      "config": {
+        "use_v1": true,
+        "top_level_custom_reward_path": "/data/verl/recipe/retool/retool.py",
+        "v1_reward_custom_reward_path": null,
+        "effective_scorer": "default math_dapo (strict_box_verify=False, no shaping)",
+        "enable_thinking": false,
+        "max_prompt_length": 2048,
+        "max_response_length": 8192,
+        "max_user_turns": 8,
+        "max_assistant_turns": 8,
+        "rollout_n": 8,
+        "val_n": 30,
+        "actor_lr": 1.4e-06,
+        "min_lr_factor": 1,
+        "lr_warmup_steps_ratio": 0,
+        "configured_clip_grad": 0.088,
+        "effective_torchtitan_max_norm": 1.0,
+        "train_batch_size": 64,
+        "ppo_mini_batch_size": 64,
+        "ppo_max_token_len_per_gpu": 4608,
+        "context_parallel_size": 4,
+        "data_parallel_shard_size": 8,
+        "torchtitan_max_seq_len": 18432,
+        "rollout_tp": 8,
+        "rollout_ep": 8,
+        "rollout_gpu_memory_utilization": 0.62,
+        "trainer_nnodes": 4,
+        "trainer_n_gpus_per_node": 8
+      },
+      "training_summary": {
+        "num_logged_steps": 29,
+        "min_logged_step": 1,
+        "max_logged_step": 29,
+        "steps_1_to_5_rewards": [
+          {
+            "step": 1,
+            "reward": 0.0625
+          },
+          {
+            "step": 2,
+            "reward": -0.5352
+          },
+          {
+            "step": 3,
+            "reward": -0.2617
+          },
+          {
+            "step": 4,
+            "reward": -0.332
+          },
+          {
+            "step": 5,
+            "reward": -0.2969
+          }
+        ],
+        "steps_21_to_25_rewards": [
+          {
+            "step": 21,
+            "reward": -0.1055
+          },
+          {
+            "step": 22,
+            "reward": -0.2461
+          },
+          {
+            "step": 23,
+            "reward": -0.2031
+          },
+          {
+            "step": 24,
+            "reward": -0.1562
+          },
+          {
+            "step": 25,
+            "reward": -0.0742
+          }
+        ],
+        "reward_mean_steps_1_to_5": -0.2727,
+        "reward_mean_steps_21_to_25": -0.157,
+        "grad_norm_median": 0.2172,
+        "grad_norm_max": 0.3597,
+        "response_length_mean": 916.8,
+        "response_clip_ratio_mean": 0.00296,
+        "num_turns_mean": 6.02
+      },
+      "validations": [
+        {
+          "step": 0,
+          "n_val": 30,
+          "aime_2024_acc": 0.254444,
+          "aime_2024_maj": 0.460967,
+          "aime_2024_score": -0.491111,
+          "aime_2024_shaping_delta": -0.0,
+          "aime_2025_acc": 0.144444,
+          "aime_2025_maj": 0.2821,
+          "aime_2025_score": -0.711111,
+          "aime_2025_shaping_delta": 0.0
+        },
+        {
+          "step": 25,
+          "n_val": 30,
+          "aime_2024_acc": 0.3,
+          "aime_2024_maj": 0.465833,
+          "aime_2024_score": -0.4,
+          "aime_2024_shaping_delta": 0.0,
+          "aime_2025_acc": 0.183333,
+          "aime_2025_maj": 0.304733,
+          "aime_2025_score": -0.633333,
+          "aime_2025_shaping_delta": 0.0
+        }
+      ]
+    },
+    {
+      "run_id": "1qhymrv4",
+      "display_name": "qwen3-30b-a3b-retool-dapo-p5b-400steps-v2-cont-from-s20-a2",
+      "created_at": "2026-10-26T18:55:39Z",
+      "state": "failed",
+      "resumed_from": "lb5cdzuq (step 20 checkpoint)",
+      "regime": "Regime_1_8K_nothink_default_scorer",
+      "config": {
+        "use_v1": true,
+        "top_level_custom_reward_path": "/data/verl/recipe/retool/retool.py",
+        "v1_reward_custom_reward_path": null,
+        "effective_scorer": "default math_dapo (strict_box_verify=False, no shaping)",
+        "enable_thinking": false,
+        "max_prompt_length": 2048,
+        "max_response_length": 8192,
+        "max_user_turns": 8,
+        "max_assistant_turns": 8,
+        "rollout_n": 8,
+        "val_n": 30,
+        "actor_lr": 1.4e-06,
+        "min_lr_factor": 1,
+        "lr_warmup_steps_ratio": 0,
+        "configured_clip_grad": 0.088,
+        "effective_torchtitan_max_norm": 1.0,
+        "train_batch_size": 64,
+        "ppo_mini_batch_size": 64,
+        "ppo_max_token_len_per_gpu": 4608,
+        "context_parallel_size": 4,
+        "data_parallel_shard_size": 8,
+        "torchtitan_max_seq_len": 18432,
+        "rollout_tp": 8,
+        "rollout_ep": 8,
+        "rollout_gpu_memory_utilization": 0.62,
+        "trainer_nnodes": 4,
+        "trainer_n_gpus_per_node": 8
+      },
+      "training_summary": {
+        "num_logged_steps": 219,
+        "min_logged_step": 1,
+        "max_logged_step": 219,
+        "steps_1_to_5_rewards": [
+          {
+            "step": 1,
+            "reward": -0.0078
+          },
+          {
+            "step": 2,
+            "reward": -0.1562
+          },
+          {
+            "step": 3,
+            "reward": -0.4648
+          },
+          {
+            "step": 4,
+            "reward": -0.2266
+          },
+          {
+            "step": 5,
+            "reward": -0.2422
+          }
+        ],
+        "steps_21_to_25_rewards": [
+          {
+            "step": 21,
+            "reward": -0.0742
+          },
+          {
+            "step": 22,
+            "reward": 0.0312
+          },
+          {
+            "step": 23,
+            "reward": -0.168
+          },
+          {
+            "step": 24,
+            "reward": 0.0391
+          },
+          {
+            "step": 25,
+            "reward": 0.1055
+          }
+        ],
+        "reward_mean_steps_1_to_5": -0.2195,
+        "reward_mean_steps_21_to_25": -0.0133,
+        "grad_norm_median": 0.0814,
+        "grad_norm_max": 0.8563,
+        "response_length_mean": 2967.9,
+        "response_clip_ratio_mean": 0.06352,
+        "num_turns_mean": 4.94
+      },
+      "validations": [
+        {
+          "step": 25,
+          "n_val": 30,
+          "aime_2024_acc": 0.393333,
+          "aime_2024_maj": 0.614667,
+          "aime_2024_score": -0.213333,
+          "aime_2024_shaping_delta": 0.0,
+          "aime_2025_acc": 0.254444,
+          "aime_2025_maj": 0.384567,
+          "aime_2025_score": -0.491111,
+          "aime_2025_shaping_delta": -0.0
+        },
+        {
+          "step": 50,
+          "n_val": 30,
+          "aime_2024_acc": 0.407778,
+          "aime_2024_maj": 0.582233,
+          "aime_2024_score": -0.184444,
+          "aime_2024_shaping_delta": 0.0,
+          "aime_2025_acc": 0.272222,
+          "aime_2025_maj": 0.395867,
+          "aime_2025_score": -0.455556,
+          "aime_2025_shaping_delta": 0.0
+        },
+        {
+          "step": 75,
+          "n_val": 30,
+          "aime_2024_acc": 0.476667,
+          "aime_2024_maj": 0.642567,
+          "aime_2024_score": -0.046667,
+          "aime_2024_shaping_delta": -0.0,
+          "aime_2025_acc": 0.312222,
+          "aime_2025_maj": 0.427433,
+          "aime_2025_score": -0.375556,
+          "aime_2025_shaping_delta": 0.0
+        },
+        {
+          "step": 100,
+          "n_val": 30,
+          "aime_2024_acc": 0.49,
+          "aime_2024_maj": 0.624067,
+          "aime_2024_score": -0.02,
+          "aime_2024_shaping_delta": 0.0,
+          "aime_2025_acc": 0.347778,
+          "aime_2025_maj": 0.424467,
+          "aime_2025_score": -0.304444,
+          "aime_2025_shaping_delta": -0.0
+        },
+        {
+          "step": 125,
+          "n_val": 30,
+          "aime_2024_acc": 0.482222,
+          "aime_2024_maj": 0.5778,
+          "aime_2024_score": -0.035556,
+          "aime_2024_shaping_delta": 0.0,
+          "aime_2025_acc": 0.331111,
+          "aime_2025_maj": 0.3819,
+          "aime_2025_score": -0.337778,
+          "aime_2025_shaping_delta": 0.0
+        },
+        {
+          "step": 150,
+          "n_val": 30,
+          "aime_2024_acc": 0.495556,
+          "aime_2024_maj": 0.592233,
+          "aime_2024_score": -0.008889,
+          "aime_2024_shaping_delta": 0.0,
+          "aime_2025_acc": 0.362222,
+          "aime_2025_maj": 0.389633,
+          "aime_2025_score": -0.275556,
+          "aime_2025_shaping_delta": 0.0
+        },
+        {
+          "step": 175,
+          "n_val": 30,
+          "aime_2024_acc": 0.483333,
+          "aime_2024_maj": 0.530667,
+          "aime_2024_score": -0.033333,
+          "aime_2024_shaping_delta": -0.0,
+          "aime_2025_acc": 0.355556,
+          "aime_2025_maj": 0.378,
+          "aime_2025_score": -0.288889,
+          "aime_2025_shaping_delta": 0.0
+        },
+        {
+          "step": 200,
+          "n_val": 30,
+          "aime_2024_acc": 0.507778,
+          "aime_2024_maj": 0.557067,
+          "aime_2024_score": 0.015556,
+          "aime_2024_shaping_delta": 0.0,
+          "aime_2025_acc": 0.376667,
+          "aime_2025_maj": 0.409633,
+          "aime_2025_score": -0.246667,
+          "aime_2025_shaping_delta": 0.0
+        }
+      ]
+    },
+    {
+      "run_id": "39othwaq",
+      "display_name": "qwen3-30b-a3b-retool-dapo-p5b-400steps-v2-cont-from-s300-a12",
+      "created_at": "2026-10-28T00:24:37Z",
+      "state": "finished",
+      "resumed_from": "hdc2m3lf / 1qhymrv4 (step 300 checkpoint)",
+      "regime": "Regime_1_8K_nothink_default_scorer",
+      "config": {
+        "use_v1": true,
+        "top_level_custom_reward_path": "/data/verl/recipe/retool/retool.py",
+        "v1_reward_custom_reward_path": null,
+        "effective_scorer": "default math_dapo (strict_box_verify=False, no shaping)",
+        "enable_thinking": false,
+        "max_prompt_length": 2048,
+        "max_response_length": 8192,
+        "max_user_turns": 8,
+        "max_assistant_turns": 8,
+        "rollout_n": 8,
+        "val_n": 30,
+        "actor_lr": 1.4e-06,
+        "min_lr_factor": 1,
+        "lr_warmup_steps_ratio": 0,
+        "configured_clip_grad": 0.088,
+        "effective_torchtitan_max_norm": 1.0,
+        "train_batch_size": 64,
+        "ppo_mini_batch_size": 64,
+        "ppo_max_token_len_per_gpu": 4608,
+        "context_parallel_size": 4,
+        "data_parallel_shard_size": 8,
+        "torchtitan_max_seq_len": 18432,
+        "rollout_tp": 8,
+        "rollout_ep": 8,
+        "rollout_gpu_memory_utilization": 0.62,
+        "trainer_nnodes": 4,
+        "trainer_n_gpus_per_node": 8
+      },
+      "training_summary": {
+        "num_logged_steps": 100,
+        "min_logged_step": 1,
+        "max_logged_step": 100,
+        "steps_1_to_5_rewards": [
+          {
+            "step": 1,
+            "reward": 0.793
+          },
+          {
+            "step": 2,
+            "reward": 0.3125
+          },
+          {
+            "step": 3,
+            "reward": 0.4062
+          },
+          {
+            "step": 4,
+            "reward": 0.5859
+          },
+          {
+            "step": 5,
+            "reward": 0.5391
+          }
+        ],
+        "steps_21_to_25_rewards": [
+          {
+            "step": 21,
+            "reward": 0.4805
+          },
+          {
+            "step": 22,
+            "reward": 0.5078
+          },
+          {
+            "step": 23,
+            "reward": 0.3047
+          },
+          {
+            "step": 24,
+            "reward": 0.3867
+          },
+          {
+            "step": 25,
+            "reward": 0.4414
+          }
+        ],
+        "reward_mean_steps_1_to_5": 0.5273,
+        "reward_mean_steps_21_to_25": 0.4242,
+        "grad_norm_median": 0.0546,
+        "grad_norm_max": 0.0906,
+        "response_length_mean": 3818.6,
+        "response_clip_ratio_mean": 0.05172,
+        "num_turns_mean": 3.63
+      },
+      "validations": [
+        {
+          "step": 25,
+          "n_val": 30,
+          "aime_2024_acc": 0.508889,
+          "aime_2024_maj": 0.563433,
+          "aime_2024_score": 0.017778,
+          "aime_2024_shaping_delta": -0.0,
+          "aime_2025_acc": 0.386667,
+          "aime_2025_maj": 0.430167,
+          "aime_2025_score": -0.226667,
+          "aime_2025_shaping_delta": 0.0
+        },
+        {
+          "step": 50,
+          "n_val": 30,
+          "aime_2024_acc": 0.507778,
+          "aime_2024_maj": 0.570633,
+          "aime_2024_score": 0.015556,
+          "aime_2024_shaping_delta": 0.0,
+          "aime_2025_acc": 0.39,
+          "aime_2025_maj": 0.416767,
+          "aime_2025_score": -0.22,
+          "aime_2025_shaping_delta": 0.0
+        },
+        {
+          "step": 75,
+          "n_val": 30,
+          "aime_2024_acc": 0.504444,
+          "aime_2024_maj": 0.5512,
+          "aime_2024_score": 0.008889,
+          "aime_2024_shaping_delta": -0.0,
+          "aime_2025_acc": 0.394444,
+          "aime_2025_maj": 0.4168,
+          "aime_2025_score": -0.211111,
+          "aime_2025_shaping_delta": -0.0
+        },
+        {
+          "step": 100,
+          "n_val": 30,
+          "aime_2024_acc": 0.518889,
+          "aime_2024_maj": 0.578433,
+          "aime_2024_score": 0.037778,
+          "aime_2024_shaping_delta": 0.0,
+          "aime_2025_acc": 0.391111,
+          "aime_2025_maj": 0.4158,
+          "aime_2025_score": -0.217778,
+          "aime_2025_shaping_delta": 0.0
+        }
+      ]
+    },
+    {
+      "run_id": "yjowd03u",
+      "display_name": "retool-dapo-qwen3-30b-a3b-v5p",
+      "created_at": "2026-10-29T02:50:09Z",
+      "state": "crashed",
+      "resumed_from": null,
+      "regime": "Regime_2_16K_thinking_shaped",
+      "config": {
+        "use_v1": true,
+        "top_level_custom_reward_path": null,
+        "v1_reward_custom_reward_path": "pkg://examples.tpu.retool.retool_tpu",
+        "effective_scorer": "retool_tpu (strict_box_verify=True + tool shaping)",
+        "enable_thinking": true,
+        "max_prompt_length": 2048,
+        "max_response_length": 16384,
+        "max_user_turns": 16,
+        "max_assistant_turns": 16,
+        "rollout_n": 16,
+        "val_n": 8,
+        "actor_lr": 2e-06,
+        "min_lr_factor": 1,
+        "lr_warmup_steps_ratio": 0,
+        "configured_clip_grad": 0.0625,
+        "effective_torchtitan_max_norm": 1.0,
+        "train_batch_size": 64,
+        "ppo_mini_batch_size": 64,
+        "ppo_max_token_len_per_gpu": 18432,
+        "context_parallel_size": 1,
+        "data_parallel_shard_size": 16,
+        "torchtitan_max_seq_len": 18432,
+        "rollout_tp": 16,
+        "rollout_ep": 16,
+        "rollout_gpu_memory_utilization": 0.85,
+        "trainer_nnodes": 4,
+        "trainer_n_gpus_per_node": 4
+      },
+      "training_summary": {
+        "num_logged_steps": 0,
+        "min_logged_step": null,
+        "max_logged_step": null,
+        "steps_1_to_5_rewards": [],
+        "steps_21_to_25_rewards": [],
+        "reward_mean_steps_1_to_5": null,
+        "reward_mean_steps_21_to_25": null,
+        "grad_norm_median": null,
+        "grad_norm_max": null,
+        "response_length_mean": null,
+        "response_clip_ratio_mean": null,
+        "num_turns_mean": null
+      },
+      "validations": [
+        {
+          "step": 0,
+          "n_val": 8,
+          "aime_2024_acc": 0.4875,
+          "aime_2024_maj": 0.581233,
+          "aime_2024_score": 0.10625,
+          "aime_2024_shaping_delta": 0.13125,
+          "aime_2025_acc": 0.308333,
+          "aime_2025_maj": 0.399633,
+          "aime_2025_score": -0.22125,
+          "aime_2025_shaping_delta": 0.162083
+        }
+      ]
+    },
+    {
+      "run_id": "fcze3xlx",
+      "display_name": "retool-dapo-qwen3-30b-a3b-v5p-cp2",
+      "created_at": "2026-10-29T09:39:58Z",
+      "state": "crashed",
+      "resumed_from": null,
+      "regime": "Regime_2_16K_thinking_shaped",
+      "config": {
+        "use_v1": true,
+        "top_level_custom_reward_path": null,
+        "v1_reward_custom_reward_path": "pkg://examples.tpu.retool.retool_tpu",
+        "effective_scorer": "retool_tpu (strict_box_verify=True + tool shaping)",
+        "enable_thinking": true,
+        "max_prompt_length": 2048,
+        "max_response_length": 16384,
+        "max_user_turns": 16,
+        "max_assistant_turns": 16,
+        "rollout_n": 16,
+        "val_n": 8,
+        "actor_lr": 2e-06,
+        "min_lr_factor": 1,
+        "lr_warmup_steps_ratio": 0,
+        "configured_clip_grad": 0.0625,
+        "effective_torchtitan_max_norm": 1.0,
+        "train_batch_size": 64,
+        "ppo_mini_batch_size": 64,
+        "ppo_max_token_len_per_gpu": 9216,
+        "context_parallel_size": 2,
+        "data_parallel_shard_size": 8,
+        "torchtitan_max_seq_len": 18432,
+        "rollout_tp": 16,
+        "rollout_ep": 16,
+        "rollout_gpu_memory_utilization": 0.85,
+        "trainer_nnodes": 4,
+        "trainer_n_gpus_per_node": 4
+      },
+      "training_summary": {
+        "num_logged_steps": 23,
+        "min_logged_step": 1,
+        "max_logged_step": 23,
+        "steps_1_to_5_rewards": [
+          {
+            "step": 1,
+            "reward": -0.5233
+          },
+          {
+            "step": 2,
+            "reward": -0.4161
+          },
+          {
+            "step": 3,
+            "reward": -0.446
+          },
+          {
+            "step": 4,
+            "reward": -0.152
+          },
+          {
+            "step": 5,
+            "reward": -0.2827
+          }
+        ],
+        "steps_21_to_25_rewards": [
+          {
+            "step": 21,
+            "reward": 0.2702
+          },
+          {
+            "step": 22,
+            "reward": 0.4424
+          },
+          {
+            "step": 23,
+            "reward": 0.6562
+          }
+        ],
+        "reward_mean_steps_1_to_5": -0.364,
+        "reward_mean_steps_21_to_25": 0.4563,
+        "grad_norm_median": 0.1245,
+        "grad_norm_max": 0.1649,
+        "response_length_mean": 2400.2,
+        "response_clip_ratio_mean": 0.00161,
+        "num_turns_mean": 8.72
+      },
+      "validations": []
+    },
+    {
+      "run_id": "ci0k54pl",
+      "display_name": "retool-dapo-qwen3-30b-a3b-v5p-cp2",
+      "created_at": "2026-10-29T21:18:14Z",
+      "state": "finished",
+      "resumed_from": "fcze3xlx (step 20 checkpoint)",
+      "regime": "Regime_2_16K_thinking_shaped",
+      "config": {
+        "use_v1": true,
+        "top_level_custom_reward_path": null,
+        "v1_reward_custom_reward_path": "pkg://examples.tpu.retool.retool_tpu",
+        "effective_scorer": "retool_tpu (strict_box_verify=True + tool shaping)",
+        "enable_thinking": true,
+        "max_prompt_length": 2048,
+        "max_response_length": 16384,
+        "max_user_turns": 16,
+        "max_assistant_turns": 16,
+        "rollout_n": 16,
+        "val_n": 8,
+        "actor_lr": 2e-06,
+        "min_lr_factor": 1,
+        "lr_warmup_steps_ratio": 0,
+        "configured_clip_grad": 0.0625,
+        "effective_torchtitan_max_norm": 1.0,
+        "train_batch_size": 64,
+        "ppo_mini_batch_size": 64,
+        "ppo_max_token_len_per_gpu": 9216,
+        "context_parallel_size": 2,
+        "data_parallel_shard_size": 8,
+        "torchtitan_max_seq_len": 18432,
+        "rollout_tp": 16,
+        "rollout_ep": 16,
+        "rollout_gpu_memory_utilization": 0.85,
+        "trainer_nnodes": 4,
+        "trainer_n_gpus_per_node": 4
+      },
+      "training_summary": {
+        "num_logged_steps": 130,
+        "min_logged_step": 21,
+        "max_logged_step": 150,
+        "steps_1_to_5_rewards": [],
+        "steps_21_to_25_rewards": [
+          {
+            "step": 21,
+            "reward": 0.7141
+          },
+          {
+            "step": 22,
+            "reward": 0.5202
+          },
+          {
+            "step": 23,
+            "reward": 0.3718
+          },
+          {
+            "step": 24,
+            "reward": 0.391
+          },
+          {
+            "step": 25,
+            "reward": 0.3961
+          }
+        ],
+        "reward_mean_steps_1_to_5": null,
+        "reward_mean_steps_21_to_25": 0.4786,
+        "grad_norm_median": 0.051,
+        "grad_norm_max": 0.1391,
+        "response_length_mean": 4935.2,
+        "response_clip_ratio_mean": 0.01357,
+        "num_turns_mean": 7.16
+      },
+      "validations": [
+        {
+          "step": 25,
+          "n_val": 8,
+          "aime_2024_acc": 0.583333,
+          "aime_2024_maj": 0.6784,
+          "aime_2024_score": 0.249167,
+          "aime_2024_shaping_delta": 0.0825,
+          "aime_2025_acc": 0.3875,
+          "aime_2025_maj": 0.485967,
+          "aime_2025_score": -0.075,
+          "aime_2025_shaping_delta": 0.15
+        },
+        {
+          "step": 50,
+          "n_val": 8,
+          "aime_2024_acc": 0.633333,
+          "aime_2024_maj": 0.711467,
+          "aime_2024_score": 0.340833,
+          "aime_2024_shaping_delta": 0.074167,
+          "aime_2025_acc": 0.5375,
+          "aime_2025_maj": 0.6133,
+          "aime_2025_score": 0.163333,
+          "aime_2025_shaping_delta": 0.088333
+        },
+        {
+          "step": 75,
+          "n_val": 8,
+          "aime_2024_acc": 0.675,
+          "aime_2024_maj": 0.744967,
+          "aime_2024_score": 0.405,
+          "aime_2024_shaping_delta": 0.055,
+          "aime_2025_acc": 0.5,
+          "aime_2025_maj": 0.576,
+          "aime_2025_score": 0.069583,
+          "aime_2025_shaping_delta": 0.069583
+        },
+        {
+          "step": 100,
+          "n_val": 8,
+          "aime_2024_acc": 0.683333,
+          "aime_2024_maj": 0.763367,
+          "aime_2024_score": 0.421667,
+          "aime_2024_shaping_delta": 0.055,
+          "aime_2025_acc": 0.516667,
+          "aime_2025_maj": 0.5617,
+          "aime_2025_score": 0.086667,
+          "aime_2025_shaping_delta": 0.053333
+        },
+        {
+          "step": 125,
+          "n_val": 8,
+          "aime_2024_acc": 0.6625,
+          "aime_2024_maj": 0.7404,
+          "aime_2024_score": 0.370833,
+          "aime_2024_shaping_delta": 0.045833,
+          "aime_2025_acc": 0.508333,
+          "aime_2025_maj": 0.531667,
+          "aime_2025_score": 0.07375,
+          "aime_2025_shaping_delta": 0.057083
+        },
+        {
+          "step": 150,
+          "n_val": 8,
+          "aime_2024_acc": 0.708333,
+          "aime_2024_maj": 0.7761,
+          "aime_2024_score": 0.452917,
+          "aime_2024_shaping_delta": 0.03625,
+          "aime_2025_acc": 0.508333,
+          "aime_2025_maj": 0.553433,
+          "aime_2025_score": 0.0775,
+          "aime_2025_shaping_delta": 0.060833
+        }
+      ]
+    },
+    {
+      "run_id": "rq1p980n",
+      "display_name": "retool-dapo-qwen3-30b-a3b-v5p-cp1-opt",
+      "created_at": "2026-10-30T23:47:09Z",
+      "state": "crashed",
+      "resumed_from": null,
+      "regime": "Regime_2_16K_thinking_shaped",
+      "config": {
+        "use_v1": true,
+        "top_level_custom_reward_path": null,
+        "v1_reward_custom_reward_path": "pkg://examples.tpu.retool.retool_tpu",
+        "effective_scorer": "retool_tpu (strict_box_verify=True + tool shaping)",
+        "enable_thinking": true,
+        "max_prompt_length": 2048,
+        "max_response_length": 16384,
+        "max_user_turns": 16,
+        "max_assistant_turns": 16,
+        "rollout_n": 16,
+        "val_n": 8,
+        "actor_lr": 2e-06,
+        "min_lr_factor": 1,
+        "lr_warmup_steps_ratio": 0,
+        "configured_clip_grad": 0.0625,
+        "effective_torchtitan_max_norm": 1.0,
+        "train_batch_size": 64,
+        "ppo_mini_batch_size": 64,
+        "ppo_max_token_len_per_gpu": 20480,
+        "context_parallel_size": 1,
+        "data_parallel_shard_size": 16,
+        "torchtitan_max_seq_len": 20480,
+        "rollout_tp": 16,
+        "rollout_ep": 16,
+        "rollout_gpu_memory_utilization": 0.85,
+        "trainer_nnodes": 4,
+        "trainer_n_gpus_per_node": 4
+      },
+      "training_summary": {
+        "num_logged_steps": 80,
+        "min_logged_step": 1,
+        "max_logged_step": 80,
+        "steps_1_to_5_rewards": [
+          {
+            "step": 1,
+            "reward": -0.4293
+          },
+          {
+            "step": 2,
+            "reward": -0.419
+          },
+          {
+            "step": 3,
+            "reward": -0.3954
+          },
+          {
+            "step": 4,
+            "reward": -0.2165
+          },
+          {
+            "step": 5,
+            "reward": -0.0601
+          }
+        ],
+        "steps_21_to_25_rewards": [
+          {
+            "step": 21,
+            "reward": 0.1582
+          },
+          {
+            "step": 22,
+            "reward": 0.4999
+          },
+          {
+            "step": 23,
+            "reward": 0.6983
+          },
+          {
+            "step": 24,
+            "reward": 0.4848
+          },
+          {
+            "step": 25,
+            "reward": 0.5763
+          }
+        ],
+        "reward_mean_steps_1_to_5": -0.3041,
+        "reward_mean_steps_21_to_25": 0.4835,
+        "grad_norm_median": 0.0726,
+        "grad_norm_max": 0.183,
+        "response_length_mean": 3727.4,
+        "response_clip_ratio_mean": 0.00702,
+        "num_turns_mean": 8.01
+      },
+      "validations": [
+        {
+          "step": 25,
+          "n_val": 8,
+          "aime_2024_acc": 0.566667,
+          "aime_2024_maj": 0.666833,
+          "aime_2024_score": 0.238333,
+          "aime_2024_shaping_delta": 0.105,
+          "aime_2025_acc": 0.4625,
+          "aime_2025_maj": 0.536667,
+          "aime_2025_score": 0.0375,
+          "aime_2025_shaping_delta": 0.1125
+        },
+        {
+          "step": 50,
+          "n_val": 8,
+          "aime_2024_acc": 0.65,
+          "aime_2024_maj": 0.769967,
+          "aime_2024_score": 0.369167,
+          "aime_2024_shaping_delta": 0.069167,
+          "aime_2025_acc": 0.475,
+          "aime_2025_maj": 0.543933,
+          "aime_2025_score": 0.035417,
+          "aime_2025_shaping_delta": 0.085417
+        },
+        {
+          "step": 75,
+          "n_val": 8,
+          "aime_2024_acc": 0.725,
+          "aime_2024_maj": 0.790067,
+          "aime_2024_score": 0.494583,
+          "aime_2024_shaping_delta": 0.044583,
+          "aime_2025_acc": 0.516667,
+          "aime_2025_maj": 0.585967,
+          "aime_2025_score": 0.102917,
+          "aime_2025_shaping_delta": 0.069583
+        }
+      ]
+    },
+    {
+      "run_id": "hsodvfgr",
+      "display_name": "retool-dapo-qwen3-30b-a3b-v5p-cp1-opt",
+      "created_at": "2026-11-01T00:09:46Z",
+      "state": "finished",
+      "resumed_from": "rq1p980n (step 80 checkpoint)",
+      "regime": "Regime_2_16K_thinking_shaped",
+      "config": {
+        "use_v1": true,
+        "top_level_custom_reward_path": null,
+        "v1_reward_custom_reward_path": "pkg://examples.tpu.retool.retool_tpu",
+        "effective_scorer": "retool_tpu (strict_box_verify=True + tool shaping)",
+        "enable_thinking": true,
+        "max_prompt_length": 2048,
+        "max_response_length": 16384,
+        "max_user_turns": 16,
+        "max_assistant_turns": 16,
+        "rollout_n": 16,
+        "val_n": 8,
+        "actor_lr": 2e-06,
+        "min_lr_factor": 1,
+        "lr_warmup_steps_ratio": 0,
+        "configured_clip_grad": 0.0625,
+        "effective_torchtitan_max_norm": 1.0,
+        "train_batch_size": 64,
+        "ppo_mini_batch_size": 64,
+        "ppo_max_token_len_per_gpu": 20480,
+        "context_parallel_size": 1,
+        "data_parallel_shard_size": 16,
+        "torchtitan_max_seq_len": 20480,
+        "rollout_tp": 16,
+        "rollout_ep": 16,
+        "rollout_gpu_memory_utilization": 0.85,
+        "trainer_nnodes": 4,
+        "trainer_n_gpus_per_node": 4
+      },
+      "training_summary": {
+        "num_logged_steps": 70,
+        "min_logged_step": 81,
+        "max_logged_step": 150,
+        "steps_1_to_5_rewards": [],
+        "steps_21_to_25_rewards": [],
+        "reward_mean_steps_1_to_5": null,
+        "reward_mean_steps_21_to_25": null,
+        "grad_norm_median": 0.0451,
+        "grad_norm_max": 0.0572,
+        "response_length_mean": 5388.9,
+        "response_clip_ratio_mean": 0.01162,
+        "num_turns_mean": 6.62
+      },
+      "validations": [
+        {
+          "step": 100,
+          "n_val": 8,
+          "aime_2024_acc": 0.65,
+          "aime_2024_maj": 0.7227,
+          "aime_2024_score": 0.357917,
+          "aime_2024_shaping_delta": 0.057917,
+          "aime_2025_acc": 0.504167,
+          "aime_2025_maj": 0.5763,
+          "aime_2025_score": 0.070833,
+          "aime_2025_shaping_delta": 0.0625
+        },
+        {
+          "step": 125,
+          "n_val": 8,
+          "aime_2024_acc": 0.641667,
+          "aime_2024_maj": 0.732167,
+          "aime_2024_score": 0.352917,
+          "aime_2024_shaping_delta": 0.069583,
+          "aime_2025_acc": 0.5,
+          "aime_2025_maj": 0.5781,
+          "aime_2025_score": 0.077083,
+          "aime_2025_shaping_delta": 0.077083
+        },
+        {
+          "step": 150,
+          "n_val": 8,
+          "aime_2024_acc": 0.683333,
+          "aime_2024_maj": 0.759667,
+          "aime_2024_score": 0.423333,
+          "aime_2024_shaping_delta": 0.056667,
+          "aime_2025_acc": 0.533333,
+          "aime_2025_maj": 0.599533,
+          "aime_2025_score": 0.134167,
+          "aime_2025_shaping_delta": 0.0675
+        }
+      ]
+    },
+    {
+      "run_id": "yrcsp4z6",
+      "display_name": "retool-dapo-qwen3-30b-a3b-v5p-cp1-pr115",
+      "created_at": "2026-11-03T09:17:57Z",
+      "state": "running",
+      "resumed_from": null,
+      "regime": "Regime_2_16K_thinking_shaped",
+      "config": {
+        "use_v1": true,
+        "top_level_custom_reward_path": null,
+        "v1_reward_custom_reward_path": "pkg://examples.tpu.retool.retool_tpu",
+        "effective_scorer": "retool_tpu (strict_box_verify=True + tool shaping)",
+        "enable_thinking": true,
+        "max_prompt_length": 2048,
+        "max_response_length": 16384,
+        "max_user_turns": 16,
+        "max_assistant_turns": 16,
+        "rollout_n": 16,
+        "val_n": 8,
+        "actor_lr": 2e-06,
+        "min_lr_factor": 1,
+        "lr_warmup_steps_ratio": 0,
+        "configured_clip_grad": 0.0625,
+        "effective_torchtitan_max_norm": 1.0,
+        "train_batch_size": 64,
+        "ppo_mini_batch_size": 64,
+        "ppo_max_token_len_per_gpu": 20480,
+        "context_parallel_size": 1,
+        "data_parallel_shard_size": 16,
+        "torchtitan_max_seq_len": 20480,
+        "rollout_tp": 4,
+        "rollout_ep": 32,
+        "rollout_gpu_memory_utilization": 0.85,
+        "trainer_nnodes": 4,
+        "trainer_n_gpus_per_node": 4
+      },
+      "training_summary": {
+        "num_logged_steps": 108,
+        "min_logged_step": 1,
+        "max_logged_step": 108,
+        "steps_1_to_5_rewards": [
+          {
+            "step": 1,
+            "reward": -0.4081
+          },
+          {
+            "step": 2,
+            "reward": -0.4352
+          },
+          {
+            "step": 3,
+            "reward": -0.3391
+          },
+          {
+            "step": 4,
+            "reward": -0.3052
+          },
+          {
+            "step": 5,
+            "reward": -0.0402
+          }
+        ],
+        "steps_21_to_25_rewards": [
+          {
+            "step": 21,
+            "reward": 0.1163
+          },
+          {
+            "step": 22,
+            "reward": 0.4858
+          },
+          {
+            "step": 23,
+            "reward": 0.7188
+          },
+          {
+            "step": 24,
+            "reward": 0.5518
+          },
+          {
+            "step": 25,
+            "reward": 0.5399
+          }
+        ],
+        "reward_mean_steps_1_to_5": -0.3056,
+        "reward_mean_steps_21_to_25": 0.4825,
+        "grad_norm_median": 0.0651,
+        "grad_norm_max": 0.196,
+        "response_length_mean": 4115.5,
+        "response_clip_ratio_mean": 0.00913,
+        "num_turns_mean": 7.3
+      },
+      "validations": [
+        {
+          "step": 25,
+          "n_val": 8,
+          "aime_2024_acc": 0.6,
+          "aime_2024_maj": 0.690433,
+          "aime_2024_score": 0.296667,
+          "aime_2024_shaping_delta": 0.096667,
+          "aime_2025_acc": 0.466667,
+          "aime_2025_maj": 0.558833,
+          "aime_2025_score": 0.060833,
+          "aime_2025_shaping_delta": 0.1275
+        },
+        {
+          "step": 50,
+          "n_val": 8,
+          "aime_2024_acc": 0.666667,
+          "aime_2024_maj": 0.764367,
+          "aime_2024_score": 0.391667,
+          "aime_2024_shaping_delta": 0.058333,
+          "aime_2025_acc": 0.504167,
+          "aime_2025_maj": 0.556733,
+          "aime_2025_score": 0.089583,
+          "aime_2025_shaping_delta": 0.08125
+        },
+        {
+          "step": 75,
+          "n_val": 8,
+          "aime_2024_acc": 0.691667,
+          "aime_2024_maj": 0.764,
+          "aime_2024_score": 0.437083,
+          "aime_2024_shaping_delta": 0.05375,
+          "aime_2025_acc": 0.570833,
+          "aime_2025_maj": 0.6354,
+          "aime_2025_score": 0.19625,
+          "aime_2025_shaping_delta": 0.054583
+        },
+        {
+          "step": 100,
+          "n_val": 8,
+          "aime_2024_acc": 0.666667,
+          "aime_2024_maj": 0.738433,
+          "aime_2024_score": 0.38375,
+          "aime_2024_shaping_delta": 0.050417,
+          "aime_2025_acc": 0.491667,
+          "aime_2025_maj": 0.5623,
+          "aime_2025_score": 0.0425,
+          "aime_2025_shaping_delta": 0.059167
+        }
+      ]
+    },
+    {
+      "run_id": "unch8eca",
+      "display_name": "qwen3-30b-a3b-retool-dapo-150step-think16k-tpu7x-opt1",
+      "created_at": "2026-10-30T00:08:08Z",
+      "state": "crashed",
+      "resumed_from": null,
+      "regime": "Regime_2_16K_thinking_shaped",
+      "config": {
+        "use_v1": true,
+        "top_level_custom_reward_path": null,
+        "v1_reward_custom_reward_path": "pkg://examples.tpu.retool.retool_tpu",
+        "effective_scorer": "retool_tpu (strict_box_verify=True + tool shaping)",
+        "enable_thinking": true,
+        "max_prompt_length": 2048,
+        "max_response_length": 16384,
+        "max_user_turns": 8,
+        "max_assistant_turns": 8,
+        "rollout_n": 16,
+        "val_n": 8,
+        "actor_lr": 2e-06,
+        "min_lr_factor": 1,
+        "lr_warmup_steps_ratio": 0,
+        "configured_clip_grad": 0.0625,
+        "effective_torchtitan_max_norm": 1.0,
+        "train_batch_size": 64,
+        "ppo_mini_batch_size": 64,
+        "ppo_max_token_len_per_gpu": 4608,
+        "context_parallel_size": 4,
+        "data_parallel_shard_size": 4,
+        "torchtitan_max_seq_len": 18432,
+        "rollout_tp": 16,
+        "rollout_ep": 16,
+        "rollout_gpu_memory_utilization": 0.75,
+        "trainer_nnodes": 2,
+        "trainer_n_gpus_per_node": 8
+      },
+      "training_summary": {
+        "num_logged_steps": 5,
+        "min_logged_step": 1,
+        "max_logged_step": 5,
+        "steps_1_to_5_rewards": [
+          {
+            "step": 1,
+            "reward": -0.3391
+          },
+          {
+            "step": 2,
+            "reward": -0.2549
+          },
+          {
+            "step": 3,
+            "reward": -0.1377
+          },
+          {
+            "step": 4,
+            "reward": -0.0276
+          },
+          {
+            "step": 5,
+            "reward": 0.2191
+          }
+        ],
+        "steps_21_to_25_rewards": [],
+        "reward_mean_steps_1_to_5": -0.108,
+        "reward_mean_steps_21_to_25": null,
+        "grad_norm_median": 0.1374,
+        "grad_norm_max": 0.146,
+        "response_length_mean": 2378.6,
+        "response_clip_ratio_mean": 0.00176,
+        "num_turns_mean": 8.0
+      },
+      "validations": []
+    }
+  ]
+}

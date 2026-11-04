@@ -1,0 +1,689 @@
+{
+  "complete": true,
+  "incomplete_reasons": [],
+  "score_complete": true,
+  "score_incomplete_reasons": [],
+  "num_rows": 120,
+  "num_rows_without_data_source": 0,
+  "expected_n": 2,
+  "metric_fields": {
+    "mean_acc": "mean over the expected questions of each question's mean 'acc' (accuracy as written by the reward function; verl reward managers copy a reward function's bare-float return value into 'acc'); set only when complete is True",
+    "partial_mean_acc": "the same mean over whatever expected questions and sessions have an 'acc' value, reported when complete is not True; not comparable across runs or with mean@N",
+    "mean_score": "mean over the expected questions of each question's mean 'score': the reward score, which may include shaping such as ReTool's tool-call bonus, never an accuracy; set only when score_complete is True",
+    "partial_mean_score": "the same mean, reported when score_complete is not True; not comparable across runs"
+  },
+  "data_sources": {
+    "aime_2024": {
+      "num_rows": 60,
+      "num_unattributed_rows": 0,
+      "num_rows_without_uid": 0,
+      "num_rows_without_question": 0,
+      "question_keys_used": [
+        "question_id"
+      ],
+      "num_questions": 30,
+      "num_expected_questions": 30,
+      "missing_questions": [],
+      "unexpected_questions": [],
+      "num_sessions": 60,
+      "num_sessions_without_acc": 0,
+      "num_sessions_without_score": 0,
+      "sessions_per_question": {
+        "min": 2,
+        "max": 2
+      },
+      "outputs_per_session": {
+        "min": 1,
+        "max": 1
+      },
+      "expected_n": 2,
+      "questions_with_unexpected_sessions": [],
+      "complete": true,
+      "incomplete_reasons": [],
+      "mean_acc": 0.4166666666666667,
+      "partial_mean_acc": null,
+      "score_complete": true,
+      "score_incomplete_reasons": [],
+      "mean_score": -0.020000000000000004,
+      "partial_mean_score": null,
+      "per_question": {
+        "sha1:0c6210de6874a515": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 1.0,
+          "partial_mean_acc": null,
+          "mean_score": 1.0,
+          "partial_mean_score": null
+        },
+        "sha1:0da29925ba415c75": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 0.0,
+          "partial_mean_acc": null,
+          "mean_score": -0.75,
+          "partial_mean_score": null
+        },
+        "sha1:2fa995a26e24a6e9": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 0.0,
+          "partial_mean_acc": null,
+          "mean_score": -0.7,
+          "partial_mean_score": null
+        },
+        "sha1:30cae37630718ea2": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 1.0,
+          "partial_mean_acc": null,
+          "mean_score": 1.0,
+          "partial_mean_score": null
+        },
+        "sha1:3d5a3f71aa2b20a6": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 0.5,
+          "partial_mean_acc": null,
+          "mean_score": 0.04999999999999999,
+          "partial_mean_score": null
+        },
+        "sha1:3e3a82d53aea31a4": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 0.0,
+          "partial_mean_acc": null,
+          "mean_score": -0.8500000000000001,
+          "partial_mean_score": null
+        },
+        "sha1:44a08de60e6bc698": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 1.0,
+          "partial_mean_acc": null,
+          "mean_score": 1.0,
+          "partial_mean_score": null
+        },
+        "sha1:520f34e34583df73": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 0.0,
+          "partial_mean_acc": null,
+          "mean_score": -0.75,
+          "partial_mean_score": null
+        },
+        "sha1:5d177a3ad6a27e73": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 0.0,
+          "partial_mean_acc": null,
+          "mean_score": -0.6,
+          "partial_mean_score": null
+        },
+        "sha1:64e99a74dec47c56": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 1.0,
+          "partial_mean_acc": null,
+          "mean_score": 1.0,
+          "partial_mean_score": null
+        },
+        "sha1:651247ae7472a9fc": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 0.0,
+          "partial_mean_acc": null,
+          "mean_score": -0.8,
+          "partial_mean_score": null
+        },
+        "sha1:6a85972260dc31e5": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 0.5,
+          "partial_mean_acc": null,
+          "mean_score": 0.04999999999999999,
+          "partial_mean_score": null
+        },
+        "sha1:788295a4b62eeb8b": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 0.0,
+          "partial_mean_acc": null,
+          "mean_score": -0.6,
+          "partial_mean_score": null
+        },
+        "sha1:7c493295d6940e84": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 0.5,
+          "partial_mean_acc": null,
+          "mean_score": 0.2,
+          "partial_mean_score": null
+        },
+        "sha1:87aa443f4f82bdd3": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 0.5,
+          "partial_mean_acc": null,
+          "mean_score": 0.04999999999999999,
+          "partial_mean_score": null
+        },
+        "sha1:87f97ca6a374f8ab": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 1.0,
+          "partial_mean_acc": null,
+          "mean_score": 1.0,
+          "partial_mean_score": null
+        },
+        "sha1:885272fc55733069": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 0.0,
+          "partial_mean_acc": null,
+          "mean_score": -0.8500000000000001,
+          "partial_mean_score": null
+        },
+        "sha1:8e9263e600bcaab5": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 1.0,
+          "partial_mean_acc": null,
+          "mean_score": 1.0,
+          "partial_mean_score": null
+        },
+        "sha1:942bee52d90ee5e6": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 0.5,
+          "partial_mean_acc": null,
+          "mean_score": 0.09999999999999998,
+          "partial_mean_score": null
+        },
+        "sha1:988670a3dc37331f": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 1.0,
+          "partial_mean_acc": null,
+          "mean_score": 1.0,
+          "partial_mean_score": null
+        },
+        "sha1:a91bcbd2daa3d83e": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 0.0,
+          "partial_mean_acc": null,
+          "mean_score": -0.8,
+          "partial_mean_score": null
+        },
+        "sha1:b008570c9c475c4a": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 1.0,
+          "partial_mean_acc": null,
+          "mean_score": 1.0,
+          "partial_mean_score": null
+        },
+        "sha1:b9d05bcd9e2bae92": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 0.0,
+          "partial_mean_acc": null,
+          "mean_score": -0.6499999999999999,
+          "partial_mean_score": null
+        },
+        "sha1:bbc98e0959c44de6": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 0.0,
+          "partial_mean_acc": null,
+          "mean_score": -0.8500000000000001,
+          "partial_mean_score": null
+        },
+        "sha1:bf3ae73505a804c8": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 0.0,
+          "partial_mean_acc": null,
+          "mean_score": -0.6,
+          "partial_mean_score": null
+        },
+        "sha1:d43c445ebed82619": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 1.0,
+          "partial_mean_acc": null,
+          "mean_score": 1.0,
+          "partial_mean_score": null
+        },
+        "sha1:db4416f89e50dff9": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 0.0,
+          "partial_mean_acc": null,
+          "mean_score": -0.9,
+          "partial_mean_score": null
+        },
+        "sha1:ea93e068d73773bb": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 0.0,
+          "partial_mean_acc": null,
+          "mean_score": -0.7,
+          "partial_mean_score": null
+        },
+        "sha1:ecd9b1ea091e30ad": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 0.0,
+          "partial_mean_acc": null,
+          "mean_score": -0.6499999999999999,
+          "partial_mean_score": null
+        },
+        "sha1:fe2ad9fdc535b843": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 1.0,
+          "partial_mean_acc": null,
+          "mean_score": 1.0,
+          "partial_mean_score": null
+        }
+      }
+    },
+    "aime_2025": {
+      "num_rows": 60,
+      "num_unattributed_rows": 0,
+      "num_rows_without_uid": 0,
+      "num_rows_without_question": 0,
+      "question_keys_used": [
+        "question_id"
+      ],
+      "num_questions": 30,
+      "num_expected_questions": 30,
+      "missing_questions": [],
+      "unexpected_questions": [],
+      "num_sessions": 60,
+      "num_sessions_without_acc": 0,
+      "num_sessions_without_score": 0,
+      "sessions_per_question": {
+        "min": 2,
+        "max": 2
+      },
+      "outputs_per_session": {
+        "min": 1,
+        "max": 1
+      },
+      "expected_n": 2,
+      "questions_with_unexpected_sessions": [],
+      "complete": true,
+      "incomplete_reasons": [],
+      "mean_acc": 0.2833333333333333,
+      "partial_mean_acc": null,
+      "score_complete": true,
+      "score_incomplete_reasons": [],
+      "mean_score": -0.23833333333333334,
+      "partial_mean_score": null,
+      "per_question": {
+        "sha1:0eb5204ec20d4caa": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 0.0,
+          "partial_mean_acc": null,
+          "mean_score": -0.6,
+          "partial_mean_score": null
+        },
+        "sha1:174a72c85daae0e2": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 0.0,
+          "partial_mean_acc": null,
+          "mean_score": -0.8,
+          "partial_mean_score": null
+        },
+        "sha1:202a57cc46d795cd": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 0.0,
+          "partial_mean_acc": null,
+          "mean_score": -0.8500000000000001,
+          "partial_mean_score": null
+        },
+        "sha1:2047a2d621b97fc6": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 0.0,
+          "partial_mean_acc": null,
+          "mean_score": -0.8500000000000001,
+          "partial_mean_score": null
+        },
+        "sha1:274bae0fac9e054f": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 0.0,
+          "partial_mean_acc": null,
+          "mean_score": -0.75,
+          "partial_mean_score": null
+        },
+        "sha1:278a46a4ba536d4d": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 0.0,
+          "partial_mean_acc": null,
+          "mean_score": -0.6,
+          "partial_mean_score": null
+        },
+        "sha1:2e25724928ee6101": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 1.0,
+          "partial_mean_acc": null,
+          "mean_score": 1.0,
+          "partial_mean_score": null
+        },
+        "sha1:316b58762a0336cd": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 0.0,
+          "partial_mean_acc": null,
+          "mean_score": -0.6,
+          "partial_mean_score": null
+        },
+        "sha1:39609c3ef83fb183": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 0.0,
+          "partial_mean_acc": null,
+          "mean_score": -0.6,
+          "partial_mean_score": null
+        },
+        "sha1:39d3854002c8dc15": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 0.0,
+          "partial_mean_acc": null,
+          "mean_score": -0.6,
+          "partial_mean_score": null
+        },
+        "sha1:3d998856e595f1ea": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 0.0,
+          "partial_mean_acc": null,
+          "mean_score": -0.6,
+          "partial_mean_score": null
+        },
+        "sha1:3df77bbe7811c144": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 0.0,
+          "partial_mean_acc": null,
+          "mean_score": -0.6,
+          "partial_mean_score": null
+        },
+        "sha1:4719cb7358e3f624": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 0.0,
+          "partial_mean_acc": null,
+          "mean_score": -0.6,
+          "partial_mean_score": null
+        },
+        "sha1:55bdfa6a8551cac9": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 1.0,
+          "partial_mean_acc": null,
+          "mean_score": 1.0,
+          "partial_mean_score": null
+        },
+        "sha1:66ef49f1110e3a23": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 0.0,
+          "partial_mean_acc": null,
+          "mean_score": -0.8,
+          "partial_mean_score": null
+        },
+        "sha1:853310ca2e890594": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 0.5,
+          "partial_mean_acc": null,
+          "mean_score": 0.15000000000000002,
+          "partial_mean_score": null
+        },
+        "sha1:8b6f5c60b86ae4bf": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 1.0,
+          "partial_mean_acc": null,
+          "mean_score": 1.0,
+          "partial_mean_score": null
+        },
+        "sha1:9b9a869f6d5d6970": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 0.0,
+          "partial_mean_acc": null,
+          "mean_score": -0.9,
+          "partial_mean_score": null
+        },
+        "sha1:9dbe55f1eeb47817": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 0.0,
+          "partial_mean_acc": null,
+          "mean_score": -0.7,
+          "partial_mean_score": null
+        },
+        "sha1:a832f935051bf543": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 1.0,
+          "partial_mean_acc": null,
+          "mean_score": 1.0,
+          "partial_mean_score": null
+        },
+        "sha1:be89839058818028": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 1.0,
+          "partial_mean_acc": null,
+          "mean_score": 1.0,
+          "partial_mean_score": null
+        },
+        "sha1:c95464afcb619c01": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 0.5,
+          "partial_mean_acc": null,
+          "mean_score": 0.04999999999999999,
+          "partial_mean_score": null
+        },
+        "sha1:ca59b7fcb99f49c4": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 1.0,
+          "partial_mean_acc": null,
+          "mean_score": 1.0,
+          "partial_mean_score": null
+        },
+        "sha1:cf2744572a620cfe": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 0.0,
+          "partial_mean_acc": null,
+          "mean_score": -0.8,
+          "partial_mean_score": null
+        },
+        "sha1:d2a9f136320cfab8": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 0.0,
+          "partial_mean_acc": null,
+          "mean_score": -0.8,
+          "partial_mean_score": null
+        },
+        "sha1:d7a2154b35e76cbc": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 1.0,
+          "partial_mean_acc": null,
+          "mean_score": 1.0,
+          "partial_mean_score": null
+        },
+        "sha1:dab2e323e895f7c7": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 0.0,
+          "partial_mean_acc": null,
+          "mean_score": -0.9,
+          "partial_mean_score": null
+        },
+        "sha1:df1ea2dc2a8e2a06": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 0.0,
+          "partial_mean_acc": null,
+          "mean_score": -0.75,
+          "partial_mean_score": null
+        },
+        "sha1:edb08fe2ce39e404": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 0.5,
+          "partial_mean_acc": null,
+          "mean_score": 0.15000000000000002,
+          "partial_mean_score": null
+        },
+        "sha1:f53aaae543123ed7": {
+          "num_sessions": 2,
+          "num_rows": 2,
+          "num_sessions_with_acc": 2,
+          "num_sessions_with_score": 2,
+          "mean_acc": 0.0,
+          "partial_mean_acc": null,
+          "mean_score": -0.8,
+          "partial_mean_score": null
+        }
+      }
+    }
+  }
+}

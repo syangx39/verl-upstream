@@ -519,9 +519,7 @@ ${WANDB_EXTRA_ENV}${JOBENV_YAML}    resources:
       mkdir -p /root/.cache
       if [[ -f "\${CACHE_DIR}/flashinfer_cache_sm100a.tar.gz" ]]; then
         tar -xzf "\${CACHE_DIR}/flashinfer_cache_sm100a.tar.gz" -C /root/.cache || true
-        find /root/.cache/flashinfer -name "*.o" -exec touch -c {} + 2>/dev/null || true
-        sleep 1
-        find /root/.cache/flashinfer -name "*.so" -exec touch -c {} + 2>/dev/null || true
+        python3 -c 'import os, time; from pathlib import Path; root = Path("/root/.cache/flashinfer"); t_o = int(time.time()) + 86400; t_so = t_o + 1; [os.utime(p, (t_o, t_o)) for p in root.rglob("*.o")]; [os.utime(p, (t_so, t_so)) for p in root.rglob("*.so")]; [nlog.write_text("\n".join(["\t".join(parts[:2] + [str(Path(parts[3]).stat().st_mtime_ns if Path(parts[3]).exists() else parts[2])] + parts[3:]) if (len(parts := ln.split("\t")) == 5 and not ln.startswith("#")) else ln for ln in nlog.read_text(encoding="utf-8").splitlines()]) + "\n", encoding="utf-8") for nlog in root.rglob(".ninja_log")]' || true
       fi
       if [[ -f "\${CACHE_DIR}/vllm_cache_sm100a.tar.gz" ]]; then
         tar -xzf "\${CACHE_DIR}/vllm_cache_sm100a.tar.gz" -C /root/.cache || true
@@ -746,9 +744,7 @@ ${WANDB_EXTRA_ENV}${JOBENV_YAML}    resources:
       mkdir -p /root/.cache
       if [[ -f "\${CACHE_DIR}/flashinfer_cache_sm100a.tar.gz" ]]; then
         tar -xzf "\${CACHE_DIR}/flashinfer_cache_sm100a.tar.gz" -C /root/.cache || true
-        find /root/.cache/flashinfer -name "*.o" -exec touch -c {} + 2>/dev/null || true
-        sleep 1
-        find /root/.cache/flashinfer -name "*.so" -exec touch -c {} + 2>/dev/null || true
+        python3 -c 'import os, time; from pathlib import Path; root = Path("/root/.cache/flashinfer"); t_o = int(time.time()) + 86400; t_so = t_o + 1; [os.utime(p, (t_o, t_o)) for p in root.rglob("*.o")]; [os.utime(p, (t_so, t_so)) for p in root.rglob("*.so")]; [nlog.write_text("\n".join(["\t".join(parts[:2] + [str(Path(parts[3]).stat().st_mtime_ns if Path(parts[3]).exists() else parts[2])] + parts[3:]) if (len(parts := ln.split("\t")) == 5 and not ln.startswith("#")) else ln for ln in nlog.read_text(encoding="utf-8").splitlines()]) + "\n", encoding="utf-8") for nlog in root.rglob(".ninja_log")]' || true
       fi
       if [[ -f "\${CACHE_DIR}/vllm_cache_sm100a.tar.gz" ]]; then
         tar -xzf "\${CACHE_DIR}/vllm_cache_sm100a.tar.gz" -C /root/.cache || true

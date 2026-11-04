@@ -772,6 +772,15 @@ class TestV1ValidateDumpNumTurns(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             ns["test_validate_dump_writes_num_turns_and_reconciles_shaped_reward"](Path(td))
 
+    def test_dapo_script_scales_max_token_len_per_gpu_for_16k_response(self):
+        dapo_script = REPO_ROOT / "examples" / "tpu" / "retool" / "gb200" / "run_qwen3_30b_a3b_dapo_torchtitan_gb200.sh"
+        src = dapo_script.read_text(encoding="utf-8")
+        self.assertIn("MIN_TOKEN_LEN_PER_GPU=$(( (max_model_len + CONTEXT_PARALLEL_SIZE - 1) / CONTEXT_PARALLEL_SIZE ))", src)
+        self.assertIn(
+            "DEFAULT_MAX_TOKEN_LEN_PER_GPU=$(( MIN_TOKEN_LEN_PER_GPU > 16384 ? MIN_TOKEN_LEN_PER_GPU : 16384 ))",
+            src,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

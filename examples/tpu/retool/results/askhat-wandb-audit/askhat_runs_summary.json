@@ -7,6 +7,7 @@
       "display_name": "qwen3-30b-a3b-retool-dapo-tpu-64chips-4xtp8-full-40steps",
       "created_at": "2026-10-23T16:19:30Z",
       "state": "crashed",
+      "resumed_from": null,
       "regime": "Regime_1_8K_nothink_default_scorer",
       "config": {
         "use_v1": true,
@@ -21,6 +22,8 @@
         "rollout_n": 16,
         "val_n": 30,
         "actor_lr": 1e-06,
+        "min_lr_factor": 0.733,
+        "lr_warmup_steps_ratio": 0,
         "configured_clip_grad": 1,
         "effective_torchtitan_max_norm": 1.0,
         "train_batch_size": 256,
@@ -37,7 +40,9 @@
       },
       "training_summary": {
         "num_logged_steps": 10,
-        "first_5_steps_rewards": [
+        "min_logged_step": 1,
+        "max_logged_step": 10,
+        "steps_1_to_5_rewards": [
           {
             "step": 1,
             "reward": -0.2114
@@ -59,7 +64,8 @@
             "reward": -0.2812
           }
         ],
-        "reward_mean_steps_1_to_5": -0.2471,
+        "steps_21_to_25_rewards": [],
+        "reward_mean_steps_1_to_5": -0.247,
         "reward_mean_steps_21_to_25": null,
         "grad_norm_median": 0.2439,
         "grad_norm_max": 0.3095,
@@ -111,6 +117,7 @@
       "display_name": "qwen3-30b-a3b-retool-dapo-p5b-400steps",
       "created_at": "2026-10-25T03:35:01Z",
       "state": "failed",
+      "resumed_from": null,
       "regime": "Regime_1_8K_nothink_default_scorer",
       "config": {
         "use_v1": true,
@@ -125,6 +132,8 @@
         "rollout_n": 8,
         "val_n": 30,
         "actor_lr": 1.4e-06,
+        "min_lr_factor": 1,
+        "lr_warmup_steps_ratio": 0,
         "configured_clip_grad": 0.088,
         "effective_torchtitan_max_norm": 1.0,
         "train_batch_size": 64,
@@ -141,7 +150,9 @@
       },
       "training_summary": {
         "num_logged_steps": 48,
-        "first_5_steps_rewards": [
+        "min_logged_step": 1,
+        "max_logged_step": 48,
+        "steps_1_to_5_rewards": [
           {
             "step": 1,
             "reward": -0.1172
@@ -161,6 +172,28 @@
           {
             "step": 5,
             "reward": -0.2617
+          }
+        ],
+        "steps_21_to_25_rewards": [
+          {
+            "step": 21,
+            "reward": -0.2109
+          },
+          {
+            "step": 22,
+            "reward": -0.0977
+          },
+          {
+            "step": 23,
+            "reward": -0.0273
+          },
+          {
+            "step": 24,
+            "reward": -0.168
+          },
+          {
+            "step": 25,
+            "reward": -0.0742
           }
         ],
         "reward_mean_steps_1_to_5": -0.3156,
@@ -203,6 +236,7 @@
       "display_name": "qwen3-30b-a3b-retool-dapo-p5b-400steps-v2",
       "created_at": "2026-10-26T08:21:56Z",
       "state": "failed",
+      "resumed_from": null,
       "regime": "Regime_1_8K_nothink_default_scorer",
       "config": {
         "use_v1": true,
@@ -217,6 +251,8 @@
         "rollout_n": 8,
         "val_n": 30,
         "actor_lr": 1.4e-06,
+        "min_lr_factor": 1,
+        "lr_warmup_steps_ratio": 0,
         "configured_clip_grad": 0.088,
         "effective_torchtitan_max_norm": 1.0,
         "train_batch_size": 64,
@@ -233,7 +269,9 @@
       },
       "training_summary": {
         "num_logged_steps": 29,
-        "first_5_steps_rewards": [
+        "min_logged_step": 1,
+        "max_logged_step": 29,
+        "steps_1_to_5_rewards": [
           {
             "step": 1,
             "reward": 0.0625
@@ -253,6 +291,28 @@
           {
             "step": 5,
             "reward": -0.2969
+          }
+        ],
+        "steps_21_to_25_rewards": [
+          {
+            "step": 21,
+            "reward": -0.1055
+          },
+          {
+            "step": 22,
+            "reward": -0.2461
+          },
+          {
+            "step": 23,
+            "reward": -0.2031
+          },
+          {
+            "step": 24,
+            "reward": -0.1562
+          },
+          {
+            "step": 25,
+            "reward": -0.0742
           }
         ],
         "reward_mean_steps_1_to_5": -0.2727,
@@ -295,6 +355,7 @@
       "display_name": "qwen3-30b-a3b-retool-dapo-p5b-400steps-v2-cont-from-s20-a2",
       "created_at": "2026-10-26T18:55:39Z",
       "state": "failed",
+      "resumed_from": "lb5cdzuq (step 20 checkpoint)",
       "regime": "Regime_1_8K_nothink_default_scorer",
       "config": {
         "use_v1": true,
@@ -309,6 +370,8 @@
         "rollout_n": 8,
         "val_n": 30,
         "actor_lr": 1.4e-06,
+        "min_lr_factor": 1,
+        "lr_warmup_steps_ratio": 0,
         "configured_clip_grad": 0.088,
         "effective_torchtitan_max_norm": 1.0,
         "train_batch_size": 64,
@@ -325,7 +388,9 @@
       },
       "training_summary": {
         "num_logged_steps": 219,
-        "first_5_steps_rewards": [
+        "min_logged_step": 1,
+        "max_logged_step": 219,
+        "steps_1_to_5_rewards": [
           {
             "step": 1,
             "reward": -0.0078
@@ -345,6 +410,28 @@
           {
             "step": 5,
             "reward": -0.2422
+          }
+        ],
+        "steps_21_to_25_rewards": [
+          {
+            "step": 21,
+            "reward": -0.0742
+          },
+          {
+            "step": 22,
+            "reward": 0.0312
+          },
+          {
+            "step": 23,
+            "reward": -0.168
+          },
+          {
+            "step": 24,
+            "reward": 0.0391
+          },
+          {
+            "step": 25,
+            "reward": 0.1055
           }
         ],
         "reward_mean_steps_1_to_5": -0.2195,
@@ -459,6 +546,7 @@
       "display_name": "qwen3-30b-a3b-retool-dapo-p5b-400steps-v2-cont-from-s300-a12",
       "created_at": "2026-10-28T00:24:37Z",
       "state": "finished",
+      "resumed_from": "hdc2m3lf / 1qhymrv4 (step 300 checkpoint)",
       "regime": "Regime_1_8K_nothink_default_scorer",
       "config": {
         "use_v1": true,
@@ -473,6 +561,8 @@
         "rollout_n": 8,
         "val_n": 30,
         "actor_lr": 1.4e-06,
+        "min_lr_factor": 1,
+        "lr_warmup_steps_ratio": 0,
         "configured_clip_grad": 0.088,
         "effective_torchtitan_max_norm": 1.0,
         "train_batch_size": 64,
@@ -489,7 +579,9 @@
       },
       "training_summary": {
         "num_logged_steps": 100,
-        "first_5_steps_rewards": [
+        "min_logged_step": 1,
+        "max_logged_step": 100,
+        "steps_1_to_5_rewards": [
           {
             "step": 1,
             "reward": 0.793
@@ -509,6 +601,28 @@
           {
             "step": 5,
             "reward": 0.5391
+          }
+        ],
+        "steps_21_to_25_rewards": [
+          {
+            "step": 21,
+            "reward": 0.4805
+          },
+          {
+            "step": 22,
+            "reward": 0.5078
+          },
+          {
+            "step": 23,
+            "reward": 0.3047
+          },
+          {
+            "step": 24,
+            "reward": 0.3867
+          },
+          {
+            "step": 25,
+            "reward": 0.4414
           }
         ],
         "reward_mean_steps_1_to_5": 0.5273,
@@ -575,6 +689,7 @@
       "display_name": "retool-dapo-qwen3-30b-a3b-v5p",
       "created_at": "2026-10-29T02:50:09Z",
       "state": "crashed",
+      "resumed_from": null,
       "regime": "Regime_2_16K_thinking_shaped",
       "config": {
         "use_v1": true,
@@ -589,6 +704,8 @@
         "rollout_n": 16,
         "val_n": 8,
         "actor_lr": 2e-06,
+        "min_lr_factor": 1,
+        "lr_warmup_steps_ratio": 0,
         "configured_clip_grad": 0.0625,
         "effective_torchtitan_max_norm": 1.0,
         "train_batch_size": 64,
@@ -605,7 +722,10 @@
       },
       "training_summary": {
         "num_logged_steps": 0,
-        "first_5_steps_rewards": [],
+        "min_logged_step": null,
+        "max_logged_step": null,
+        "steps_1_to_5_rewards": [],
+        "steps_21_to_25_rewards": [],
         "reward_mean_steps_1_to_5": null,
         "reward_mean_steps_21_to_25": null,
         "grad_norm_median": null,
@@ -634,6 +754,7 @@
       "display_name": "retool-dapo-qwen3-30b-a3b-v5p-cp2",
       "created_at": "2026-10-29T09:39:58Z",
       "state": "crashed",
+      "resumed_from": null,
       "regime": "Regime_2_16K_thinking_shaped",
       "config": {
         "use_v1": true,
@@ -648,6 +769,8 @@
         "rollout_n": 16,
         "val_n": 8,
         "actor_lr": 2e-06,
+        "min_lr_factor": 1,
+        "lr_warmup_steps_ratio": 0,
         "configured_clip_grad": 0.0625,
         "effective_torchtitan_max_norm": 1.0,
         "train_batch_size": 64,
@@ -664,7 +787,9 @@
       },
       "training_summary": {
         "num_logged_steps": 23,
-        "first_5_steps_rewards": [
+        "min_logged_step": 1,
+        "max_logged_step": 23,
+        "steps_1_to_5_rewards": [
           {
             "step": 1,
             "reward": -0.5233
@@ -686,6 +811,20 @@
             "reward": -0.2827
           }
         ],
+        "steps_21_to_25_rewards": [
+          {
+            "step": 21,
+            "reward": 0.2702
+          },
+          {
+            "step": 22,
+            "reward": 0.4424
+          },
+          {
+            "step": 23,
+            "reward": 0.6562
+          }
+        ],
         "reward_mean_steps_1_to_5": -0.364,
         "reward_mean_steps_21_to_25": 0.4563,
         "grad_norm_median": 0.1245,
@@ -701,6 +840,7 @@
       "display_name": "retool-dapo-qwen3-30b-a3b-v5p-cp2",
       "created_at": "2026-10-29T21:18:14Z",
       "state": "finished",
+      "resumed_from": "fcze3xlx (step 20 checkpoint)",
       "regime": "Regime_2_16K_thinking_shaped",
       "config": {
         "use_v1": true,
@@ -715,6 +855,8 @@
         "rollout_n": 16,
         "val_n": 8,
         "actor_lr": 2e-06,
+        "min_lr_factor": 1,
+        "lr_warmup_steps_ratio": 0,
         "configured_clip_grad": 0.0625,
         "effective_torchtitan_max_norm": 1.0,
         "train_batch_size": 64,
@@ -731,7 +873,10 @@
       },
       "training_summary": {
         "num_logged_steps": 130,
-        "first_5_steps_rewards": [
+        "min_logged_step": 21,
+        "max_logged_step": 150,
+        "steps_1_to_5_rewards": [],
+        "steps_21_to_25_rewards": [
           {
             "step": 21,
             "reward": 0.7141
@@ -841,6 +986,7 @@
       "display_name": "retool-dapo-qwen3-30b-a3b-v5p-cp1-opt",
       "created_at": "2026-10-30T23:47:09Z",
       "state": "crashed",
+      "resumed_from": null,
       "regime": "Regime_2_16K_thinking_shaped",
       "config": {
         "use_v1": true,
@@ -855,6 +1001,8 @@
         "rollout_n": 16,
         "val_n": 8,
         "actor_lr": 2e-06,
+        "min_lr_factor": 1,
+        "lr_warmup_steps_ratio": 0,
         "configured_clip_grad": 0.0625,
         "effective_torchtitan_max_norm": 1.0,
         "train_batch_size": 64,
@@ -870,24 +1018,88 @@
         "trainer_n_gpus_per_node": 4
       },
       "training_summary": {
-        "num_logged_steps": 1,
-        "first_5_steps_rewards": [
+        "num_logged_steps": 80,
+        "min_logged_step": 1,
+        "max_logged_step": 80,
+        "steps_1_to_5_rewards": [
           {
-            "step": 80,
-            "reward": 0.6091
+            "step": 1,
+            "reward": -0.4293
+          },
+          {
+            "step": 2,
+            "reward": -0.419
+          },
+          {
+            "step": 3,
+            "reward": -0.3954
+          },
+          {
+            "step": 4,
+            "reward": -0.2165
+          },
+          {
+            "step": 5,
+            "reward": -0.0601
           }
         ],
-        "reward_mean_steps_1_to_5": null,
-        "reward_mean_steps_21_to_25": null,
-        "grad_norm_median": 0.057,
-        "grad_norm_max": 0.057,
-        "response_length_mean": 5286.0,
-        "response_clip_ratio_mean": 0.0166,
-        "num_turns_mean": 7.61
+        "steps_21_to_25_rewards": [
+          {
+            "step": 21,
+            "reward": 0.1582
+          },
+          {
+            "step": 22,
+            "reward": 0.4999
+          },
+          {
+            "step": 23,
+            "reward": 0.6983
+          },
+          {
+            "step": 24,
+            "reward": 0.4848
+          },
+          {
+            "step": 25,
+            "reward": 0.5763
+          }
+        ],
+        "reward_mean_steps_1_to_5": -0.3041,
+        "reward_mean_steps_21_to_25": 0.4835,
+        "grad_norm_median": 0.0726,
+        "grad_norm_max": 0.183,
+        "response_length_mean": 3727.4,
+        "response_clip_ratio_mean": 0.00702,
+        "num_turns_mean": 8.01
       },
       "validations": [
         {
-          "step": 80,
+          "step": 25,
+          "n_val": 8,
+          "aime_2024_acc": 0.566667,
+          "aime_2024_maj": 0.666833,
+          "aime_2024_score": 0.238333,
+          "aime_2024_shaping_delta": 0.105,
+          "aime_2025_acc": 0.4625,
+          "aime_2025_maj": 0.536667,
+          "aime_2025_score": 0.0375,
+          "aime_2025_shaping_delta": 0.1125
+        },
+        {
+          "step": 50,
+          "n_val": 8,
+          "aime_2024_acc": 0.65,
+          "aime_2024_maj": 0.769967,
+          "aime_2024_score": 0.369167,
+          "aime_2024_shaping_delta": 0.069167,
+          "aime_2025_acc": 0.475,
+          "aime_2025_maj": 0.543933,
+          "aime_2025_score": 0.035417,
+          "aime_2025_shaping_delta": 0.085417
+        },
+        {
+          "step": 75,
           "n_val": 8,
           "aime_2024_acc": 0.725,
           "aime_2024_maj": 0.790067,
@@ -905,6 +1117,7 @@
       "display_name": "retool-dapo-qwen3-30b-a3b-v5p-cp1-opt",
       "created_at": "2026-11-01T00:09:46Z",
       "state": "finished",
+      "resumed_from": "rq1p980n (step 80 checkpoint)",
       "regime": "Regime_2_16K_thinking_shaped",
       "config": {
         "use_v1": true,
@@ -919,6 +1132,8 @@
         "rollout_n": 16,
         "val_n": 8,
         "actor_lr": 2e-06,
+        "min_lr_factor": 1,
+        "lr_warmup_steps_ratio": 0,
         "configured_clip_grad": 0.0625,
         "effective_torchtitan_max_norm": 1.0,
         "train_batch_size": 64,
@@ -935,28 +1150,10 @@
       },
       "training_summary": {
         "num_logged_steps": 70,
-        "first_5_steps_rewards": [
-          {
-            "step": 81,
-            "reward": 0.9094
-          },
-          {
-            "step": 82,
-            "reward": 0.7476
-          },
-          {
-            "step": 83,
-            "reward": 0.4948
-          },
-          {
-            "step": 84,
-            "reward": 0.6778
-          },
-          {
-            "step": 85,
-            "reward": 0.6335
-          }
-        ],
+        "min_logged_step": 81,
+        "max_logged_step": 150,
+        "steps_1_to_5_rewards": [],
+        "steps_21_to_25_rewards": [],
         "reward_mean_steps_1_to_5": null,
         "reward_mean_steps_21_to_25": null,
         "grad_norm_median": 0.0451,
@@ -1009,6 +1206,7 @@
       "display_name": "retool-dapo-qwen3-30b-a3b-v5p-cp1-pr115",
       "created_at": "2026-11-03T09:17:57Z",
       "state": "running",
+      "resumed_from": null,
       "regime": "Regime_2_16K_thinking_shaped",
       "config": {
         "use_v1": true,
@@ -1023,6 +1221,8 @@
         "rollout_n": 16,
         "val_n": 8,
         "actor_lr": 2e-06,
+        "min_lr_factor": 1,
+        "lr_warmup_steps_ratio": 0,
         "configured_clip_grad": 0.0625,
         "effective_torchtitan_max_norm": 1.0,
         "train_batch_size": 64,
@@ -1039,7 +1239,9 @@
       },
       "training_summary": {
         "num_logged_steps": 108,
-        "first_5_steps_rewards": [
+        "min_logged_step": 1,
+        "max_logged_step": 108,
+        "steps_1_to_5_rewards": [
           {
             "step": 1,
             "reward": -0.4081
@@ -1061,7 +1263,29 @@
             "reward": -0.0402
           }
         ],
-        "reward_mean_steps_1_to_5": -0.3055,
+        "steps_21_to_25_rewards": [
+          {
+            "step": 21,
+            "reward": 0.1163
+          },
+          {
+            "step": 22,
+            "reward": 0.4858
+          },
+          {
+            "step": 23,
+            "reward": 0.7188
+          },
+          {
+            "step": 24,
+            "reward": 0.5518
+          },
+          {
+            "step": 25,
+            "reward": 0.5399
+          }
+        ],
+        "reward_mean_steps_1_to_5": -0.3056,
         "reward_mean_steps_21_to_25": 0.4825,
         "grad_norm_median": 0.0651,
         "grad_norm_max": 0.196,
@@ -1125,6 +1349,7 @@
       "display_name": "qwen3-30b-a3b-retool-dapo-150step-think16k-tpu7x-opt1",
       "created_at": "2026-10-30T00:08:08Z",
       "state": "crashed",
+      "resumed_from": null,
       "regime": "Regime_2_16K_thinking_shaped",
       "config": {
         "use_v1": true,
@@ -1139,6 +1364,8 @@
         "rollout_n": 16,
         "val_n": 8,
         "actor_lr": 2e-06,
+        "min_lr_factor": 1,
+        "lr_warmup_steps_ratio": 0,
         "configured_clip_grad": 0.0625,
         "effective_torchtitan_max_norm": 1.0,
         "train_batch_size": 64,
@@ -1155,7 +1382,9 @@
       },
       "training_summary": {
         "num_logged_steps": 5,
-        "first_5_steps_rewards": [
+        "min_logged_step": 1,
+        "max_logged_step": 5,
+        "steps_1_to_5_rewards": [
           {
             "step": 1,
             "reward": -0.3391
@@ -1177,6 +1406,7 @@
             "reward": 0.2191
           }
         ],
+        "steps_21_to_25_rewards": [],
         "reward_mean_steps_1_to_5": -0.108,
         "reward_mean_steps_21_to_25": null,
         "grad_norm_median": 0.1374,

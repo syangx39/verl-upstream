@@ -44,6 +44,7 @@ import dataclasses
 import hashlib
 import importlib
 import importlib.metadata as md
+import json
 import os
 import platform
 import re
@@ -126,7 +127,7 @@ def expected_versions(
     return want
 
 
-def verify_identity_pins(repo: str, args: argparse.Namespace, bad: list[str]) -> str:
+def verify_identity_pins(repo: str, args: argparse.Namespace, bad: list[str]) -> tuple[str, str | None]:
     lock_path = os.path.join(repo, "uv.lock")
     lock_sha = sha256_file(lock_path)
     expect_lock = args.expect_lock_sha256
@@ -154,7 +155,35 @@ def verify_identity_pins(repo: str, args: argparse.Namespace, bad: list[str]) ->
     elif head_sha is not None:
         print(f"git HEAD SHA recorded (no expected pin supplied): {head_sha}")
 
-    return lock_sha
+    return lock_sha, head_sha
+
+
+def write_precheck_json(
+    output_path: str,
+    *,
+    repo: str,
+    head_sha: str | None,
+    lock_sha: str,
+    expect_git_sha: str | None,
+    expect_lock_sha256: str | None,
+    checked_packages: dict[str, str | None],
+) -> dict[str, object]:
+    out_abs = os.path.abspath(output_path)
+    os.makedirs(os.path.dirname(out_abs), exist_ok=True)
+    record: dict[str, object] = {
+        "status": "PASS",
+        "repo_dir": repo,
+        "git_sha": head_sha,
+        "expected_git_sha": expect_git_sha,
+        "uv_lock_sha256": lock_sha,
+        "expected_lock_sha256": expect_lock_sha256,
+        "platform": f"{platform.system()}/{platform.machine()}",
+        "python": sys.version.split()[0],
+        "checked_packages": checked_packages,
+    }
+    with open(out_abs, "w", encoding="utf-8") as f:
+        json.dump(record, f, indent=2, sort_keys=True)
+    return record
 
 
 def inspect_moe_config_schema(bad: list[str]) -> None:
@@ -375,6 +404,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Minimum per-GPU total memory in binary GiB (2^30 B); GB200 186 GB nominal is ~173.2 GiB",
     )
     parser.add_argument("--expect-gpu-regex", default=None, help="Regex each CUDA device name must match")
+    parser.add_argument(
+        "--output-json",
+        default=None,
+        help="Optional path to write a structured JSON precheck record (including verified git_sha and uv_lock_sha256)",
+    )
     args = parser.parse_args(argv)
     if args.require_gb200:
         args.require_gpu = True
@@ -404,16 +438,18 @@ def main(argv: list[str] | None = None) -> None:
         bad.append(f"arch:got={platform.machine()}:want=aarch64")
 
     print(f"platform={platform.system()}/{platform.machine()} python={sys.version.split()[0]}")
-    verify_identity_pins(repo, args, bad)
+    lock_sha, head_sha = verify_identity_pins(repo, args, bad)
 
     want_all = expected_versions(repo, extras, None if args.check_all_locked else check_pkgs)
     lines: list[str] = []
+    checked_packages: dict[str, str | None] = {}
     for name in check_pkgs:
         w = want_all.get(canon(name))
         try:
             got = md.version(name)
         except md.PackageNotFoundError:
             got = None
+        checked_packages[name] = got
         lines.append(f"{name:22s} installed {got!s:22s} locked {w!s}")
         if w is None or got != w:
             bad.append(name)
@@ -465,6 +501,17 @@ def main(argv: list[str] | None = None) -> None:
     if bad:
         print("VERIFICATION FAILED:", bad)
         sys.exit(1)
+
+    if args.output_json:
+        write_precheck_json(
+            args.output_json,
+            repo=repo,
+            head_sha=head_sha,
+            lock_sha=lock_sha,
+            expect_git_sha=args.expect_git_sha,
+            expect_lock_sha256=args.expect_lock_sha256,
+            checked_packages=checked_packages,
+        )
 
     import ray  # noqa: E402
     import transformers  # noqa: E402

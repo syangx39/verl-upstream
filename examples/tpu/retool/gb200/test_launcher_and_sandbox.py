@@ -17,6 +17,7 @@
 import asyncio
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -150,6 +151,36 @@ class TestSandboxPrivilegeDrop(unittest.TestCase):
             self.assertEqual(res["status"], "SandboxError")
             self.assertIn("PrivilegeDropError", res["message"])
             mock_spawn.assert_not_called()
+
+    def test_resolve_drop_uid_gid_adopts_restricted_executable_owner(self):
+        fake_stat = os.stat_result((0o040750, 1, 1, 1, 1000, 100, 4096, 0, 0, 0))
+        world_stat = os.stat_result((0o040755, 1, 1, 1, 0, 0, 4096, 0, 0, 0))
+
+        def _stat_side_effect(p):
+            if p == "/home/ray":
+                return fake_stat
+            return world_stat
+
+        with (
+            mock.patch("os.geteuid", return_value=0),
+            mock.patch("sys.executable", "/home/ray/anaconda3/bin/python"),
+            mock.patch("os.path.realpath", return_value="/home/ray/anaconda3/bin/python"),
+            mock.patch("os.stat", side_effect=_stat_side_effect),
+            mock.patch.dict(os.environ, {"SANDBOX_ALLOW_ROOT_EXEC": "0"}, clear=True),
+        ):
+            self.assertEqual(sandbox_fusion_server._resolve_drop_uid_gid(), (1000, 100))
+
+    def test_run_code_handles_subprocess_exec_permission_error_without_500(self):
+        req = sandbox_fusion_server.RunCodeRequest(code="print(123)", language="python", run_timeout=5.0)
+        with (
+            mock.patch("os.geteuid", return_value=1000),
+            mock.patch("asyncio.create_subprocess_exec", side_effect=PermissionError(13, "Permission denied")),
+        ):
+            res = asyncio.run(sandbox_fusion_server.run_code(req))
+            self.assertEqual(res["status"], "Failed")
+            self.assertEqual(res["message"], "ExecutionError")
+            self.assertEqual(res["run_result"]["return_code"], -1)
+            self.assertIn("PermissionError", res["run_result"]["stderr"])
 
 
 class TestSandboxEndpointResolution(unittest.TestCase):
@@ -481,6 +512,129 @@ exit 0
                 self.assertIn(expected_err, res.stderr)
                 self.assertEqual(_MockKubeProxyHandler.deletes, [])
 
+    def test_multinode_16_nodes_partial_create_cleans_up_all_created_workers_by_uid(self):
+        """Verify NUM_NODES=16 (64 GPUs) creates worker-0..worker-14 and cleans up all created pods on failure."""
+        launcher = REPO_ROOT / "examples" / "tpu" / "retool" / "gb200" / "run_ray_jobset_gb200.sh"
+        with tempfile.TemporaryDirectory() as td:
+            # Objects: 1=CD, 2=Service, 3..17=worker-0..worker-14, 18=head. Fail on 18 (head).
+            bin_dir = self._make_mock_bins(Path(td), fail_on_create_idx=18)
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PATH": f"{bin_dir}:{env.get('PATH', '')}",
+                    "RUN_NAME": "scale16-run",
+                    "LAUNCH_ID": "launch-scale16",
+                    "NUM_NODES": "16",
+                    "KUBE_CONTEXT": "mock-ctx",
+                    "NODEPOOL": "mock-pool",
+                    "GCS_BUCKET": "mock-bucket",
+                    "RUN_ROOT": "mock-runs",
+                    "INPUTS_ROOT": "mock-inputs",
+                    "IMAGE": "mock-image:latest",
+                }
+            )
+            res = subprocess.run(["bash", str(launcher)], env=env, capture_output=True, text=True)
+            self.assertNotEqual(res.returncode, 0)
+            deleted = dict(_MockKubeProxyHandler.deletes)
+            # Delete CD (uid-obj-1), Service (uid-obj-2), and 15 workers worker-0..worker-14 (uid-obj-3..uid-obj-17).
+            self.assertEqual(len(deleted), 17, f"Expected 17 atomic deletes for NUM_NODES=16, got {len(deleted)}")
+            for w in range(15):
+                self.assertEqual(
+                    deleted[f"/api/v1/namespaces/default/pods/scale16-run-worker-{w}"]["preconditions"]["uid"],
+                    f"uid-obj-{w + 3}",
+                )
+
+    def test_gpus_per_node_validation_and_pod_resource_matching(self):
+        """Verify GPUS_PER_NODE rejects >4 or <1 and renders matching Pod GPU requests/limits and EXPECT_GIT_SHA."""
+        launcher = REPO_ROOT / "examples" / "tpu" / "retool" / "gb200" / "run_ray_jobset_gb200.sh"
+        with tempfile.TemporaryDirectory() as td:
+            bin_dir = self._make_mock_bins(Path(td), fail_on_create_idx=99)
+            for bad_gpus in ("0", "5", "8", "abc"):
+                env = os.environ.copy()
+                env.update(
+                    {
+                        "PATH": f"{bin_dir}:{env.get('PATH', '')}",
+                        "RUN_NAME": "bad-gpu-run",
+                        "GPUS_PER_NODE": bad_gpus,
+                        "KUBE_CONTEXT": "mock-ctx",
+                        "NODEPOOL": "mock-pool",
+                        "GCS_BUCKET": "mock-bucket",
+                        "RUN_ROOT": "mock-runs",
+                        "INPUTS_ROOT": "mock-inputs",
+                        "IMAGE": "mock-image:latest",
+                    }
+                )
+                res = subprocess.run(["bash", str(launcher)], env=env, capture_output=True, text=True)
+                self.assertNotEqual(res.returncode, 0)
+                self.assertIn("GPUS_PER_NODE must be an integer between 1 and 4", res.stderr)
+
+        src = launcher.read_text(encoding="utf-8")
+        self.assertEqual(src.count('nvidia.com/gpu: "${GPUS_PER_NODE}"'), 4)
+        self.assertNotIn('nvidia.com/gpu: "4"', src)
+        self.assertEqual(src.count("- name: EXPECT_GIT_SHA"), 2)
+
+    def test_precheck_json_emission_and_cross_node_readiness_parsing(self):
+        """Verify verify_venv_lock writes structured JSON and the launcher readiness snippet parses it end-to-end."""
+        from examples.tpu.retool.gb200 import verify_venv_lock
+
+        launcher = REPO_ROOT / "examples" / "tpu" / "retool" / "gb200" / "run_ray_jobset_gb200.sh"
+        src = launcher.read_text(encoding="utf-8")
+        self.assertEqual(
+            src.count('--output-json "${RUN_DIR}/env/${LAUNCH_ID}-\\${HOST_TAG}-precheck.json"'),
+            2,
+        )
+        m = re.search(r"python3 -c '([^']+)' \"\$\{RUN_DIR\}/env\"", src)
+        self.assertIsNotNone(m, "Failed to extract cross-node readiness Python snippet from launcher")
+        readiness_code = m.group(1)
+
+        with tempfile.TemporaryDirectory() as td:
+            env_dir = Path(td)
+            lid = "launch-001"
+            expected_sha = "a2cbde47ba729d0cba7e881da1692df20d8e05e4"
+            lock_sha = "df508db0b957fa181c229fb75885cd3863cb651fd5233d0fa5af95e990bda0be"
+            comp_sha = "1" * 64
+
+            for host in ("head", "worker-0"):
+                verify_venv_lock.write_precheck_json(
+                    str(env_dir / f"{lid}-{host}-precheck.json"),
+                    repo="/workspace/verl-pin",
+                    head_sha=expected_sha,
+                    lock_sha=lock_sha,
+                    expect_git_sha=expected_sha,
+                    expect_lock_sha256=lock_sha,
+                    checked_packages={"torch": "2.13.0+cu130", "vllm": "0.32.0"},
+                )
+                (env_dir / f"{lid}-{host}-g0-verify.json").write_text(
+                    json.dumps({"g0_checkpoint_manifest": {"composite_sha256": comp_sha}}),
+                    encoding="utf-8",
+                )
+
+            ok_res = subprocess.run(
+                [sys.executable, "-c", readiness_code, str(env_dir), lid, "2", expected_sha],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(ok_res.returncode, 0, msg=ok_res.stderr)
+            self.assertIn(expected_sha, ok_res.stdout)
+
+            # Mismatched EXPECT_GIT_SHA must fail
+            bad_expect = subprocess.run(
+                [sys.executable, "-c", readiness_code, str(env_dir), lid, "2", "deadbeef" * 5],
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(bad_expect.returncode, 0)
+
+            # Plain-text non-JSON in *-precheck.json must fail with JSONDecodeError
+            (env_dir / f"{lid}-worker-0-precheck.json").write_text("plain text output\n", encoding="utf-8")
+            bad_json = subprocess.run(
+                [sys.executable, "-c", readiness_code, str(env_dir), lid, "2", expected_sha],
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(bad_json.returncode, 0)
+
+
 
 class TestG0ManifestCompositeHashCheck(unittest.TestCase):
     """Verify verify_g0_gb200.verify_checkpoint_manifest checks --expect-composite-sha256."""
@@ -493,7 +647,7 @@ class TestG0ManifestCompositeHashCheck(unittest.TestCase):
             for name in ("config.json", "tokenizer.json", "tokenizer_config.json", "model.safetensors.index.json"):
                 (model_dir / name).write_text("{}", encoding="utf-8")
             for idx in range(1, 17):
-                (model_dir / f"model-{idx:05d}-of-00016.safetensors").write_bytes(f"shard-{idx}".encode("utf-8"))
+                (model_dir / f"model-{idx:05d}-of-00016.safetensors").write_bytes(f"shard-{idx}".encode())
 
             rep = verify_g0_gb200.verify_checkpoint_manifest(model_dir)
             actual = rep["composite_sha256"]

@@ -199,6 +199,7 @@ TOTAL_TRAINER_GPUS=$((NNODES_TRAINER * N_GPUS_TRAINER))
 TOTAL_ROLLOUT_GPUS=$((NNODES_ROLLOUT * N_GPUS_ROLLOUT))
 
 ROLLOUT_TP="${ROLLOUT_TP:-${TOTAL_ROLLOUT_GPUS}}"
+ROLLOUT_DP="${ROLLOUT_DP:-1}"
 ROLLOUT_EP="${ROLLOUT_EP:-1}"
 ROLLOUT_ENABLE_PREFIX_CACHING="${ROLLOUT_ENABLE_PREFIX_CACHING:-True}"
 PARAMETER_SYNC_STEP="${PARAMETER_SYNC_STEP:-$((train_batch_size / ppo_mini_batch_size))}"
@@ -234,9 +235,18 @@ ROLLOUT_ENFORCE_EAGER="${ROLLOUT_ENFORCE_EAGER:-False}"
 ROLLOUT_IS="${ROLLOUT_IS:-token}"
 ROLLOUT_IS_THRESHOLD="${ROLLOUT_IS_THRESHOLD:-2.0}"
 BYPASS_MODE="${BYPASS_MODE:-True}"
+ENABLE_THINKING="${ENABLE_THINKING:-False}"
+USE_SHAPED_REWARD="${USE_SHAPED_REWARD:-False}"
 LOSS_ARGS=("algorithm.rollout_correction.bypass_mode=${BYPASS_MODE}")
 if [[ "${BYPASS_MODE}" == "True" || "${BYPASS_MODE}" == "true" ]]; then
     LOSS_ARGS+=("actor_rollout_ref.actor.policy_loss.loss_mode=bypass_mode")
+fi
+REWARD_ARGS=()
+if [[ "${USE_SHAPED_REWARD}" == "True" || "${USE_SHAPED_REWARD}" == "true" || "${USE_SHAPED_REWARD}" == "1" ]]; then
+    REWARD_ARGS+=(
+        "reward.custom_reward_function.path=${retool_py_path}"
+        "reward.custom_reward_function.name=compute_score"
+    )
 fi
 
 VAL_BEFORE_TRAIN="${VAL_BEFORE_TRAIN:-True}"
@@ -298,12 +308,13 @@ python3 -m verl.trainer.main_ppo \
     +data.max_token_len_per_gpu="${ACTOR_MAX_TOKEN_LEN_PER_GPU}" \
     data.filter_overlong_prompts=False \
     data.truncation="${TRUNCATION}" \
-    +data.apply_chat_template_kwargs.enable_thinking=False \
+    +data.apply_chat_template_kwargs.enable_thinking="${ENABLE_THINKING}" \
     +data.pad_mode=no_padding \
     data.custom_cls.path="${retool_py_path}" \
     data.custom_cls.name=CustomRLHFDataset \
     custom_reward_function.path="${retool_py_path}" \
     custom_reward_function.name=compute_score \
+    "${REWARD_ARGS[@]}" \
     actor_rollout_ref.actor.strategy=torchtitan \
     "actor_rollout_ref.actor.checkpoint.save_contents=['hf_model']" \
     actor_rollout_ref.model.path="${model_path}" \
@@ -350,6 +361,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.agent.num_workers="${AGENT_NUM_WORKERS}" \
     actor_rollout_ref.rollout.enable_prefix_caching="${ROLLOUT_ENABLE_PREFIX_CACHING}" \
     actor_rollout_ref.rollout.tensor_model_parallel_size="${ROLLOUT_TP}" \
+    actor_rollout_ref.rollout.data_parallel_size="${ROLLOUT_DP}" \
     actor_rollout_ref.rollout.expert_parallel_size="${ROLLOUT_EP}" \
     actor_rollout_ref.rollout.enable_chunked_prefill=True \
     actor_rollout_ref.rollout.max_model_len="${max_model_len}" \

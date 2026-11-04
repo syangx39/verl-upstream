@@ -1,6 +1,13 @@
 # TPU v7x ReTool 对齐 Askhat 运行与重跑方案（TPU v7x Only）
 
-状态：**rev 11（64 卡 `p3c-retool-25s-01` 已在 `r-b0f80` 启动并通过 Steps 0–3 全部三副本在线放行检查，正在全速跑满 25 步；W&B [`smcnyyoh`](https://wandb.ai/google-trellis/verl-torchtpu-grpo-test/runs/smcnyyoh)）**（2026-11-04）。
+状态：**rev 12（64 卡 `p3c-retool-25s-02` 已完整跑完 25/25 步训练与 Step 0 / Step 25 `n=30` AIME 评估，全项门禁通过；W&B [`wopup8dq`](https://wandb.ai/google-trellis/verl-torchtpu-grpo-test/runs/wopup8dq)）**（2026-11-04）。
+
+- **rev 12**：
+  1. **补入 64 卡 TPU v7x 正式运行 `p3c-retool-25s-02`（W&B [`wopup8dq`](https://wandb.ai/google-trellis/verl-torchtpu-grpo-test/runs/wopup8dq)）25/25 步完整训练与 Step 0 → Step 25 `n=30` 评估归档（第 8.5 节，产物目录 [`results/p3c-retool-25s-02/`](results/p3c-retool-25s-02/)）**：
+     - **AIME 2024（`n=30`，900 条样本）**：Step 0 `399/900`（**`44.33%`**）→ Step 25 `492/900`（**`54.67%`**），提升 **`+10.33` pp**（二层配对 bootstrap 95% CI **`[+3.78, +17.22]` pp**；30 题中 18 题上升 / 5 题下降 / 7 题持平；`maj@30` `63.78%` → `71.59%`）；
+     - **AIME 2025（`n=30`，900 条样本）**：Step 0 `293/900`（**`32.56%`**）→ Step 25 `378/900`（**`42.00%`**），提升 **`+9.44` pp**（二层配对 bootstrap 95% CI **`[+3.67, +15.56]` pp**；30 题中 19 题上升 / 3 题下降 / 8 题持平；`maj@30` `48.77%` → `61.67%`，`best@30` `69.77%` → `81.21%`）；
+     - **训练与放行门禁全量通过**：训练 reward `critic/score/mean` 5 步均值从 Steps 1–5 的 `-0.108` 升至 Steps 21–25 的 **`+0.516`**；25 步共 `25,600` 条轨迹中 `25,451` 条（`99.42%`）含 `<tool_response>`（共 `84,914` 次工具返回），`-2.0` 截断惩罚 `0` 条；`200 / 200` 掩码审计会话 `0` 违规；`25 / 25` 步 × 3 副本（`75 / 75` 次）Raiden 分布式范数校验全部通过；
+     - **跨平台（TPU v7x vs GB200 GPU）与 Askhat v5p 对照**：在同一 SFT 起点（`p2-retool-sft-01/checkpoint/global_step_372`）与同口径 `n=30` 评估下，TPU v7x `p3c-retool-25s-02` 与 GB200 64-GPU `g64-retool-25s-01` 的 Step 25 准确率高度一致（AIME 2024 `54.67%` vs `54.00%`，AIME 2025 `42.00%` vs `41.78%`）。
 
 - **rev 11**：
   1. **补入 64 卡 TPU v7x 正式运行 `p3c-retool-25s-01`（W&B [`smcnyyoh`](https://wandb.ai/google-trellis/verl-torchtpu-grpo-test/runs/smcnyyoh)）Steps 0–3 在线放行检查全项通过报告（第 8 节）**：
@@ -847,3 +854,89 @@ bash examples/tpu/gke/run_ray_jobset_v7x_nap.sh \
   - `p3c-retool-25s-01` 在完成 Step 10 的训练更新后进入 `self._save_checkpoint()`，因 `SAVE_FREQ=5`、`MAX_CKPT_TO_KEEP=2` 且 [`run_qwen3_30b_a3b_dapo_torchtitan.sh`](run_qwen3_30b_a3b_dapo_torchtitan.sh) 将 `default_local_dir` 默认指向容器根盘 `/tmp/checkpoint/${experiment_name}`，[`TorchTitan._is_hf_checkpoint_writer`](../../verl/workers/engine/torchtitan/transformer_impl.py#L717-L733) 对 `/tmp` 路径令每个 host 的 `local_rank == 0` 各自写出一份 `57 GiB` HF safetensors（Step 5 写第一份、Step 10 写第二份未轮转删除前达 `63.6–67.5 GiB`），触发 GKE kubelet `ephemeral-storage` 驱逐。
   - **已合入修复**：在 [`run_qwen3_30b_a3b_dapo_torchtitan.sh`](run_qwen3_30b_a3b_dapo_torchtitan.sh) 中，当存在 `VERL_NAP_RUN_DIR` 或 `RUN_DIR`（GCS Fuse `/data/...`）且未显式指定 `CKPTS_DIR` 时，将 `default_local_dir` 默认指向 `${VERL_NAP_RUN_DIR}/checkpoints`（仅全局 `rank == 0` 向 GCS 写出，完全不占用节点 `ephemeral-storage`）；同时保留 `p3c-retool-25s-01`（Steps 0–9）全部产物归档，并以 `JOBENV_SAVE_FREQ="-1"` + `JOBENV_CKPTS_DIR="@RUN_DIR@/checkpoints"` 启动 **`p3c-retool-25s-02`**（`17/17` Pods Running）跑完完整 25 步与 Step 25 `n=30` 评估。
 
+---
+
+### 8.5 `p3c-retool-25s-02`（64 卡 TPU v7x）25/25 步完整运行、Step 0 → Step 25 `n=30` 评估与跨平台对照
+
+- **Run 名称**：`p3c-retool-25s-02`（`CODE_REF=348bbff9f4d303da43b27001a79d5734628d8b43`，`JOBENV_SAVE_FREQ=-1`，`JOBENV_CKPTS_DIR=@RUN_DIR@/checkpoints`）
+- **W&B 链接**：[`https://wandb.ai/google-trellis/verl-torchtpu-grpo-test/runs/wopup8dq`](https://wandb.ai/google-trellis/verl-torchtpu-grpo-test/runs/wopup8dq)
+- **归档目录与离线校验**：[`results/p3c-retool-25s-02/`](results/p3c-retool-25s-02/)（运行 `python3 examples/tpu/retool/results/p3c-retool-25s-02/verify_evidence.py` 可离线复算全部 3,600 条验证样本的 `retool_tpu.compute_score`、配对 bootstrap 区间、25 步 Raiden 范数校验与 200 条掩码审计；运行 `python3 examples/tpu/retool/results/p3c-retool-25s-02/report_tables.py --check examples/tpu/retool/RETOOL_REWARD_CLIP_RERUN_PLAN_ZH.md` 校验下表与原始归档一致）。
+
+#### 8.5.1 Step 0 → Step 25 AIME 2024 / 2025（`n=30`）评估结果
+
+<!-- BEGIN AUTO-GENERATED p3c-retool-25s-02/eval (report_tables.py) -->
+| 数据集 | Step 0 正确数 / 900（mean@30） | Step 25 正确数 / 900（mean@30） | 变化 | 配对 bootstrap 95% CI | 题目 升 / 降 / 平 | maj@30 Step 0 → 25 | best@30 Step 0 → 25 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| AIME 2024 | `399`（`44.33%`） | `492`（`54.67%`） | `+10.33` pp | `[+3.78, +17.22]` pp | 18 / 5 / 7 | `63.78%` → `71.59%` | `85.41%` → `85.19%` |
+| AIME 2025 | `293`（`32.56%`） | `378`（`42.00%`） | `+9.44` pp | `[+3.67, +15.56]` pp | 19 / 3 / 8 | `48.77%` → `61.67%` | `69.77%` → `81.21%` |
+<!-- END AUTO-GENERATED p3c-retool-25s-02/eval -->
+
+#### 8.5.2 端到端耗时、工具调用率、掩码审计与 Raiden 范数检查汇总
+
+<!-- BEGIN AUTO-GENERATED p3c-retool-25s-02/wall (report_tables.py) -->
+- tqdm 记录的 `25/25` 总耗时 `2:59:32`（`10,772` s，含 Step 25 `n=30` 验证 `timing_s/testing = 1,663.8` s，不含 Step 0 验证）；扣除 Step 25 验证后的 25 步纯训练墙钟耗时为 `9,108.2` s（平均 `364.3` s/步）。
+- Steps 2–25 的 `timing_s/step` 均值 `287.3` s（范围 `70.0`–`601.3` s）。V1 异步模式下偶数步承担生成、奇数步的 `gen` 接近 0，所以要看两步平均或 tqdm 总耗时。
+- 训练轨迹 `25,600` 条，其中含 `<tool_response>` 的 `25,451` 条（`99.42%`），工具返回共 `84,914` 次，`score <= -1.99` 的轨迹 `0` 条。
+- 掩码审计 `200` 个会话，违规 `0` 个（`<tool_call>` 段 `723` 个，`<tool_response>` 段 `721` 个）。
+- Raiden 训练后分布式范数检查：`25` / `25` 步三个副本全部通过。
+<!-- END AUTO-GENERATED p3c-retool-25s-02/wall -->
+
+#### 8.5.3 前 5 步 vs 后 5 步训练窗口均值
+
+<!-- BEGIN AUTO-GENERATED p3c-retool-25s-02/window (report_tables.py) -->
+| 指标（5 步均值） | Steps 1–5 | Steps 21–25 |
+| --- | --- | --- |
+| 训练 reward `critic/score/mean` | `-0.108` | `+0.516` |
+| `response_length/mean` | `2,109` | `2,939` |
+| `num_turns/mean` | `8.50` | `8.74` |
+| `response_length/clip_ratio` | `0.0018` | `0.0020` |
+<!-- END AUTO-GENERATED p3c-retool-25s-02/window -->
+
+#### 8.5.4 与我们 64× GB200 GPU（`g64-retool-25s-01`）及 Askhat TPU v5p 的 Step 25 对照
+
+<!-- BEGIN AUTO-GENERATED p3c-retool-25s-02/compare (report_tables.py) -->
+| Run | 硬件 | 每题采样 `n` | Step 0 AIME 2024 / 2025 | Step 25 AIME 2024 / 2025 | 训练 reward steps 1–5 / 21–25 |
+| --- | --- | --- | --- | --- | --- |
+| **我们 TPU `p3c-retool-25s-02`** | 64× TPU7x（trainer 16 + rollout 48） | 30 | `44.33%` / `32.56%` | `54.67%` / `42.00%` | `-0.108` / `+0.516` |
+| 我们 GPU `g64-retool-25s-01` | 64× GB200（trainer 16 + rollout 48） | 30 | `44.22%` / `35.00%` | `54.00%` / `41.78%` | `-0.202` / `+0.432` |
+| Askhat v5p `cp2`（`ci0k54pl`） | 48× v5p（trainer 16 + rollout 32；前 20 步 rollout 16） | 8 | –（未评估） | `58.33%` / `38.75%` | `-0.364` / `+0.479` |
+| Askhat v5p `cp1-opt`（`rq1p980n`） | 48× v5p（trainer 16 + rollout 32） | 8 | –（未评估） | `56.67%` / `46.25%` | `-0.304` / `+0.483` |
+| Askhat v5p `cp1-pr115`（`yrcsp4z6`） | 48× v5p（trainer 16 + rollout 32） | 8 | –（未评估） | `60.00%` / `46.67%` | `-0.306` / `+0.483` |
+| Askhat v5p `cp1-pr115-async`（`zyrnkte8`） | 48× v5p（trainer 16 + rollout 32） | 8 | –（未评估） | `56.25%` / `46.25%` | `-0.275` / `+0.480` |
+<!-- END AUTO-GENERATED p3c-retool-25s-02/compare -->
+
+> **对比说明与证据边界**：
+> 1. **我们 TPU v7x `p3c-retool-25s-02` vs 我们 GB200 `g64-retool-25s-01`（同 SFT 起点、同 `n=30` 评估）**：两条线使用同一个 SFT checkpoint（`p2-retool-sft-01/checkpoint/global_step_372/huggingface`）、相同的 16K + thinking + shaped reward + `MAX_TURNS=16` + `lr=2e-6` + `train_batch_size=64` + `rollout.n=16` 配置。Step 0 基线一致（AIME 2024 `44.33%` vs `44.22%`；AIME 2025 `32.56%` vs `35.00%`），Step 25 评估也高度一致（AIME 2024 **`54.67%` vs `54.00%`**，仅差 `+0.67` pp；AIME 2025 **`42.00%` vs `41.78%`**，仅差 `+0.22` pp），训练末段 Steps 21–25 的 `critic/score/mean` 分别为 `+0.516`（TPU）与 `+0.432`（GPU）。
+> 2. **与 Askhat TPU v5p 四条线（[`results/askhat-v5p/`](results/askhat-v5p/)，PR #19）的对照边界**：Askhat 在 Steps 21–25 的训练 reward 均值为 `+0.479`–`+0.483`，我们 TPU v7x 为 `+0.516`（略高 `+0.03`）；在 Step 25 的 AIME 评估上，我们 `n=30` 的 `54.67% / 42.00%` 接近 Askhat `n=8` 的范围（AIME 2024 `56.25%`–`60.00%`，AIME 2025 `38.75%`–`46.67%`；其中 AIME 2025 高于 Askhat `cp2` 的 `38.75%`）。注意两者存在两点不可直接归因的差异：(a) Askhat 评估每题仅采样 `n=8`（共 240 个样本，单次采样噪声比 `n=30` 的 900 个样本更大）；(b) Askhat 使用他自己训练的 `multiturn-sft-qwen3-30b-a3b-v5p`（W&B `myaf5pal`），且这四条 RL 线均设了 `val_before_train=False`，因此没有同 run 的 Step 0 评估。
+
+#### 8.5.5 `p3c-retool-25s-02` 逐步训练与门禁明细（Steps 1–25）
+
+<!-- BEGIN AUTO-GENERATED p3c-retool-25s-02/train (report_tables.py) -->
+| Step | `score/mean` | `response_length/mean` | `clip_ratio` | `num_turns/mean` | `grad_norm` | `timing_s/step` | `gen` | `update_actor` | `update_weights` | 含 `<tool_response>` 轨迹 | 掩码审计违规 | Raiden 范数检查 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | `-0.1673` | `1,508.0` | `0.10%` | `6.96` | `0.1706` | `833.6` | `628.1` | `183.7` | `20.6` | 1020 / 1024 | 0 / 8 | 3 / 3 |
+| 2 | `-0.1983` | `2,648.2` | `0.10%` | `9.56` | `0.1289` | `181.8` | `0.0` | `165.9` | `14.7` | 1017 / 1024 | 0 / 8 | 3 / 3 |
+| 3 | `-0.2363` | `2,389.9` | `0.10%` | `9.56` | `0.1344` | `109.2` | `0.0` | `94.0` | `13.4` | 1021 / 1024 | 0 / 8 | 3 / 3 |
+| 4 | `-0.0409` | `1,863.1` | `0.49%` | `7.57` | `0.1502` | `377.1` | `261.6` | `100.0` | `14.5` | 1020 / 1024 | 0 / 8 | 3 / 3 |
+| 5 | `+0.1043` | `2,137.2` | `0.10%` | `8.86` | `0.1346` | `76.5` | `0.0` | `60.6` | `15.0` | 1019 / 1024 | 0 / 8 | 3 / 3 |
+| 6 | `+0.0308` | `2,138.3` | `0.10%` | `8.17` | `0.1317` | `410.4` | `326.3` | `68.0` | `15.1` | 1019 / 1024 | 0 / 8 | 3 / 3 |
+| 7 | `+0.3736` | `2,092.2` | `0.10%` | `8.88` | `0.1386` | `82.4` | `0.3` | `65.7` | `15.3` | 1020 / 1024 | 0 / 8 | 3 / 3 |
+| 8 | `+0.3770` | `2,159.7` | `0.10%` | `8.79` | `0.1281` | `466.5` | `386.4` | `64.0` | `15.2` | 1019 / 1024 | 0 / 8 | 3 / 3 |
+| 9 | `+0.3601` | `2,404.7` | `0.10%` | `8.93` | `0.1323` | `99.8` | `0.2` | `83.2` | `15.4` | 1018 / 1024 | 0 / 8 | 3 / 3 |
+| 10 | `+0.3349` | `2,705.7` | `0.10%` | `7.71` | `0.1196` | `480.6` | `375.2` | `90.2` | `14.3` | 1017 / 1024 | 0 / 8 | 3 / 3 |
+| 11 | `+0.4759` | `2,108.9` | `0.10%` | `8.88` | `0.1189` | `70.0` | `0.2` | `55.2` | `13.6` | 1019 / 1024 | 0 / 8 | 3 / 3 |
+| 12 | `+0.4584` | `2,622.4` | `0.10%` | `7.61` | `0.1102` | `444.8` | `350.1` | `78.8` | `15.0` | 1022 / 1024 | 0 / 8 | 3 / 3 |
+| 13 | `+0.5146` | `2,185.9` | `0.10%` | `9.01` | `0.1286` | `80.5` | `0.2` | `64.2` | `15.1` | 1017 / 1024 | 0 / 8 | 3 / 3 |
+| 14 | `+0.4475` | `2,588.0` | `0.10%` | `8.03` | `0.1079` | `524.7` | `438.7` | `69.2` | `15.9` | 1019 / 1024 | 0 / 8 | 3 / 3 |
+| 15 | `+0.5261` | `2,338.2` | `0.10%` | `8.92` | `0.1032` | `78.6` | `0.2` | `62.0` | `15.4` | 1020 / 1024 | 0 / 8 | 3 / 3 |
+| 16 | `+0.3547` | `2,747.0` | `0.10%` | `8.81` | `0.1014` | `562.1` | `465.0` | `80.7` | `15.4` | 1020 / 1024 | 0 / 8 | 3 / 3 |
+| 17 | `+0.4312` | `2,740.3` | `0.10%` | `9.63` | `0.0986` | `95.7` | `0.7` | `78.2` | `15.8` | 1019 / 1024 | 0 / 8 | 3 / 3 |
+| 18 | `+0.3593` | `3,197.4` | `0.10%` | `8.39` | `0.0959` | `555.8` | `454.8` | `85.0` | `14.1` | 1012 / 1024 | 0 / 8 | 3 / 3 |
+| 19 | `+0.3975` | `2,614.8` | `0.10%` | `9.91` | `0.1075` | `90.9` | `0.2` | `74.1` | `15.6` | 1019 / 1024 | 0 / 8 | 3 / 3 |
+| 20 | `+0.4518` | `3,162.4` | `0.10%` | `7.97` | `0.1338` | `563.0` | `461.4` | `85.2` | `15.4` | 1013 / 1024 | 0 / 8 | 3 / 3 |
+| 21 | `+0.5557` | `2,795.2` | `0.20%` | `8.99` | `0.0937` | `91.2` | `0.2` | `74.5` | `15.5` | 1018 / 1024 | 0 / 8 | 3 / 3 |
+| 22 | `+0.3871` | `3,259.2` | `0.20%` | `8.43` | `0.0886` | `568.0` | `452.8` | `93.2` | `21.0` | 1019 / 1024 | 0 / 8 | 3 / 3 |
+| 23 | `+0.5986` | `2,707.4` | `0.20%` | `9.36` | `0.1033` | `94.5` | `0.7` | `77.2` | `15.6` | 1016 / 1024 | 0 / 8 | 3 / 3 |
+| 24 | `+0.4881` | `3,111.0` | `0.10%` | `7.97` | `0.0877` | `601.3` | `503.0` | `81.8` | `15.5` | 1014 / 1024 | 0 / 8 | 3 / 3 |
+| 25 | `+0.5525` | `2,822.3` | `0.29%` | `8.95` | `0.0926` | `190.3` | `56.6` | `117.8` | `14.9` | 1014 / 1024 | 0 / 8 | 3 / 3 |
+<!-- END AUTO-GENERATED p3c-retool-25s-02/train -->

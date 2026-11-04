@@ -92,6 +92,8 @@ DEFAULT_IGNORE_DIRS = (
     # MTP scripts encode async/multinode dispatch in the filename; they pre-
     # date this convention. Migrate separately rather than block this hook.
     "examples/mtp_trainer",
+    # GKE NAP Ray JobSet lifecycle and worker helper scripts (not model recipes).
+    "examples/tpu/gke",
 )
 
 # Individual files that are exempt. Use sparingly and document why.
@@ -111,6 +113,11 @@ DEFAULT_IGNORE_FILES = (
     # and dispatches ``run_qwen3_0_6b_torchtitan.sh`` rather than defining a
     # model/train-backend recipe directly.
     "examples/tpu/grpo/run_grpo_v5p_nap.sh",
+    # GB200 Ray JobSet lifecycle wrapper and sibling ReTool TorchTitan script
+    # that dispatches GPU-specific environment/sandbox setup alongside the
+    # canonical TPU recipe ``examples/tpu/retool/run_qwen3_30b_a3b_dapo_torchtitan.sh``.
+    "examples/tpu/retool/gb200/run_ray_jobset_gb200.sh",
+    "examples/tpu/retool/gb200/run_qwen3_30b_a3b_dapo_torchtitan_gb200.sh",
 )
 
 

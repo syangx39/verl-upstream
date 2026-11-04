@@ -7,11 +7,11 @@
 
 ## 结论速览
 
-1. **四条 RL 线的 SFT 起点和超参完全相同，区别只在并行方式**（§2）。它们的 reward 曲线基本重合（§4），可以把四条线看成同一配置的四次重复，用来估计噪声。
+1. **四条 RL 线在 W&B 里记录的 SFT 起点和超参相同，配置上的区别只在并行方式**（§2）。不过每次提交的代码包不完全一样（§2.2 的“Ray 代码包”列）。它们的 reward 曲线基本重合（§4），可以把四条线看成同一配置的四次重复，用来估计噪声。
 2. **评估结果**（每题采样 8 次，AIME 每年 30 题）：Step 25 时 AIME 2024 在 56–60%，AIME 2025 在 39–47%。Step 50 之后不再明显上升，基本在 base 模型（没做 SFT 的原始 Qwen3-30B-A3B）附近波动。具体数字见 §3 的“关键数字”。
 3. **单个评估点的噪声不小**：同一步上四条线之间的极差，AIME 2024 是 3.75 pp，AIME 2025 是 7.92 pp（Step 25）。同一条线相邻两个评估点也能差 7–8 pp，例如 `cp1-opt` 的 AIME 2024 从 step 75 到 100 是 72.50% → 65.00%，`cp1-pr115` 的 AIME 2025 从 step 75 到 100 是 57.08% → 49.17%。所以比较单个评估点时要考虑这个幅度。
 4. **训练动态**：训练 reward 在前 25 步从约 −0.3 升到 +0.48，之后缓慢升到 +0.66–0.70；平均响应长度从约 2K token 涨到约 5.7–6.0K token；`num_turns/mean` 从约 8.6 降到约 6.5。
-5. **速度**：并行方式主要影响速度。扣掉 checkpoint 保存时间后，`cp1-pr115` 和 `cp1-pr115-async` 每步约 250–455 s，`cp2` 和 `cp1-opt` 每步约 660–1,400 s。同步保存一次完整 checkpoint（model + optimizer + extra）约 1,400 s，开了 `async_save` 的 `zyrnkte8` 每次只阻塞约 55 s（§2.4）。
+5. **速度**：并行方式主要影响速度。扣掉 checkpoint 保存时间后，`cp1-pr115` 和 `cp1-pr115-async` 每步约 250–455 s，`cp2` 和 `cp1-opt` 每步约 660–1,400 s。同步保存一次完整 checkpoint（model + optimizer + extra）约 1,400 s。开了 `async_save` 的 `zyrnkte8` 每次只阻塞约 55 s，但它跑的代码和其他 run 不同，在我们的 fork 里只设 `async_save=True` 得不到这个效果，反而会让自动恢复失效（§2.4）。
 6. **与我们的对照**（§6，仅供参考）：我们 GB200 64 卡 25 步的 run（用我们自己的 SFT，每题采样 30 次）在 Step 25 是 AIME 2024 54.00% / AIME 2025 41.78%。AIME 2025 落在 Askhat 四条线的范围内；AIME 2024 比范围下限低 2.25 pp，这个差距小于 Askhat 自己四条线之间的极差（3.75 pp）。
 
 ## 1. Run 总览
@@ -87,18 +87,22 @@
 ### 2.2 各条线的差异
 
 <!-- BEGIN AUTO-GENERATED config (plot_askhat_v5p.py) -->
-| 线 | W&B runs | trainer 芯片 | rollout 芯片 | trainer CP | trainer DP shard | 每芯片 token 上限 | rollout TP | rollout EP | rollout DP | max_num_seqs | 异步 ckpt 保存 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `cp2` | `fcze3xlx` → `ci0k54pl` | `16` | `16` → `32` | `2` | `8` | `9216` | `16` | `16` | `1` | `512` | `False` |
-| `cp1-opt` | `rq1p980n` → `hsodvfgr` | `16` | `32` | `1` | `16` | `20480` | `16` | `16` | `1` | `512` | `False` |
-| `cp1-pr115` | `yrcsp4z6` | `16` | `32` | `1` | `16` | `20480` | `4` | `32` | `8` | `256` | `False` |
-| `cp1-pr115-async` | `zyrnkte8` | `16` | `32` | `1` | `16` | `20480` | `4` | `32` | `8` | `256` | `True` |
+| 线 | W&B runs | trainer 芯片 | rollout 芯片 | trainer CP | trainer DP shard | 每芯片 token 上限 | rollout TP | rollout EP | rollout DP | max_num_seqs | 异步 ckpt 保存 | Ray 代码包 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `cp2` | `fcze3xlx` → `ci0k54pl` | `16` | `16` → `32` | `2` | `8` | `9216` | `16` | `16` | `1` | `512` | `False` | `135b941c` → `f153e320` |
+| `cp1-opt` | `rq1p980n` → `hsodvfgr` | `16` | `32` | `1` | `16` | `20480` | `16` | `16` | `1` | `512` | `False` | `3e59eec8` |
+| `cp1-pr115` | `yrcsp4z6` | `16` | `32` | `1` | `16` | `20480` | `4` | `32` | `8` | `256` | `False` | `2bf15592` |
+| `cp1-pr115-async` | `zyrnkte8` | `16` | `32` | `1` | `16` | `20480` | `4` | `32` | `8` | `256` | `True` | `fbcc65e0` |
 <!-- END AUTO-GENERATED config -->
 
 - 芯片数 = 主机数 × 每台主机 4 颗芯片（`trainer.nnodes × trainer.n_gpus_per_node`，rollout 同理）。除 `fcze3xlx`（rollout 16 颗）外，都是 trainer 16 颗 + rollout 32 颗 = 48 颗 v5p。
 - `cp2` 恢复时把 rollout 从 16 颗换成了 32 颗（`fcze3xlx` → `ci0k54pl`），所以 `cp2` 前 20 步明显比之后慢（§4 的速度表）。
 - 从名字看，`pr115` 对应 jialei777/verl-upstream#115（v5p trainer 性能优化：Tokamax fused log-prob、rollout DP、async all-gather）。这个对应关系是按名称推断的。配置里能看到的差异是：rollout 从 TP16 改成 TP4 × DP8（EP32），`max_num_seqs` 从 512 改成 256。
 - `-async` 相比 `cp1-pr115` 只多了 `actor.checkpoint.async_save=True`。
+- “Ray 代码包”是 `PYTHONPATH` 里 Ray `working_dir` 包哈希的前 8 位。Ray 按上传的代码内容算这个哈希，内容变了哈希就变。W&B 没有记录 git commit，所以只能看出各 run 的代码是否相同，看不出具体改了什么：
+  - `cp2` 恢复前后的代码不同。
+  - `cp1-opt` 恢复前后的代码相同。
+  - `cp1-pr115` 和 `cp1-pr115-async` 的代码不同。
 
 ### 2.3 恢复关系
 
@@ -127,6 +131,15 @@
 - 所有 RL run 都保存完整状态（model + optimizer + extra），保留最近 2 个。同步保存每次约 1,400 s。`yrcsp4z6` 每步本身只要 250–450 s，所以保存时间占到了它 wall time 的 25.6%。
 - 开了 `async_save` 的 `zyrnkte8` 每次只阻塞约 55 s，占 wall time 1.3%。
 - “保存耗时 / wall time”的分母是这个 run 第一条到最后一条 step 记录之间的时间，包含验证时间。
+
+> [!WARNING]
+> `zyrnkte8` 的约 55 s 不能直接照搬到我们这边：
+>
+> - **它跑的代码和 `yrcsp4z6` 不同。** 在 W&B 完整配置里，两者只有 8 个字段不同：`async_save`、实验名和相关路径、W&B telemetry，以及 Ray `working_dir` 包的哈希（`_ray_pkg_fbcc65e0b8e098c1` 对 `_ray_pkg_2bf155927c5ab5a2`）。Ray 按上传的代码内容算这个哈希，所以两次提交的代码不一样。W&B 里没有记录 git commit。
+> - **在我们的 fork（`tpu-main` `c4726400`）里，只设 `async_save=True` 没用，还有副作用：**
+>   - TorchTitan engine 不读 `async_save`：[`transformer_impl.py` L251-L257](https://github.com/syangx39/verl-upstream/blob/c4726400d1816939adf78ea26dd25f3b8d662ea3/verl/workers/engine/torchtitan/transformer_impl.py#L251-L257) 里的 `CheckpointManager.Config` 没有设异步模式，保存仍然是同步的。
+>   - V1 trainer 在 `async_save=True` 时不会写 `latest_checkpointed_iteration.txt`：[`trainer_base.py` L1044-L1054](https://github.com/syangx39/verl-upstream/blob/c4726400d1816939adf78ea26dd25f3b8d662ea3/verl/trainer/ppo/v1/trainer_base.py#L1044-L1054)。这样 `resume_mode=auto` 找不到 checkpoint，会直接从头训练：[`trainer_base.py` L889-L897](https://github.com/syangx39/verl-upstream/blob/c4726400d1816939adf78ea26dd25f3b8d662ea3/verl/trainer/ppo/v1/trainer_base.py#L889-L897)。
+> - **`zyrnkte8` 没有发生过恢复**，所以它在 `async_save=True` 下能不能恢复也没有验证过。这一点需要和 Askhat 确认。
 
 ## 3. 评估结果
 
@@ -281,4 +294,5 @@ python3 plot_askhat_v5p.py --check README.md  # 校验本文件中的表格与 J
 
 - W&B history 按 `history(samples: 2000)` 抓取。最长的 run 也只有 372 行，所以没有被降采样。
 - 有三处对应关系是按名称或记录的步数推断的，不是从 W&B 元数据直接读到的：恢复关系、SFT checkpoint 与 RL `model_path` 的对应、`pr115` 与 PR #115 的对应。
+- W&B 没有记录 git commit 和镜像。各 run 提交的代码包（Ray `working_dir` 哈希）不完全相同，所以“配置相同”不等于“代码相同”。
 - 快照之后 Askhat 新跑的 run 不在这里，重新运行 `fetch_askhat_v5p.py` 可以更新。

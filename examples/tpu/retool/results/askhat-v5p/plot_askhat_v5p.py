@@ -155,6 +155,7 @@ def config_table() -> str:
         ("rollout DP", lambda c: c["rollout_dp"]),
         ("max_num_seqs", lambda c: c["rollout_max_num_seqs"]),
         ("异步 ckpt 保存", lambda c: c["ckpt_async_save"]),
+        ("Ray 代码包", lambda c: re.search(r"_ray_pkg_([0-9a-f]+)", c["ray_pythonpath"]).group(1)[:8]),
     )
     rows = ["| 线 | W&B runs | " + " | ".join(label for label, _ in cols) + " |", "|" + " --- |" * (len(cols) + 2)]
     for line, spec in LINES.items():

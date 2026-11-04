@@ -70,6 +70,8 @@ CONFIG_PATHS = {
     "resume_mode": ("trainer", "resume_mode"),
     "resume_from_path": ("trainer", "resume_from_path"),
     "default_local_dir": ("trainer", "default_local_dir"),
+    # The Ray working_dir package hash in PYTHONPATH changes whenever the uploaded code changes.
+    "ray_pythonpath": ("ray_kwargs", "ray_init", "runtime_env", "env_vars", "PYTHONPATH"),
     "ckpt_async_save": ("actor_rollout_ref", "actor", "checkpoint", "async_save"),
     "ckpt_save_contents": ("actor_rollout_ref", "actor", "checkpoint", "save_contents"),
     "ckpt_load_contents": ("actor_rollout_ref", "actor", "checkpoint", "load_contents"),

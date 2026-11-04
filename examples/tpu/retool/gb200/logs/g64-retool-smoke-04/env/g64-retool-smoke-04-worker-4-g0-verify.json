@@ -1,0 +1,208 @@
+{
+  "g0_checkpoint_manifest": {
+    "composite_sha256": "59247a00c13f2364a12aab5ab6b88b6d971d59ff643c57aad8ac4e55a71231b0",
+    "composite_sha256_match": true,
+    "elapsed_s": 5.132,
+    "expected_composite_sha256": "59247a00c13f2364a12aab5ab6b88b6d971d59ff643c57aad8ac4e55a71231b0",
+    "files": {
+      "config.json": {
+        "sha256": "2850ddb3bf7aecad20b611e2d44f3077fc8193f4827c93beddd4c02ad63c2297",
+        "size_bytes": 963
+      },
+      "model-00001-of-00016.safetensors": {
+        "sha256": "79a41cbe7514ae30be1fef12e619b2a3e3904488a81d5fbf248ff51744ef5b88",
+        "size_bytes": 3999417504
+      },
+      "model-00002-of-00016.safetensors": {
+        "sha256": "32f020fd9d8e46d9c0c740cd019f9161e5f19fbe9b1943dff9d3df8803c8a92c",
+        "size_bytes": 3999974192
+      },
+      "model-00003-of-00016.safetensors": {
+        "sha256": "80880762532748b06ba58cdd1dab4dcdc80bf7ab92c2fa03244dbbccd9fa18f4",
+        "size_bytes": 3997360832
+      },
+      "model-00004-of-00016.safetensors": {
+        "sha256": "1350afcf201f0feb405c44a24f78b0c78a6c346092d15e25c8e8800e6aaf748d",
+        "size_bytes": 3999975056
+      },
+      "model-00005-of-00016.safetensors": {
+        "sha256": "75dda17d20f45d1be622c36e7f768be5fc777150f8e608688bece2bc2acebccc",
+        "size_bytes": 3999975400
+      },
+      "model-00006-of-00016.safetensors": {
+        "sha256": "7385e8fd695a9aa88d5741cf36dae37ff6c038d8b8c00696f3cc8771ba60bc66",
+        "size_bytes": 3999975400
+      },
+      "model-00007-of-00016.safetensors": {
+        "sha256": "45f890036c7ae31bec98694c04044d540ecd500aa846a19282f7d0ad0b5a6b0f",
+        "size_bytes": 3999975472
+      },
+      "model-00008-of-00016.safetensors": {
+        "sha256": "0e6b1bf15dbd7e95f58434549ebaaf9ae3e2d4501a77a87b3c61916d05b6c187",
+        "size_bytes": 3997362064
+      },
+      "model-00009-of-00016.safetensors": {
+        "sha256": "846896cb8950f68eaf6ee16207488a9e0d6050ff487da6c3d0e17d7c1445a5b6",
+        "size_bytes": 3999975408
+      },
+      "model-00010-of-00016.safetensors": {
+        "sha256": "c46404cd8d4042d2869f3a6472007370aa38b5af0bed3d2bafdeae840b0aa0ed",
+        "size_bytes": 3999975400
+      },
+      "model-00011-of-00016.safetensors": {
+        "sha256": "4df396075da511ff5cd2fd406a97e830f030543832f171ccd05384c948fe6d76",
+        "size_bytes": 3999975408
+      },
+      "model-00012-of-00016.safetensors": {
+        "sha256": "6ba361fd269c269a5aefd0058733bf60579195212f27611d836d7da67681d5ca",
+        "size_bytes": 3987400496
+      },
+      "model-00013-of-00016.safetensors": {
+        "sha256": "961f5f5cb6682002c7f3e1089d397110cd19702ea816ea631632021ec6f3872d",
+        "size_bytes": 3997353632
+      },
+      "model-00014-of-00016.safetensors": {
+        "sha256": "0d9d690de460dc35382e9706603cf28bc7fe50e213ac49f343a72e42a314c70e",
+        "size_bytes": 3999975400
+      },
+      "model-00015-of-00016.safetensors": {
+        "sha256": "cdc7c1df8e518f0fbcd1ca5f0651fd2b1af89976ee595eaac95919f4178ba897",
+        "size_bytes": 3999975400
+      },
+      "model-00016-of-00016.safetensors": {
+        "sha256": "e81e235825719d6fa490d367bceb00367756792d3c85b4308ccfe4eea542993f",
+        "size_bytes": 1087928584
+      },
+      "model.safetensors.index.json": {
+        "sha256": "e2de84d81e834e6c75ae11b89bbf7d82dc5a0ad5cabd4354f7db1f40fab244e4",
+        "size_bytes": 1699757
+      },
+      "tokenizer.json": {
+        "sha256": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4",
+        "size_bytes": 11422654
+      },
+      "tokenizer_config.json": {
+        "sha256": "d5d09f07b48c3086c508b30d1c9114bd1189145b74e982a265350c923acd8101",
+        "size_bytes": 9732
+      }
+    },
+    "mismatches": [],
+    "model_dir": "/dev/shm/models/multiturn-sft-qwen3-30b-a3b-tpu7x",
+    "num_files_hashed": 20,
+    "num_safetensors_shards": 16,
+    "ref_composite_sha256": "59247a00c13f2364a12aab5ab6b88b6d971d59ff643c57aad8ac4e55a71231b0",
+    "ref_dir": "/data/xiaotongyang/retool-v7x/runs/p2-retool-sft-01/checkpoint/global_step_372/huggingface",
+    "ref_match": true,
+    "total_bytes": 61079708754
+  },
+  "g0_moe_torchtitan_0_3": {
+    "after_load_balance_coeff_sample": [
+      null,
+      null,
+      null
+    ],
+    "before_load_balance_coeff_sample": [
+      0.001,
+      0.001,
+      0.001
+    ],
+    "moe_config_fields": [
+      "param_init",
+      "sharding_config",
+      "num_experts",
+      "routed_experts",
+      "router",
+      "load_balance_coeff",
+      "shared_experts"
+    ],
+    "negative_control_unfixed_check": {
+      "apply_rl_fix": false,
+      "buffer_max_by_name": {
+        "layers.0.attention.rope.cache": 1.0,
+        "layers.0.moe.expert_bias_E": 0.0010781250894069672,
+        "layers.0.moe.tokens_per_expert_E": 0.0,
+        "layers.1.attention.rope.cache": 1.0,
+        "layers.1.moe.expert_bias_E": 0.0013437500456348062,
+        "layers.1.moe.tokens_per_expert_E": 0.0,
+        "layers.2.attention.rope.cache": 1.0,
+        "layers.2.moe.expert_bias_E": 0.0012500000884756446,
+        "layers.2.moe.tokens_per_expert_E": 0.0,
+        "layers.3.attention.rope.cache": 1.0,
+        "layers.3.moe.expert_bias_E": 0.0013749999925494194,
+        "layers.3.moe.tokens_per_expert_E": 0.0,
+        "layers.4.attention.rope.cache": 1.0,
+        "layers.4.moe.expert_bias_E": 0.0012812500353902578,
+        "layers.4.moe.tokens_per_expert_E": 0.0,
+        "layers.5.attention.rope.cache": 1.0,
+        "layers.5.moe.expert_bias_E": 0.0012812500353902578,
+        "layers.5.moe.tokens_per_expert_E": 0.0,
+        "layers.6.attention.rope.cache": 1.0,
+        "layers.6.moe.expert_bias_E": 0.0014531250344589353,
+        "layers.6.moe.tokens_per_expert_E": 0.0,
+        "layers.7.attention.rope.cache": 1.0,
+        "layers.7.moe.expert_bias_E": 0.0014062500558793545,
+        "layers.7.moe.tokens_per_expert_E": 0.0
+      },
+      "dropped_state_keys": [
+        "layers.0.moe.expert_bias_E",
+        "layers.1.moe.expert_bias_E",
+        "layers.2.moe.expert_bias_E",
+        "layers.3.moe.expert_bias_E",
+        "layers.4.moe.expert_bias_E",
+        "layers.5.moe.expert_bias_E",
+        "layers.6.moe.expert_bias_E",
+        "layers.7.moe.expert_bias_E"
+      ],
+      "expert_bias_abs_max_after_step1": 0.0014531250344589353,
+      "has_expert_bias_buffer": true,
+      "has_expert_bias_in_to_hf": false,
+      "logits_max_abs_diff": 0.056640625,
+      "missing_keys_on_from_hf": [],
+      "num_moe_layers": 8,
+      "router_topk_match_rate": 0.66229248046875
+    },
+    "num_layers_30b_a3b": 48,
+    "positive_rl_fix_check": {
+      "apply_rl_fix": true,
+      "buffer_max_by_name": {
+        "layers.0.attention.rope.cache": 1.0,
+        "layers.0.moe.tokens_per_expert_E": 67.0,
+        "layers.1.attention.rope.cache": 1.0,
+        "layers.1.moe.tokens_per_expert_E": 162.0,
+        "layers.2.attention.rope.cache": 1.0,
+        "layers.2.moe.tokens_per_expert_E": 141.0,
+        "layers.3.attention.rope.cache": 1.0,
+        "layers.3.moe.tokens_per_expert_E": 166.0,
+        "layers.4.attention.rope.cache": 1.0,
+        "layers.4.moe.tokens_per_expert_E": 128.0,
+        "layers.5.attention.rope.cache": 1.0,
+        "layers.5.moe.tokens_per_expert_E": 128.0,
+        "layers.6.attention.rope.cache": 1.0,
+        "layers.6.moe.tokens_per_expert_E": 172.0,
+        "layers.7.attention.rope.cache": 1.0,
+        "layers.7.moe.tokens_per_expert_E": 136.0
+      },
+      "dropped_state_keys": [],
+      "expert_bias_abs_max_after_step1": 0.0,
+      "has_expert_bias_buffer": false,
+      "has_expert_bias_in_to_hf": false,
+      "logits_max_abs_diff": 0.0,
+      "missing_keys_on_from_hf": [],
+      "num_moe_layers": 8,
+      "router_topk_match_rate": 1.0
+    },
+    "torchtitan_flavor": "30B-A3B",
+    "torchtitan_name": "qwen3"
+  },
+  "g0_stage_local": {
+    "copied_bytes": 61084185820,
+    "copied_files": 25,
+    "dst_dir": "/dev/shm/models/multiturn-sft-qwen3-30b-a3b-tpu7x",
+    "elapsed_s": 59.276,
+    "src_dir": "/data/xiaotongyang/retool-v7x/runs/p2-retool-sft-01/checkpoint/global_step_372/huggingface",
+    "throughput_gb_s": 1.03,
+    "total_files": 25
+  },
+  "status": "PASS",
+  "timestamp_utc": "2026-11-04T17:09:47Z"
+}

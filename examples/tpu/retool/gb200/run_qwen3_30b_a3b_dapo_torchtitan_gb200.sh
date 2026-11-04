@@ -263,7 +263,13 @@ TEST_FREQ="${TEST_FREQ:-25}"
 TOTAL_EPOCHS="${TOTAL_EPOCHS:-2}"
 TOTAL_TRAINING_STEPS="${TOTAL_TRAINING_STEPS:-25}"
 TRUNCATION="${TRUNCATION:-left}"
-LOGGER_LIST="${LOGGER_LIST:-['console','tensorboard']}"
+if [[ -z "${LOGGER_LIST:-}" ]]; then
+    if [[ -n "${WANDB_API_KEY:-}" ]]; then
+        LOGGER_LIST="['console','tensorboard','wandb']"
+    else
+        LOGGER_LIST="['console','tensorboard']"
+    fi
+fi
 
 DUMP_ARGS=()
 if [[ -n "${RUN_DIR:-}" ]]; then

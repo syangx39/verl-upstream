@@ -316,7 +316,7 @@ bash examples/tpu/retool/gb200/run_ray_jobset_gb200.sh
 
 > **Important Notes on `ROLLOUT_TP` and `EXPECT_GIT_SHA`**:
 > 1. **`ROLLOUT_TP`**: In [`run_qwen3_30b_a3b_dapo_torchtitan_gb200.sh`](./run_qwen3_30b_a3b_dapo_torchtitan_gb200.sh), `ROLLOUT_TP` defaults to `TOTAL_ROLLOUT_GPUS`. For multi-node rollout (`16`, `32`, or `48` rollout GPUs), always pass `JOBENV_ROLLOUT_TP=4` explicitly so `verl` instantiates `4`, `8`, or `12` independent `TP=4` vLLM replicas.
-> 2. **`EXPECT_GIT_SHA` (Must point to the `gb200-retool-runtime` lineage matching the image's `uv.lock`)**: The prebuilt image `@sha256:087366ae...` was built from commit `a2cbde47ba729d0cba7e881da1692df20d8e05e4` on the `gb200-retool-runtime` branch (whose `uv.lock` SHA-256 is `df508db0b957fa181c229fb75885cd3863cb651fd5233d0fa5af95e990bda0be` and matches all 264 locked packages in `/workspace/verl-pin/.venv`). Because `tpu-main` is based on an earlier upstream `uv.lock` (`d30f7e35...`), checking out a `tpu-main` commit inside the GB200 container would fail `verify_venv_lock.py --expect-lock-sha256 df508db0...`. Instead, pass `EXPECT_GIT_SHA="32cbf016aa0de19bc4b70802c350aa78b3a4da3b"` (on `gb200-retool-runtime`, directly on top of `a2cbde47`, with zero diff in `uv.lock` or `pyproject.toml`, containing the V1 validation `num_turns` dump fix in `verl/trainer/ppo/v1/trainer_base.py` for offline shaped-reward reconciliation plus the updated `run_qwen3_30b_a3b_dapo_torchtitan_gb200.sh`, `run_ray_jobset_gb200.sh`, and `verify_venv_lock.py --output-json`) so every Pod checks out `32cbf016...`, verifies both `uv.lock` (`df508db0...`) and `git_sha` via `verify_venv_lock.py --output-json "${RUN_DIR}/env/${LAUNCH_ID}-${HOST_TAG}-precheck.json"`, and passes the cross-node JSON readiness gate.
+> 2. **`EXPECT_GIT_SHA` (Must point to the `gb200-retool-runtime` lineage matching the image's `uv.lock`)**: The prebuilt image `@sha256:087366ae...` was built from commit `a2cbde47ba729d0cba7e881da1692df20d8e05e4` on the `gb200-retool-runtime` branch (whose `uv.lock` SHA-256 is `df508db0b957fa181c229fb75885cd3863cb651fd5233d0fa5af95e990bda0be` and matches all 264 locked packages in `/workspace/verl-pin/.venv`). Because `tpu-main` is based on an earlier upstream `uv.lock` (`d30f7e35...`), checking out a `tpu-main` commit inside the GB200 container would fail `verify_venv_lock.py --expect-lock-sha256 df508db0...`. Instead, pass `EXPECT_GIT_SHA="27c41116acfdd89435f78e0993455bf9338a79fd"` (on `gb200-retool-runtime`, directly on top of `a2cbde47`, with zero diff in `uv.lock` or `pyproject.toml`, containing the V1 validation `num_turns` dump fix in `verl/trainer/ppo/v1/trainer_base.py` for offline shaped-reward reconciliation, `EXCLUDE_NODES` support in `run_ray_jobset_gb200.sh`, and automatic `'wandb'` logger enablement in `run_qwen3_30b_a3b_dapo_torchtitan_gb200.sh` when `WANDB_API_KEY` is present) so every Pod checks out `27c41116...`, verifies both `uv.lock` (`df508db0...`) and `git_sha` via `verify_venv_lock.py --output-json "${RUN_DIR}/env/${LAUNCH_ID}-${HOST_TAG}-precheck.json"`, and passes the cross-node JSON readiness gate.
 
 #### Example 64-GPU Launch Commands (`NUM_NODES=16`)
 
@@ -325,7 +325,7 @@ bash examples/tpu/retool/gb200/run_ray_jobset_gb200.sh
    RUN_NAME="g64a-retool-rl-25step-$(date -u +%Y%m%d-%H%M%S)" \
    NUM_NODES="16" \
    GPUS_PER_NODE="4" \
-   EXPECT_GIT_SHA="32cbf016aa0de19bc4b70802c350aa78b3a4da3b" \
+   EXPECT_GIT_SHA="27c41116acfdd89435f78e0993455bf9338a79fd" \
    KUBE_CONTEXT="<YOUR_GB200_KUBE_CONTEXT>" \
    NODEPOOL="<YOUR_4xGB200_NV18_NODEPOOL>" \
    GCS_BUCKET="<YOUR_GCS_BUCKET>" \
@@ -364,13 +364,19 @@ bash examples/tpu/retool/gb200/run_ray_jobset_gb200.sh
    RUN_NAME="g64d-p3c-parity-25s-$(date -u +%Y%m%d-%H%M%S)" \
    NUM_NODES="16" \
    GPUS_PER_NODE="4" \
-   EXPECT_GIT_SHA="32cbf016aa0de19bc4b70802c350aa78b3a4da3b" \
+   EXPECT_GIT_SHA="27c41116acfdd89435f78e0993455bf9338a79fd" \
    KUBE_CONTEXT="<YOUR_GB200_KUBE_CONTEXT>" \
    NODEPOOL="<YOUR_4xGB200_NV18_NODEPOOL>" \
    GCS_BUCKET="<YOUR_GCS_BUCKET>" \
    RUN_ROOT="<YOUR_USER>/retool-gb200/runs" \
    INPUTS_ROOT="<YOUR_USER>/retool-v7x/inputs" \
    IMAGE="us-central1-docker.pkg.dev/supercomputer-testing/pirillo-gcr/verl-torchtitan-cu130-arm64@sha256:087366ae58a31888c2af2c25992c33ea77471b1b2c58d221b370899f4721e689" \
+   WANDB_SECRET_NAME="<YOUR_WANDB_SECRET_NAME>" \
+   WANDB_SECRET_KEY="WANDB_API_KEY" \
+   JOBENV_LOGGER_LIST="['console','tensorboard','wandb']" \
+   JOBENV_WANDB_PROJECT="verl-torchtpu-grpo-test" \
+   JOBENV_WANDB_ENTITY="google-trellis" \
+   JOBENV_WANDB_MODE="online" \
    JOBENV_MODEL_SRC_PATH="/data/<YOUR_USER>/retool-v7x/runs/p2-retool-sft-01/checkpoint/global_step_372/huggingface" \
    JOBENV_NNODES_TRAINER="4" \
    JOBENV_N_GPUS_TRAINER="4" \
@@ -408,6 +414,62 @@ bash examples/tpu/retool/gb200/run_ray_jobset_gb200.sh
 
 1. Verify `ComputeDomain` / DRA domain limits on the target 8- or 16-node GKE nodepool: [`run_ray_jobset_gb200.sh`](./run_ray_jobset_gb200.sh) creates a single `ComputeDomain` (`numNodes: ${COMPUTE_DOMAIN_NUM_NODES}`, default `NUM_NODES`) whose `resourceClaimTemplate` is attached by all `${NUM_NODES}` Pods. Simply setting `COMPUTE_DOMAIN_NUM_NODES < NUM_NODES` on a single `ComputeDomain` while all `${NUM_NODES}` Pods still claim it is **not** a validated multi-domain solution; if 8 or 16 nodes span multiple NVLink domains that cannot join one `ComputeDomain`, per-domain `ComputeDomain` partitioning or non-IMEX cross-rack fallback must be validated on the target cluster first.
 2. [`run_ray_jobset_gb200.sh`](./run_ray_jobset_gb200.sh) sets Pod `nvidia.com/gpu` requests/limits to `GPUS_PER_NODE` (`1..4`, default `4`), verifies that `nvidia-smi -L` reports exactly `GPUS_PER_NODE` GPUs on every node, runs [`verify_venv_lock.py`](./verify_venv_lock.py) (`${LAUNCH_ID}-${HOST_TAG}-precheck.json`) and [`verify_g0_gb200.py`](./verify_g0_gb200.py) (`${LAUNCH_ID}-${HOST_TAG}-g0-verify.json`) on **every** node (`head` + `worker-0 .. worker-$((NUM_NODES-2))`), and blocks training until all `${NUM_NODES}` nodes match `EXPECT_GIT_SHA`, `EXPECT_CHECKPOINT_SHA256`, and `ray status` (`${TOTAL_GPUS}.0 GPU`).
-3. Run a 3-step smoke at 32 GPUs and 64 GPUs first to verify resolved Hydra config parity, finite gradients, actual optimizer updates, `0` `<tool_response>` mask violations, multi-turn sandbox execution, no OOM, and NCCL weight broadcast to all `4 / 8 / 12` rollout replicas.
+3. Run a smoke validation run at 64 GPUs first to verify resolved Hydra config parity, finite gradients, actual optimizer updates, `0` `<tool_response>` mask violations, multi-turn sandbox execution, no OOM, and NCCL weight broadcast to all `12` rollout replicas.
 4. Run the 25-step benchmark (with Step 0 and Step 25 `n=30` AIME 2024/2025 evaluations) under Profile 1 (for 8→32→64 GPU strong scaling) and Profile 2 (for 64-GPU GB200 vs. 64-chip TPU v7x `p3c-retool-25s-01` iso-accelerator comparison), and archive all metrics and wall-clock windows (`W1`, `W2`, evaluation, and end-to-end).
+
+---
+
+### 64-GPU (`G64-D`, `16` Nodes = `4` Trainer + `12` Rollout) Smoke Validation Results (`g64-retool-smoke-04`)
+
+All artifacts, 16-node precheck/G0 JSON reports, resolved Hydra config, Step 0 & Step 5 `n=30` validation samples (`1,800` trajectories each), and offline shaped-reward recomputation script are archived in [`logs/g64-retool-smoke-04/`](./logs/g64-retool-smoke-04/) (and verified by [`recompute_g64_smoke_metrics.py`](./logs/g64-retool-smoke-04/recompute_g64_smoke_metrics.py)).
+
+#### 1. Multi-Node Scheduling (`NUM_NODES=16`, `64` GPUs), `EXCLUDE_NODES`, and `ComputeDomain` (`numNodes: 16`)
+
+- **Nodepool & Node Health Selection**:
+  - On `a4x-highgpu-4g-a4x-pool-4`, 5 of the 17 Ready nodes were either occupied by active workloads (`ryanrl/nixl-benchmark-{0,1}`, `yangligt-kvdelta`) or had an uninitialized CUDA driver (`gke-a4x-baker-a4x-highgpu-4g-a4x-pool-4bd3c2dd-6tsr`: `RuntimeError: Unexpected error from cudaGetDeviceCount(): system not yet initialized`), leaving only 12 healthy free nodes (`< 16`).
+  - On `a4x-highgpu-4g-a4x-pool-5` (17 Ready nodes), 1 node (`gke-a4x-baker-a4x-highgpu-4g-a4x-pool-aab7d37b-7329`) had a fallen-off GPU (`GPU 00000009:01:00.0 is lost`). Using the newly added `EXCLUDE_NODES="gke-a4x-baker-a4x-highgpu-4g-a4x-pool-aab7d37b-7329"` option in [`run_ray_jobset_gb200.sh`](./run_ray_jobset_gb200.sh) (which injects a `kubernetes.io/hostname NotIn` `nodeAffinity` rule into all Pod specs), all **16 Pods** (`g64-retool-smoke-04-head` + `g64-retool-smoke-04-worker-0..14`) scheduled onto the 16 healthy 4-GPU GB200 nodes in `a4x-highgpu-4g-a4x-pool-5` within 39 seconds.
+- **Single 16-Node `ComputeDomain` (`numNodes: 16`) & G0 Hardware Verification**:
+  - `ComputeDomain/g64-retool-smoke-04-cd` (`numNodes: 16`, `allocationMode: Single`) bound all 16 Pods (`64` GB200 GPUs) into a single IMEX domain without multi-rack split errors.
+  - All 16 nodes passed [`verify_venv_lock.py`](./verify_venv_lock.py) (`status: "PASS"`, `git_sha: "27c41116acfdd89435f78e0993455bf9338a79fd"`, `uv_lock_sha256: "df508db0b957fa181c229fb75885cd3863cb651fd5233d0fa5af95e990bda0be"`) and [`verify_g0_gb200.py`](./verify_g0_gb200.py) (`status: "PASS"`, `64/64` GPUs `NVIDIA GB200`, `0` uncorrected ECC errors, shared SFT checkpoint `composite_sha256: "59247a00c13f2364a12aab5ab6b88b6d971d59ff643c57aad8ac4e55a71231b0"` staged to `/dev/shm` across all 16 nodes).
+
+#### 2. Topology (`4` Trainer Nodes `FSDP2=16` + `12` Rollout Nodes `12 × TP=4`) & Resolved Hydra Config Parity
+
+- **Ray Cluster & Replica Placement** (verified in [`logs/g64-retool-smoke-04/head.log`](./logs/g64-retool-smoke-04/head.log) and [`logs/g64-retool-smoke-04/env/resolved_hydra_config.yaml`](./logs/g64-retool-smoke-04/env/resolved_hydra_config.yaml)):
+  - **Trainer**: `trainer.nnodes=4`, `trainer.n_gpus_per_node=4` (`16` GB200 GPUs), TorchTitan `data_parallel_shard_size=16`, `tensor_parallel_size=1`, `expert_parallel_size=1`, `context_parallel_size=1`, `attn_type=flex`, `max_seq_len=18432`, `ppo_max_token_len_per_gpu=18432`.
+  - **Rollout**: `actor_rollout_ref.rollout.nnodes=12`, `actor_rollout_ref.rollout.n_gpus_per_node=4` (`48` GB200 GPUs), `tensor_model_parallel_size=4`, `data_parallel_size=1`, `expert_parallel_size=1` $\rightarrow$ **`12` independent `vLLMHttpServer` (`TP=4`) V1 async replicas** (`replica_rank: 0..11`, 1 replica per 4-GPU NVLink5 node), `max_model_len=18432`, `max_response_length=16384`.
+  - **Algorithm & Reward Parity with TPU `P3c` (`p3c-retool-25s-01`)**:
+    - `actor.optim.lr=2e-6`, `actor.optim.clip_grad=0.088`, `bypass_mode=True`, `loss_mode=bypass_mode`, `rollout_is=token`, `rollout_is_threshold=2.0`, `num_warmup_batches=2`, `parameter_sync_step=1`, `max_user_turns=16`, `max_assistant_turns=16`, `n=16` (train), `val_kwargs.n=30` (eval), `enable_thinking=True`, `reward.custom_reward_function.path=pkg://examples.tpu.retool.retool_tpu`, `reward.custom_reward_function.name=compute_score`.
+  - **Online W&B Tracking**: Logged live to [`https://wandb.ai/google-trellis/verl-torchtpu-grpo-test/runs/hv1k9rwo`](https://wandb.ai/google-trellis/verl-torchtpu-grpo-test/runs/hv1k9rwo) (`qwen3-30b-a3b-retool-dapo-gb200-64g-16k-think-shaped-16t-smoke-04-sha27c41116`).
+
+#### 3. Step 0 vs. Step 5 AIME 2024 & AIME 2025 (`n=30`) Evaluation & Cross-Platform Baseline Alignment
+
+| Metric (`n=30` samples / problem, `1,800` trajectories / eval) | `g64-retool-smoke-04` **Step 0** (64 GB200 GPUs) | `g64-retool-smoke-04` **Step 5** (64 GB200 GPUs) | $\Delta$ (Step 5 $-$ Step 0) | TPU v7x `p3c-retool-smoke-01` Step 0 (32 chips) | Askhat TPU v5p Regime 2 (`93065ns3`) Step 0 |
+| --- | --- | --- | --- | --- | --- |
+| **AIME 2025 `acc/mean@30` (`pass@1`)** | **`33.00%`** (`297 / 900`, `0.330000`) | **`35.00%`** (`315 / 900`, `0.350000`) | **`+2.00 pp`** (`+18 / 900`) | `34.44%` (`310 / 900`) | `34.89%` |
+| **AIME 2025 `acc/maj@30/mean`** | **`54.37%`** (`0.543667`) | **`54.42%`** (`0.544233`) | **`+0.06 pp`** | `51.63%` | `51.80%` |
+| **AIME 2025 `acc/best@30/mean`** | **`72.45%`** (`0.724467`) | **`71.40%`** (`0.713967`) | `-1.05 pp` | `66.15%` | `65.49%` |
+| **AIME 2025 Shaped `reward/mean@30`** | **`-0.1869`** (`-0.186889`) | **`-0.1487`** (`-0.148667`) | **`+0.0382`** | `-0.1558` | - |
+| **AIME 2024 `acc/mean@30` (`pass@1`)** | **`45.56%`** (`410 / 900`, `0.455556`) | **`46.22%`** (`416 / 900`, `0.462222`) | **`+0.67 pp`** (`+6 / 900`) | `45.67%` (`411 / 900`) | - |
+| **AIME 2024 `acc/maj@30/mean`** | **`64.81%`** (`0.648067`) | **`66.62%`** (`0.666200`) | **`+1.81 pp`** | `64.66%` | - |
+| **AIME 2024 `acc/best@30/mean`** | **`84.99%`** (`0.849933`) | **`84.61%`** (`0.846133`) | `-0.38 pp` | `83.91%` | - |
+| **AIME 2024 Shaped `reward/mean@30`** | **`+0.0504`** (`0.050444`) | **`+0.0651`** (`0.065111`) | **`+0.0147`** | `+0.0508` | - |
+| **Eval `num_turns/mean` (`<tool_response>` ratio)** | **`8.14`** (`1,773 / 1,800 = 98.50%`) | **`8.37`** (`1,763 / 1,800 = 97.94%`) | `+0.23` turns | `8.04` | - |
+| **Offline Shaped-Reward Reconciliation (`num_turns`)** | **`1,800 / 1,800` (`0` mismatches)** | **`1,800 / 1,800` (`0` mismatches)** | **100% Exact** | `1,800 / 1,800` | - |
+
+#### 4. Steps 1–5 Training Metrics, Rollout Audit (`40/40`), and Steady-State Performance (`G64-D` vs. `G2`)
+
+| Step | `timing_s/step` | `timing_s/gen` (Queue Wait) | `timing_s/update_actor` | `perf/throughput` (`tok/s/GPU`) | `critic/score/mean` | `actor/grad_norm` | `response_length/mean` | `clip_ratio` (`16K` cap) | `num_turns/mean` | `<tool_response>` Trajectories (`/1024`) | `-2.0` (`reward_CLIP`) Count |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| **1** | `148.45s` | `34.11s` | `109.18s` (incl. FlexAttn autotune) | `196.5` | `-0.2304` | `0.1716` | `1,512.5` | `0.10%` (`0.0010`) | `8.37` | `1,020 / 1,024` (`99.61%`, `3,259` calls) | **`0`** |
+| **2** | **`30.20s`** | **`0.03s`** | `25.29s` | **`1,579.9`** | `-0.2464` | `0.1268` | `2,666.1` | `0.10%` (`0.0010`) | `9.20` | `1,016 / 1,024` (`99.22%`, `3,684` calls) | **`0`** |
+| **3** | **`32.15s`** | **`0.04s`** | `24.49s` | **`1,466.0`** | `-0.2413` | `0.1225` | `2,633.4` | `0.29%` (`0.0029`) | `8.33` | `1,019 / 1,024` (`99.51%`, `3,242` calls) | **`0`** |
+| **4** | **`27.50s`** | **`0.04s`** | `22.64s` | **`1,610.4`** | `-0.2223` | `0.1245` | `2,452.9` | `0.29%` (`0.0029`) | `8.27` | `1,019 / 1,024` (`99.51%`, `3,208` calls) | **`0`** |
+| **5** | **`25.64s`** | **`0.04s`** | `20.43s` | **`1,531.9`** | **`-0.0080`** | `0.1441` | `2,138.6` | `0.10%` (`0.0010`) | `7.98` | `1,014 / 1,024` (`99.02%`, `3,060` calls) | **`0`** |
+| **Steady-State (Steps 2–5 Mean)** | **`28.87s/step`** (`25.64s–32.15s`) | **`0.037s`** | **`23.21s`** | **`1,547.0 tok/s/GPU`** (`99,008 tok/s` cluster) | `-0.2304` $\rightarrow$ **`-0.0080`** | `0.1295` | `2,472.8` | **`0.10%–0.29%`** | `8.45` | **`5,088 / 5,120` (`99.38%`, `16,453` calls)** | **`0 / 5,120`** |
+
+- **Key Findings from `G64-D` (`16` Trainer GPUs + `48` Rollout GPUs = `12 × TP=4` Replicas)**:
+  1. **Zero Trainer Queue Wait in Steady State (`timing_s/gen = 0.03s–0.04s` on Steps 2–5)**: With `12 × TP=4` async vLLM V1 rollout replicas (`48` GB200 GPUs) feeding `16` TorchTitan `FSDP2=16` trainer GPUs (`1:3` split), rollout generation latency for `64 × 16 = 1,024` 16K thinking trajectories per step (`~2.5M` tokens/step, `8.45` turns/trajectory) is **100% overlapped** behind `update_actor` (`20.43s–25.29s`), achieving **`28.87s/step`** (`1,547.0 tok/s/GPU` across all 64 GPUs).
+  2. **Elimination of Length-Clipping (`0.10%–0.29%`) and `-2.0` `reward_CLIP` (`0 / 5,120`)**: Raising `MAX_RESPONSE_LENGTH` from `8192` to `16384` with `enable_thinking=True` and `USE_SHAPED_REWARD=True` keeps `response_length/clip_ratio` at `0.10%–0.29%` and completely eliminates `-2.0` (`reward_CLIP`).
+  3. **100% Multi-Turn Mask & Shaped-Reward Integrity**: All `40 / 40` audited multi-turn rollout sessions (`132` `<tool_call>` segments with `mask=1`, `132` `<tool_response>` segments with `mask=0`) have `0` mask violations, and all `3,600 / 3,600` Step 0 + Step 5 validation samples match the offline `retool_tpu.compute_score` shaped-reward formula from persisted `num_turns` (`0` mismatches).
+
 

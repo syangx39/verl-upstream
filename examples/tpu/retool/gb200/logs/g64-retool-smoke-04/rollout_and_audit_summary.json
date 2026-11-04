@@ -1,0 +1,82 @@
+{
+  "steps": {
+    "1": {
+      "step": 1,
+      "num_trajectories": 1024,
+      "trajectories_with_tool_response": 1020,
+      "total_tool_responses": 3259,
+      "clip_neg2_count": 0,
+      "audit_sessions": 8,
+      "audit_mask_length_matches": 8,
+      "audit_sessions_with_tool_response": 8,
+      "audit_tool_call_segments": 34,
+      "audit_tool_response_segments": 34,
+      "audit_mask_violations": 0
+    },
+    "2": {
+      "step": 2,
+      "num_trajectories": 1024,
+      "trajectories_with_tool_response": 1016,
+      "total_tool_responses": 3684,
+      "clip_neg2_count": 0,
+      "audit_sessions": 8,
+      "audit_mask_length_matches": 8,
+      "audit_sessions_with_tool_response": 8,
+      "audit_tool_call_segments": 27,
+      "audit_tool_response_segments": 27,
+      "audit_mask_violations": 0
+    },
+    "3": {
+      "step": 3,
+      "num_trajectories": 1024,
+      "trajectories_with_tool_response": 1019,
+      "total_tool_responses": 3242,
+      "clip_neg2_count": 0,
+      "audit_sessions": 8,
+      "audit_mask_length_matches": 8,
+      "audit_sessions_with_tool_response": 8,
+      "audit_tool_call_segments": 24,
+      "audit_tool_response_segments": 24,
+      "audit_mask_violations": 0
+    },
+    "4": {
+      "step": 4,
+      "num_trajectories": 1024,
+      "trajectories_with_tool_response": 1019,
+      "total_tool_responses": 3208,
+      "clip_neg2_count": 0,
+      "audit_sessions": 8,
+      "audit_mask_length_matches": 8,
+      "audit_sessions_with_tool_response": 8,
+      "audit_tool_call_segments": 26,
+      "audit_tool_response_segments": 26,
+      "audit_mask_violations": 0
+    },
+    "5": {
+      "step": 5,
+      "num_trajectories": 1024,
+      "trajectories_with_tool_response": 1014,
+      "total_tool_responses": 3060,
+      "clip_neg2_count": 0,
+      "audit_sessions": 8,
+      "audit_mask_length_matches": 8,
+      "audit_sessions_with_tool_response": 8,
+      "audit_tool_call_segments": 21,
+      "audit_tool_response_segments": 21,
+      "audit_mask_violations": 0
+    }
+  },
+  "totals": {
+    "total_trajectories": 5120,
+    "trajectories_with_tool_response": 5088,
+    "trajectories_with_tool_response_ratio": 0.99375,
+    "total_tool_responses": 16453,
+    "total_clip_neg2_count": 0,
+    "total_audit_sessions": 40,
+    "audit_sessions_with_tool_response": 40,
+    "audit_mask_length_matches": 40,
+    "audit_tool_call_segments": 132,
+    "audit_tool_response_segments": 132,
+    "audit_mask_violations": 0
+  }
+}

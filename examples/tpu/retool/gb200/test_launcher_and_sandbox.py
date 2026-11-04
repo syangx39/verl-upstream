@@ -775,10 +775,70 @@ class TestV1ValidateDumpNumTurns(unittest.TestCase):
     def test_dapo_script_scales_max_token_len_per_gpu_for_16k_response(self):
         dapo_script = REPO_ROOT / "examples" / "tpu" / "retool" / "gb200" / "run_qwen3_30b_a3b_dapo_torchtitan_gb200.sh"
         src = dapo_script.read_text(encoding="utf-8")
-        self.assertIn("MIN_TOKEN_LEN_PER_GPU=$(( (max_model_len + CONTEXT_PARALLEL_SIZE - 1) / CONTEXT_PARALLEL_SIZE ))", src)
+        self.assertIn(
+            "MIN_TOKEN_LEN_PER_GPU=$(( (max_model_len + CONTEXT_PARALLEL_SIZE - 1) / CONTEXT_PARALLEL_SIZE ))",
+            src,
+        )
         self.assertIn(
             "DEFAULT_MAX_TOKEN_LEN_PER_GPU=$(( MIN_TOKEN_LEN_PER_GPU > 16384 ? MIN_TOKEN_LEN_PER_GPU : 16384 ))",
             src,
+        )
+
+    def test_dapo_script_auto_enables_wandb_when_wandb_api_key_present(self):
+        dapo_script = REPO_ROOT / "examples" / "tpu" / "retool" / "gb200" / "run_qwen3_30b_a3b_dapo_torchtitan_gb200.sh"
+        src = dapo_script.read_text(encoding="utf-8")
+        self.assertIn('if [[ -z "${LOGGER_LIST:-}" ]]; then', src)
+        self.assertIn('if [[ -n "${WANDB_API_KEY:-}" ]]; then', src)
+        self.assertIn("LOGGER_LIST=\"['console','tensorboard','wandb']\"", src)
+
+    def test_launcher_exclude_nodes_renders_node_affinity(self):
+        launcher = REPO_ROOT / "examples" / "tpu" / "retool" / "gb200" / "run_ray_jobset_gb200.sh"
+        src = launcher.read_text(encoding="utf-8")
+        self.assertIn('if [[ -n "${EXCLUDE_NODES:-}" ]]; then', src)
+        self.assertEqual(src.count("${NODE_AFFINITY_YAML}"), 4)
+        snippet = """
+import sys
+nodes = [n.strip() for n in sys.argv[1].split(",") if n.strip()]
+if nodes:
+    print("    nodeAffinity:")
+    print("      requiredDuringSchedulingIgnoredDuringExecution:")
+    print("        nodeSelectorTerms:")
+    print("        - matchExpressions:")
+    print("          - key: kubernetes.io/hostname")
+    print("            operator: NotIn")
+    print("            values:")
+    for n in nodes:
+        print(f"            - {n}")
+"""
+        res = subprocess.run([sys.executable, "-c", snippet, "bad-node-1, bad-node-2 "], capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertIn("key: kubernetes.io/hostname", res.stdout)
+        self.assertIn("operator: NotIn", res.stdout)
+        self.assertIn("- bad-node-1", res.stdout)
+        self.assertIn("- bad-node-2", res.stdout)
+
+    def test_recompute_g64_smoke_metrics_script(self):
+        recompute_script = (
+            REPO_ROOT
+            / "examples"
+            / "tpu"
+            / "retool"
+            / "gb200"
+            / "logs"
+            / "g64-retool-smoke-04"
+            / "recompute_g64_smoke_metrics.py"
+        )
+        res = subprocess.run([sys.executable, str(recompute_script)], capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        payload = json.loads(res.stdout)
+        self.assertEqual(payload["run_name"], "g64-retool-smoke-04")
+        self.assertEqual(payload["env_verification"]["num_nodes_verified"], 16)
+        self.assertEqual(payload["env_verification"]["total_gpus_verified"], 64)
+        self.assertEqual(
+            payload["validation_step_0"]["aime_2025"]["shaped_score_reconciliation"], "1800 / 1800 exact match"
+        )
+        self.assertEqual(
+            payload["validation_step_5"]["aime_2025"]["shaped_score_reconciliation"], "1800 / 1800 exact match"
         )
 
 

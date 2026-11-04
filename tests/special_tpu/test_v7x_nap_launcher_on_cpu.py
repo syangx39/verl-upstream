@@ -171,6 +171,23 @@ def test_manifest_trainer_only_and_bad_inputs():
         render.render_manifest(_values(RUN_NAME="Upper-Case"))
     with pytest.raises(ValueError, match="missing values: GCS_BUCKET"):
         render.render_manifest(_values(GCS_BUCKET=""))
+    with pytest.raises(ValueError, match="WANDB_SECRET_NAME"):
+        render.render_manifest(_values(WANDB_SECRET_NAME="Bad_Secret_Name"))
+    with pytest.raises(ValueError, match="WANDB_SECRET_KEY"):
+        render.render_manifest(_values(WANDB_SECRET_NAME="xiaotongyang-wandb", WANDB_SECRET_KEY="bad/key"))
+
+
+def test_manifest_wandb_secret_ref_injection():
+    values = _values(WANDB_SECRET_NAME="xiaotongyang-wandb", WANDB_SECRET_KEY="WANDB_API_KEY")
+    text = render.render_manifest(values)
+    assert render.check_manifest(text, values) == []
+    (jobset,) = [d for d in yaml.safe_load_all(text) if d]
+    head_container = jobset["spec"]["replicatedJobs"][0]["template"]["spec"]["template"]["spec"]["containers"][0]
+    envs = {e["name"]: e for e in head_container["env"]}
+    assert envs["WANDB_API_KEY"] == {
+        "name": "WANDB_API_KEY",
+        "valueFrom": {"secretKeyRef": {"name": "xiaotongyang-wandb", "key": "WANDB_API_KEY"}},
+    }
 
 
 def test_check_manifest_reports_violations():

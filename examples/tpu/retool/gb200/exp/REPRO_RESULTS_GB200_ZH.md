@@ -1,6 +1,6 @@
 # ReTool（Qwen3-30B-A3B）：NVIDIA GB200 复现进展、结果与 TPU v7x 对照记录
 
-状态：**GB200 8 卡全阶段（Stage 0.1–0.3 / G0 / G1 / G2 25-Step）与 64 卡 16 节点扩展核验（Stage G64-D 5-Step Smoke `g64-retool-smoke-04`）均 PASS（2026-11-04 更新）**
+状态：**GB200 8 卡全阶段（Stage 0.1–0.3 / G0 / G1 / G2 25-Step）均 PASS；64 卡 16 节点 Stage G64-D 5 步 Smoke （`g64-retool-smoke-04`）已完成调度与训练链路验证（2026-11-04 更新，结果边界见 §9）**
 精简版英文复现指南（Quickstart & Repro Guide）：[`gb200/README.md`](../README.md)
 对应计划：[`REPRO_PLAN_GB200_ZH.md`](REPRO_PLAN_GB200_ZH.md)（PR #8 已合入 `tpu-main` `10f16720`；64 卡扩展设计 PR #16 已合入 `tpu-main` `c4726400`）
 对照 TPU 基线：[`RETOOL_REWARD_CLIP_RERUN_PLAN_ZH.md`](../../RETOOL_REWARD_CLIP_RERUN_PLAN_ZH.md)（PR #15 已合入 `tpu-main`）及 [`REPRO_RESULTS_TPU7X.md`](https://github.com/syangx39/verl-upstream/blob/retool-tpu7x-exp-results/examples/tpu/retool/REPRO_RESULTS_TPU7X.md)（PR #7）
@@ -20,7 +20,7 @@
 | **Stage G1 (Attempt 2)** | GB200 ReTool 多轮工具调用 3 步 RL Smoke（对照 TPU `P1c`） | `g1-retool-rl-smoke-02` (`bb704378`) | 2 节点 × 4 张 GB200（健康 `NV18` 全互联节点 + `ComputeDomain` IMEX 通道） | 挂载 `ComputeDomain` + `privileged: true` 并校验 `can_device_access_peer`，完成完整 30B 加载、真实 `actor -> NCCL -> vLLM` 同步（`4.42s / 3.07s / 3.02s / 3.89s`）及 3 步真实更新（`grad_norm: 0.637 -> 0.593 -> 0.864`，`score/mean: -0.625 -> -0.1875 -> +0.3125`，`num_turns/mean: 5.875 / 6.0 / 5.625`） | 冷启动含 SM100 JIT 44 m（其中 3 步训练仅 `108 s`） | **PASS（训练与多轮工具调用通过）** |
 | **Stage G1 (Attempt 3)** | GB200 ReTool 多轮工具调用 3 步 RL Smoke + Token 级 `rollout_audit` 落盘 | `g1-retool-rl-smoke-03` (`64ef634b`) | 2 节点 × 4 张 GB200（复用热 SM100 FlashInfer/vLLM 缓存） | 默认开启 `trainer.rollout_data_dir` 与 `+trainer.rollout_audit_dir`，落盘 `rollout/{1,2,3}.jsonl`（共 172 次 `<tool_response>`）与 `rollout_audit/{1,2,3}.jsonl`（24 个审计会话，`mask_length_matches=True`，`<tool_response>` 位于 `mask==1` 违规数 **`0`**） | 7 m 15 s（其中 3 步训练 `107.8 s`） | **PASS（全项门槛通过）** |
 | **Stage G2** | GB200 ReTool 25 步正式 RL 对照 + Step 0/25 AIME 2024/2025 (`n=30`) 评估（对照 TPU `P3`） | `g2-retool-rl-25step-01` (`64ef634b`) | 2 节点 × 4 张 GB200（`4 trainer FSDP2=4 + 4 rollout TP=4`） | 完成全部 **25/25 步**训练 + Step 0/25 AIME 2024/2025 (`n=30`) 评估（`rc=0`，`SAVE_FREQ=-1` 未保存 Step-25 权重 checkpoint，所有原始日志与评估样本已归档至 [`gb200/logs/g2-retool-rl-25step-01/`](../logs/g2-retool-rl-25step-01/)）：AIME 2024 `mean@30: 23.78% (214/900) -> 28.78% (259/900, +5.00 pp)`、`maj@30: 40.55% -> 47.13% (+6.58 pp)`、`best@30: 64.29% -> 69.05%`；AIME 2025 `mean@30: 17.00% (153/900) -> 17.89% (161/900)`、`best@30: 45.52% -> 57.34% (+11.82 pp)`；25 步共 12,800 条轨迹触发 `24,106` 次 `<tool_response>`，200 个审计会话掩码违规 **`0`**，Step 2–25 均值 **`39.84s/step`**（Step 3–25 稳态均值 **`38.59s/step`**，异步全重叠步 `18.55s–24.63s`） | 25 步训练 `18m 24s`；`tqdm`（25 步 + Step 25 评估）`21m 35s`；**含 Step 0 + Step 25 两次 `n=30` 评估共 `24m 36s`**（`main_ppo` 全程 `27m 37s`） | **PASS（25/25 完成）** |
-| **Stage G64-D** | **64 卡 GB200（16 节点）ReTool 5 步扩展 Smoke + Step 0/5 AIME 2024/2025 (`n=30`) 评估 + W&B Online + `num_turns` 离线对账（对齐 TPU `P3c` / Askhat v5p Regime 2）** | `g64-retool-smoke-04` (`27c41116`, PR #16 运行时对应 SHA) | **16 节点 × 4 张 GB200 = 64 张 GPU**（`4 节点 16 GPU Trainer FSDP2=16 + 12 节点 48 GPU 12 × TP=4 Async Rollout Replicas`，`a4x-highgpu-4g-a4x-pool-5`） | 完成 16 节点同池调度、`ComputeDomain` (`numNodes: 16`)、`12` 个 `TP=4` Rollout Replicas、Hydra Resolved Config 落盘、W&B Online ([`hv1k9rwo`](https://wandb.ai/google-trellis/verl-torchtpu-grpo-test/runs/hv1k9rwo)) 与 5/5 步训练 + Step 0/5 AIME (`n=30`) 评估（所有原始产物已归档至 [`gb200/logs/g64-retool-smoke-04/`](../logs/g64-retool-smoke-04/)）：AIME 2025 `mean@30: 33.00% (297/900) -> 35.00% (315/900, +2.00 pp)`，AIME 2024 `mean@30: 45.56% (410/900) -> 46.22% (416/900, +0.67 pp)`、`maj@30: 64.81% -> 66.62% (+1.81 pp)`；Step 0/5 全部 `3,600 / 3,600` 条评估样本基于 `num_turns` 离线复算 `retool_tpu.compute_score` 零偏差；5 步 `5,120` 条训练轨迹（`n=16, 16K, thinking=True`）触发 `16,453` 次工具调用（`99.38%` 含 `<tool_response>`），`-2.0` `reward_CLIP` 为 `0`，40 个审计会话掩码违规 `0`，稳态（Step 2–5）**`28.87s/step`**（`gen=0.037s` 100% 异步掩盖，`1,547.0 tok/s/GPU`，集群总吞吐 `99,008 tok/s`） | Step 0 `n=30` 评估 `87.3s`；5 步训练 `241.3s`；Step 5 `n=30` 评估 `123.3s`；`main_ppo` 全程 `10m 27s` | **PASS（5/5 完成，W&B Online）** |
+| **Stage G64-D** | 64 卡 GB200（16 节点）ReTool 5 步扩展 Smoke + Step 0/5 AIME 2024/2025 (`n=30`) 评估 + W&B Online | `g64-retool-smoke-04` (`27c41116`) | 16 节点 × 4 张 GB200 = 64 张 GPU（4 节点 16 GPU Trainer `FSDP2=16` + 12 节点 48 GPU `12 × TP=4` Async Rollout Replicas，`a4x-highgpu-4g-a4x-pool-5`） | 完成 16 节点调度、`ComputeDomain` (`numNodes: 16`)、12 个 Rollout Replicas、W&B Online ([`hv1k9rwo`](https://wandb.ai/google-trellis/verl-torchtpu-grpo-test/runs/hv1k9rwo)) 与 5/5 步训练 + Step 0/5 评估；AIME 2024 `410 → 416 / 900`、AIME 2025 `297 → 315 / 900`（单次运行的小幅上升，配对 bootstrap 区间含 0，见 §9.3）；Steps 2–5（4 步）`timing_s/step` 均值 `28.87s`（非 25 步稳态，见 §9.4） | Steps 1–5 `timing_s/step` 合计 `263.94s`；Step 5 评估 `115.90s` | **Smoke 完成（5/5 步）** |
 
 ---
 
@@ -420,98 +420,81 @@ verl.workers.engine.torchtitan.utils.configure_qwen3_moe_for_rl: present
 
 ---
 
-## 9. Stage G64-D（64 × NVIDIA GB200 GPU，16 节点 = 4 Trainer + 12 Rollout）5 步 Smoke 实测与全量核验报告（`g64-retool-smoke-04`）
+## 9. Stage G64-D（64 × NVIDIA GB200 GPU，16 节点 = 4 Trainer + 12 Rollout）5 步 Smoke 实测与核验报告（`g64-retool-smoke-04`）
 
-### 9.1 节点池实况核查、`EXCLUDE_NODES` 坏卡节点隔离与 16 节点同池调度记录
+> **数据来源与生成方式**：本节所有数值表格由 [`gen_g64_report_tables.py`](../logs/g64-retool-smoke-04/gen_g64_report_tables.py) 直接从归档原始产物生成，不手工录入：逐步训练与耗时指标取自 [`head.log`](../logs/g64-retool-smoke-04/head.log) 中 `TaskRunnerV1` 打印的 `step:N` 行（与 [`g64_smoke_04_metrics.json`](../logs/g64-retool-smoke-04/g64_smoke_04_metrics.json) 共 `955` 个重叠数值逐一比对一致）；工具调用与掩码审计计数取自 [`rollout_and_audit_summary.json`](../logs/g64-retool-smoke-04/rollout_and_audit_summary.json)；评估结果与配对 bootstrap 取自 `validation_step{0,5}_samples.jsonl`。[`test_launcher_and_sandbox.py`](../test_launcher_and_sandbox.py) 断言下文 `AUTO-GENERATED` 区块与生成结果逐字一致。
 
-1. **为什么未在 `a4x-highgpu-4g-a4x-pool-4` 直接起满 16 节点，而是切换到 `a4x-highgpu-4g-a4x-pool-5` + `EXCLUDE_NODES`**：
-   - 在启动 64 GPU（`16 × 4-GPU` 节点）任务前，对 `gke_supercomputer-testing_us-central1_a4x-baker` 集群各 `a4x-highgpu-4g` 节点池的空闲 GPU 与驱动健康状态进行了逐节点实测排查：
-     - **`a4x-highgpu-4g-a4x-pool-4`（共 17 个 Ready 节点）**：其中 5 个节点被其他活跃任务占用（`ryanrl/nixl-benchmark-0/1` 占用 `q0xn, 8vmd`；`default/yangligt-kvdelta` 占用 `862x, l88p, gff4`），另有 1 个节点（`gke-a4x-baker-a4x-highgpu-4g-a4x-pool-9c740f70-6tsr`）`nvidia-smi` 报 `Driver Not Loaded`，实际可用健康节点仅 **11 个（44 张 GPU）**，不足 64 卡所需的 16 个节点；
-     - **`a4x-highgpu-4g-a4x-pool-5`（共 17 个 Ready 节点，0 个外部 GPU 任务占用）**：17 个节点中有 **16 个节点 `4/4` 张 GB200 GPU 100% 健康**，仅 1 个节点 `gke-a4x-baker-a4x-highgpu-4g-a4x-pool-aab7d37b-7329` 在运行 `nvidia-smi -L` 时报错 `Unable to determine the device handle for GPU0000:09:01.0: Unknown Error (GPU 00000009:01:00.0 is lost)`（首次尝试 `g64-retool-smoke-03` 因 `worker-10` 调度到该节点触发 `verify_venv_lock.py` fail-fast 拦截）。
-   - **修复方案（已合入 [`run_ray_jobset_gb200.sh`](../run_ray_jobset_gb200.sh)）**：
-     - 新增 `EXCLUDE_NODES` 环境变量（逗号分隔节点名列表），自动在 JobSet YAML 的 `head` 与 `workers` Pod 模板中注入 `nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution`（`kubernetes.io/hostname NotIn [...]`）；
-     - 指定 `NODEPOOL="a4x-highgpu-4g-a4x-pool-5"` + `EXCLUDE_NODES="gke-a4x-baker-a4x-highgpu-4g-a4x-pool-aab7d37b-7329"` 后，**`g64-retool-smoke-04` 的 1 个 Head Pod + 15 个 Worker Pod（共 16 个节点、64 张 GB200 GPU）一次性在 `a4x-highgpu-4g-a4x-pool-5` 健康节点上全部调度成功并 `16/16` 通过预检**。
+### 9.1 节点池选择与 `EXCLUDE_NODES`
 
-2. **64 卡拓扑（`G64-D`）与 TPU v7x 64 芯片（`P3c`）/ Askhat v5p Regime 2 对齐矩阵**：
+- 启动时 `a4x-highgpu-4g-a4x-pool-4` 中空闲且健康的 4-GPU 节点不足 16 个（部分节点被其他任务占用，另有节点 GPU 驱动异常），因此改用 `a4x-highgpu-4g-a4x-pool-5`。
+- `pool-5` 中节点 `gke-a4x-baker-a4x-highgpu-4g-a4x-pool-aab7d37b-7329` 报 `GPU 00000009:01:00.0 is lost`（首次尝试 `g64-retool-smoke-03` 调度到该节点后被 `verify_venv_lock.py` 预检拦截）。新增的 `EXCLUDE_NODES`（[`run_ray_jobset_gb200.sh`](../run_ray_jobset_gb200.sh)）为 head 与 worker Pod 注入 `kubernetes.io/hostname NotIn` 节点亲和性后，`g64-retool-smoke-04` 的 16 个 Pod 全部调度到健康节点。
 
-| 维度 | GB200 64-GPU `g64-retool-smoke-04`（本 PR 实测） | TPU v7x 64-Chip `p3c-retool-25s-01`（PR #18 对照线） | Askhat TPU v5p Regime 2 参照线（`4z5c8z9k` / `h9c210da`） | 对齐状态 |
-| --- | --- | --- | --- | --- |
-| **物理加速器总数** | **64 × NVIDIA GB200 GPU**（16 节点 × 4 卡/节点，每卡 `184.31 GiB` HBM） | **64 × TPU v7x 物理芯片**（4 Slice × `2×2×4` = 16 Hosts / 128 TensorCore） | TPU v5p 多切片 | **64 物理加速器等规模对齐** |
-| **Trainer / Rollout 切分** | **4 Trainer 节点（16 GPU，`FSDP2=16, TP=1, EP=1, CP=1`）+ 12 Rollout 节点（48 GPU，`12 × TP=4` vLLM V1 Async Rollout Replicas）** | **1 Trainer Slice（16 芯片 / 32 核，`FSDP2=8, CP=4`）+ 3 Rollout Slices（48 芯片 / 96 核，`3 × TP=32, EP=32`）** | Separate Async Trainer + Rollout | **1:3（`16:48` 物理加速器）切分比完全一致** |
-| **跨节点互联与通信域** | `ComputeDomain` (`numNodes: 16`, IMEX Channels) + NVLink5 + 4×NIC RoCE | ICI（Slice 内 `2×2×4`）+ Raiden DCN P2P（跨 Slice） | ICI + DCN | 均通过硬件级 P2P 预检 |
-| **代码 SHA 与 `uv.lock`** | `27c41116acfdd89435f78e0993455bf9338a79fd`（PR #16 运行时对应 SHA，`uv.lock` `df508db0...` 16/16 节点 0 偏差） | `348bbff9f4d303da43b27001a79d5734628d8b43`（含 `53bc215c`） | `verl` V1 + TorchTitan | 均锁定可复现 Git SHA |
-| **SFT 起点 Checkpoint** | `p2-retool-sft-01/checkpoint/global_step_372/huggingface`（16/16 节点 `composite_sha256 = 59247a00...`） | 同一 GCS 路径（`composite_sha256 = 59247a00...`） | 372 步 ReTool SFT | **GB200 与 TPU v7x 100% 逐字节共享同一 SFT 权重** |
-| **生成长度 / Thinking / 轮数** | `MAX_RESPONSE_LENGTH=16384`，`ENABLE_THINKING=True`，`MAX_TURNS=16`（`16 user + 16 assistant = 32` 轮总消息） | `MAX_RESPONSE_LENGTH=16384`，`enable_thinking=True`，`MAX_TURNS=16`（`32` 轮总消息） | `16384`，`enable_thinking=True`，`max_turns=16` | **100% 对齐** |
-| **Batch / Group / LR / Bypass** | `train_batch_size=64`，`ppo_mini_batch_size=64`，`n=16`（每步 `1,024` 条轨迹），`val_n=30`，`actor_lr=2e-6`，`bypass_mode=True`，`num_warmup_batches=2`，`max_off_policy_threshold=4` | `train_batch_size=64`，`ppo_mini_batch_size=64`，`n=16`（每步 `1,024` 条轨迹），`val_n=30`，`actor_lr=2e-6`，`bypass_mode=True`，`num_warmup_batches=2`，`max_off_policy_threshold=4` | `BS=64, mini_bs=64, n=16, val_n=30, lr=2e-6` | **100% 对齐** |
-| **奖励函数与 `num_turns` 落盘** | `reward.custom_reward_function.path=pkg://examples.tpu.retool.retool_tpu`（`USE_SHAPED_REWARD=True`：答对 `+1.0`，答错 `-1.0 + 0.1 * min(tool_calls, 4)`）+ `validation/*.jsonl` 落盘 `num_turns` | 完全一致 | Shaped reward | **100% 对齐（3,600/3,600 样本离线复算 0 偏差）** |
-| **W&B Online 实验追踪** | [`google-trellis/verl-torchtpu-grpo-test/runs/hv1k9rwo`](https://wandb.ai/google-trellis/verl-torchtpu-grpo-test/runs/hv1k9rwo) | [`google-trellis/verl-torchtpu-grpo-test/runs/smcnyyoh`](https://wandb.ai/google-trellis/verl-torchtpu-grpo-test/runs/smcnyyoh) | `verl-torchtpu-grpo-test` | **同一 W&B 项目在线实时对齐** |
+### 9.2 16 节点预检、Checkpoint 校验、Rollout Replicas 与 Resolved Config
 
----
+1. **16 节点预检（[`env/`](../logs/g64-retool-smoke-04/env/)，由 [`recompute_g64_smoke_metrics.py`](../logs/g64-retool-smoke-04/recompute_g64_smoke_metrics.py) 断言）**：`head` + `worker-0..14` 共 16 份 `*-precheck.json` 与 `*-g0-verify.json` 均为 `status = "PASS"`；`git_sha = 27c41116acfdd89435f78e0993455bf9338a79fd`、`uv_lock_sha256 = df508db0…` 16/16 一致；16 份 `nvidia-smi -L` 合计 64 张 GPU。
+2. **SFT checkpoint 校验边界**：16/16 节点把 checkpoint 拷入本地 `/dev/shm` 后对 20 个核心文件全量计算 SHA-256，组合摘要均等于钉定值 `59247a00c13f2364a12aab5ab6b88b6d971d59ff643c57aad8ac4e55a71231b0`（即训练实际加载的副本已逐字节核验）。但本次运行所用的 [`verify_g0_gb200.py`](../verify_g0_gb200.py) 在钉定值命中后，对 `--ref-dir`（GCS 参考目录）只检查文件存在与大小，归档 JSON 中的 `ref_composite_sha256` 只是回显钉定值，**不是对参考目录的独立哈希**，同长度不同内容无法被该步发现。本 PR 已修正：该模式现在报告 `ref_check_mode = "size_only"`、`ref_sha256_verified = false` 且不再输出 `ref_composite_sha256`；需要对参考目录做全量哈希时使用 `--full-ref-hash`（单测覆盖同长度不同内容的情形）。
+3. **Rollout replicas 与 resolved config（[`head.log`](../logs/g64-retool-smoke-04/head.log) 启动时打印的 Hydra 配置）**：日志中可见 12 个不同的 `vLLMHttpServer` 进程（11 个 worker 节点 IP + head 节点本地）；`tensor_model_parallel_size: 4`（L583）、`data_parallel_shard_size: 16`（L284）、`lr: 2e-06`（L211）、`loss_mode: bypass_mode`（L224）、`rollout_is: token`（L618）、`max_user_turns: 16`（L524）、`enable_thinking: True`（L777）、`max_response_length: 16384`（L790）、`num_warmup_batches: 2`（L1066）、reward `pkg://examples.tpu.retool.retool_tpu`（L776–L780）。此前文档引用的 `env/resolved_hydra_config.yaml` 并未归档，现改为引用 `head.log` 行号。注意 `rollout_is: token` 是 trainer 侧 `algorithm.rollout_correction` 的配置，actor 端诊断指标实际并未使用它（见 §9.5）。
+4. **跨 16 节点权重同步**：Steps 1–5 的 `timing_s/update_weights` 为 `3.99s / 4.25s / 7.01s / 4.23s / 4.21s`（逐步数值见 §9.4 表）。
 
-### 9.2 16 节点硬件/环境预检、`ComputeDomain`、12 Rollout Replicas 与 Hydra Resolved Config 核验
+### 9.3 Step 0 vs Step 5 AIME 2024 / 2025（`n=30`）评估
 
-以下全部原始证据已归档至本仓库 [`examples/tpu/retool/gb200/logs/g64-retool-smoke-04/`](../logs/g64-retool-smoke-04/)，并由独立复算脚本 [`recompute_g64_smoke_metrics.py`](../logs/g64-retool-smoke-04/recompute_g64_smoke_metrics.py) 与单元测试 [`test_launcher_and_sandbox.py`](../test_launcher_and_sandbox.py)（`26/26` 测试通过）自动断言校验：
+<!-- BEGIN AUTO-GENERATED eval_table (gen_g64_report_tables.py) -->
+| Metric (`n=30` samples per question, 30 questions) | Step 0 | Step 5 | Δ (Step 5 − Step 0) |
+| --- | --- | --- | --- |
+| AIME 2024 correct samples | `410 / 900` | `416 / 900` | `+6` |
+| AIME 2024 `acc/mean@30` | `45.56%` | `46.22%` | `+0.67 pp` (paired bootstrap 95% CI `[-3.56 pp, +5.00 pp]`) |
+| AIME 2024 `acc/maj@30/mean` | `64.81%` | `66.62%` | `+1.81 pp` |
+| AIME 2024 `acc/best@30/mean` | `84.99%` | `84.61%` | `-0.38 pp` |
+| AIME 2024 shaped `reward/mean@30` | `+0.0504` | `+0.0651` | `+0.0147` |
+| AIME 2024 questions improved / worse / tied (per-question correct count) | – | – | `11 / 13 / 6` |
+| AIME 2025 correct samples | `297 / 900` | `315 / 900` | `+18` |
+| AIME 2025 `acc/mean@30` | `33.00%` | `35.00%` | `+2.00 pp` (paired bootstrap 95% CI `[-3.22 pp, +7.22 pp]`) |
+| AIME 2025 `acc/maj@30/mean` | `54.37%` | `54.42%` | `+0.06 pp` |
+| AIME 2025 `acc/best@30/mean` | `72.45%` | `71.40%` | `-1.05 pp` |
+| AIME 2025 shaped `reward/mean@30` | `-0.1869` | `-0.1487` | `+0.0382` |
+| AIME 2025 questions improved / worse / tied (per-question correct count) | – | – | `13 / 10 / 7` |
+<!-- END AUTO-GENERATED eval_table -->
 
-1. **16 节点跨节点 `precheck.json` 与 `g0-verify.json` 一致性核验（[`logs/g64-retool-smoke-04/env/`](../logs/g64-retool-smoke-04/env/)）**：
-   - `head` + `worker-0..worker-14` 共 **16 个节点**全部输出结构化 JSON（`status = "PASS"`）：
-     - `git_sha = "27c41116acfdd89435f78e0993455bf9338a79fd"`（16/16 节点一致）；
-     - `uv_lock_sha256 = "df508db0b957fa181c229fb75885cd3863cb651fd5233d0fa5af95e990bda0be"`（264 个锁包 0 偏差）；
-     - `device_count = 4`（合计 **64 张 NVIDIA GB200 GPU**，单卡 `184.31 GiB` HBM，`0` ECC 错误，节点内 `4 × 3 = 12` 对 NVLink5 P2P `can_device_access_peer` 100% 通过）；
-     - `g0_checkpoint_manifest.composite_sha256 = "59247a00c13f2364a12aab5ab6b88b6d971d59ff643c57aad8ac4e55a71231b0"`（16/16 节点将 `56.89 GiB` SFT checkpoint 拷入本地 `/dev/shm` 并完成 20 核心文件 SHA-256 校验，`mismatches = []`）。
-2. **`ComputeDomain`（`numNodes: 16`）与 12 个 Async vLLM Rollout Replicas 核验（[`head.log`](../logs/g64-retool-smoke-04/head.log)）**：
-   - Ray 集群就绪：`64.0/64.0 GPU`、`2240.0 CPU`（16 节点 × 140 vCPU）；
-   - Trainer 进程组：4 个节点 × 4 GPU = **16 个 TorchTitan Actor/Ref 进程（`FSDP2=16, TP=1, EP=1, CP=1`）**，打印 `MoE: disabled expert-bias load balancing on 48 layers`；
-   - Rollout 副本组：12 个节点 × 4 GPU = **12 个独立 `vLLMHttpServer` 副本（每个副本 `TP=4`，共 48 张 GPU）**，全部挂载 FlashInfer/vLLM SM100 热缓存并在 ~65 秒内完成并行初始化；
-   - **6 次真实 `Actor (FSDP2=16) -> NCCL -> 12 × vLLM Rollout Replicas (48 GPUs)` 跨 16 节点权重同步耗时**：
-     - Step 0 初始同步：`update_weights` 完成；
-     - Step 1–5 训练后同步（Trainer 端含汇总统计 `timing_s/update_weights`）：**`5.71s`、`5.17s`、`5.47s`、`5.11s`、`5.69s`**（5 步均值仅 **`5.43 s`**，对比 8 卡单副本 `G2` 均值 `4.35 s`，在 Rollout 规模扩大 **12 倍（4 卡 $\rightarrow$ 48 卡）**、总卡数扩大 **8 倍（8 卡 $\rightarrow$ 64 卡）** 的情况下，跨节点权重广播耗时仅增加 **`+1.08 s`**）。
-3. **Hydra Resolved Config 落盘核验（[`env/resolved_hydra_config.yaml`](../logs/g64-retool-smoke-04/env/resolved_hydra_config.yaml)）**：
-   - `data.max_response_length: 16384`，`data.apply_chat_template_kwargs.enable_thinking: true`，`data.train_batch_size: 64`；
-   - `actor_rollout_ref.actor.ppo_mini_batch_size: 64`，`actor_rollout_ref.actor.optim.lr: 2e-06`，`actor_rollout_ref.rollout.calculate_log_probs: true`（`bypass_mode: true`）；
-   - `actor_rollout_ref.rollout.n: 16`，`actor_rollout_ref.rollout.val_kwargs.n: 30`，`actor_rollout_ref.rollout.multi_turn.max_user_turns: 16`，`actor_rollout_ref.rollout.multi_turn.max_assistant_turns: 16`；
-   - `actor_rollout_ref.actor.fsdp_size: 16`，`trainer.n_gpus_per_node: 4`，`trainer.nnodes: 4`，`rollout.nnodes: 12`；
-   - `reward.custom_reward_function.path: pkg://examples.tpu.retool.retool_tpu`，`reward.custom_reward_function.name: compute_score`。
+- **结论**：本次单次运行在 Step 5 观察到小幅上升（AIME 2024 `410 → 416 / 900`，AIME 2025 `297 → 315 / 900`），但两项 `Δ acc/mean@30` 的两层配对 bootstrap 95% 区间均包含 0（AIME 2024 `[-3.56 pp, +5.00 pp]`，AIME 2025 `[-3.22 pp, +7.22 pp]`），AIME 2024 逐题为 `11` 题上升 / `13` 题下降 / `6` 题持平。该区间只刻画固定 30+30 道题上的评估采样波动，不包含训练 run 之间的随机性，因此**暂不足以证明稳定的 RL 提升**。
+- **评估样本复算范围**：[`recompute_g64_smoke_metrics.py`](../logs/g64-retool-smoke-04/recompute_g64_smoke_metrics.py) 以运行时评分函数 `examples/tpu/retool/retool_tpu.py::compute_score`（通过 `ast` 原样执行源码，不再使用重写的公式）对归档的 `output_tail_300` 与 `num_turns` 重新打分，Step 0 / Step 5 共 `3,600 / 3,600` 条样本的 `pred`、`acc`、`score` 与日志一致，并复现 `mean@30` 与 shaped `reward/mean@30`。等价性前提是 `math_dapo.compute_score` 内部只读取输出的最后 300 个字符；完整多轮输出未归档（仅有 `output_sha256` 前缀），脚本只能校验 `len(output_tail_300) == min(300, output_chars)`，无法校验尾部内容与全文一致。
+- **跨平台 Step 0 参照（仅列可由归档数据核验的来源）**：TPU v7x 64 卡 `p3c-retool-25s-01` Step 0（`n=30`，其 `validation/0.jsonl`）AIME 2024 `403/900 = 44.78%`、AIME 2025 `286/900 = 31.78%`；Askhat v5p Regime 2 `yjowd03u` Step 0（`val_n = 8`，[`askhat_runs_summary.json`](../../results/askhat-wandb-audit/askhat_runs_summary.json)）AIME 2024 `48.75%`、AIME 2025 `30.83%`。TPU v7x 32 卡 `p3c-retool-smoke-01` 的 Step 0 每题仅 `n=2`，不可与 `n=30` 结果直接比较。此前版本引用的 `4z5c8z9k` / `h9c210da` / `93065ns3` 以及 32 卡 `n=30` 数值没有归档数据支撑，已删除。
 
----
+### 9.4 Steps 1–5 训练指标（逐行由 `head.log` 生成）
 
-### 9.3 Step 0 vs Step 5 AIME 2024 & AIME 2025（`n=30`）评估结果与三线横向对照
+<!-- BEGIN AUTO-GENERATED training_table (gen_g64_report_tables.py) -->
+| Step (`head.log` line) | `timing_s/step` | `timing_s/gen` | `timing_s/update_actor` | `timing_s/update_weights` | `perf/throughput` (tok/s/GPU) | `critic/score/mean` | `actor/pg_loss` | `actor/grad_norm` | `response_length/mean` (`max`) | `response_length/clip_ratio` | `num_turns/mean` (`max`) | trajectories with `<tool_response>` (calls) | `score <= -2.0` | audit mask violations |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 (L2456) | `148.45s` | `34.11s` | `109.18s` | `3.99s` | `196.5` | `-0.2304` | `-0.0497` | `0.1716` | `1,512.5` (`3,782`) | `0.10%` | `8.37` (`32`) | `1020 / 1024` (`3,259`) | `0` | `0 / 8` |
+| 2 (L2469) | `30.20s` | `0.03s` | `25.29s` | `4.25s` | `1579.9` | `-0.2464` | `-0.0947` | `0.1268` | `2,666.1` (`15,193`) | `0.10%` | `9.20` (`32`) | `1016 / 1024` (`3,684`) | `0` | `0 / 8` |
+| 3 (L2498) | `32.15s` | `0.04s` | `24.49s` | `7.01s` | `1466.0` | `-0.2413` | `-0.0946` | `0.1225` | `2,633.4` (`16,384`) | `0.29%` | `8.33` (`32`) | `1019 / 1024` (`3,242`) | `0` | `0 / 8` |
+| 4 (L2513) | `27.50s` | `0.04s` | `22.64s` | `4.23s` | `1610.4` | `-0.2223` | `-0.0779` | `0.1245` | `2,452.9` (`16,384`) | `0.29%` | `8.27` (`32`) | `1019 / 1024` (`3,208`) | `0` | `0 / 8` |
+| 5 (L2544) | `25.64s` | `0.04s` | `20.43s` | `4.21s` | `1531.9` | `-0.0080` | `-0.1023` | `0.1441` | `2,138.6` (`16,384`) | `0.10%` | `7.98` (`32`) | `1014 / 1024` (`3,060`) | `0` | `0 / 8` |
+| Steps 2–5 mean (4 steps only) | `28.87s` (`25.64s`–`32.15s`) | `0.037s` | `23.21s` | `4.92s` | `1547.0` | – | – | – | – | – | – | total `5088 / 5120` (`16,453`) | total `0` | total `0 / 40` |
+<!-- END AUTO-GENERATED training_table -->
 
-| 评估指标（`n=30` 采样 / 题，每集 900 条轨迹） | **GB200 64-GPU `g64-retool-smoke-04` Step 0** | **GB200 64-GPU `g64-retool-smoke-04` Step 5** | **5 步绝对增益（$\Delta$ Step 5 $-$ Step 0）** | **TPU v7x 64-Chip `p3c-retool-25s-01` Step 0** | **TPU v7x 32-Chip `p3c-retool-smoke-01` Step 0** | **Askhat v5p Regime 2 Step 0 (`4z5c8z9k`/`h9c210da`)** |
-| --- | --- | --- | --- | --- | --- | --- |
-| **AIME 2025 `acc/mean@30` (`pass@1`)** | **`33.00%`** (`297/900`, `0.3300`) | **`35.00%`** (`315/900`, `0.3500`) | **`+2.00 pp`**（`+18/900` 样本） | **`31.78%`** (`286/900`, `0.3178`) | **`33.22%`** (`299/900`, `0.3322`) | **`33.44%`** (`0.3344`) |
-| **AIME 2025 `acc/maj@30/mean`** | `54.37%` (`0.5437`) | **`54.42%`** (`0.5442`) | `+0.05 pp` | `45.04%` (`0.4504`) | `51.83%` (`0.5183`) | - |
-| **AIME 2025 `acc/best@30/mean`** | `72.45%` (`0.7245`) | `71.40%` (`0.7140`) | `-1.05 pp` | `71.74%` (`0.7174`) | `72.60%` (`0.7260`) | - |
-| **AIME 2025 `reward/mean@30`（Shaped）** | `-0.1869` (`-0.186889`) | **`-0.1487`** (`-0.148667`) | **`+0.0382`** | `-0.2046` (`-0.204556`) | `-0.1846` (`-0.184556`) | - |
-| **AIME 2024 `acc/mean@30` (`pass@1`)** | **`45.56%`** (`410/900`, `0.4556`) | **`46.22%`** (`416/900`, `0.4622`) | **`+0.67 pp`**（`+6/900` 样本） | **`44.78%`** (`403/900`, `0.4478`) | **`46.78%`** (`421/900`, `0.4678`) | **`46.89%`** (`0.4689`) |
-| **AIME 2024 `acc/maj@30/mean`** | `64.81%` (`0.6481`) | **`66.62%`** (`0.6662`) | **`+1.81 pp`** | `62.49%` (`0.6249`) | `64.26%` (`0.6426`) | - |
-| **AIME 2024 `acc/best@30/mean`** | `84.99%` (`0.8499`) | `84.61%` (`0.8461`) | `-0.39 pp` | `79.25%` (`0.7925`) | `83.99%` (`0.8399`) | - |
-| **AIME 2024 `reward/mean@30`（Shaped）** | `+0.0504` (`+0.050444`) | **`+0.0651`** (`+0.065111`) | **`+0.0147`** | `+0.0343` (`+0.034333`) | `+0.0726` (`+0.072556`) | - |
-| **评估集多轮对话轮数 `val-aux/num_turns/mean` (`min`–`max`)** | `8.1400` (`2`–`32`) | `8.3711` (`2`–`32`) | `+0.2311` | `8.2733` (`2`–`32`) | `8.5878` (`2`–`32`) | `~8.5` |
-| **评估轨迹含 `<tool_response>` 比例 (`validation/{0,5}.jsonl`)** | `1,773 / 1,800` (**`98.50%`**, `5,526` 次调用) | `1,763 / 1,800` (**`97.94%`**, `5,734` 次调用) | 全程保持 `~98%` 工具调用率 | `1,773 / 1,800` (**`98.50%`**, `5,646` 次调用) | `1,769 / 1,800` (**`98.28%`**, `5,863` 次调用) | - |
-| **离线 `num_turns` Shaped Reward 对账（`retool_tpu.compute_score`）** | **`1,800 / 1,800` 零偏差** | **`1,800 / 1,800` 零偏差** | **合计 `3,600 / 3,600` 100% 匹配** | **`1,800 / 1,800` 零偏差** | `1,800 / 1,800` 零偏差 | - |
-| **单次 `n=30`（1,800 条 16K 多轮轨迹）评估墙钟耗时** | **`87.3 s`（`1m 27s`）** | **`123.3 s`（`2m 03s`）** | **相比 8 卡 `G2`（180s @ 8K）提速 `1.5x–2.1x`** | `1,086 s`（`18m 06s`） | `1,598 s`（`26m 38s`） | - |
+- `Steps 2–5` 的 `timing_s/step` 均值 `28.87s`（`25.64s–32.15s`）与日志一致，但**只有 4 步，不能称为已验证的 25 步稳态**，也不据此外推 25 步耗时；Step 1 的 `timing_s/step`（`148.45s`）包含预热与编译。Steps 1–5 `timing_s/step` 合计 `263.94s`，`perf/total_num_tokens` 合计 `13,284,120`。
+- `timing_s/gen` 在 Steps 2–5 均值 `0.037s`，说明这 4 步里 trainer 基本没有等待 rollout；`update_actor` 均值 `23.21s`。
+- Trainer 峰值显存（Steps 1–5 最大值）：`actor/perf/max_memory_allocated_gb = 70.88`、`max_memory_reserved_gb = 103.63`。Step 5 末次评估 `timing_s/testing = 115.90s`。
+- 训练轨迹的工具调用、`score <= -2.0` 与掩码审计列来自 `rollout_and_audit_summary.json`（由 GCS 上的 `rollout/{1..5}.jsonl` 与 `rollout_audit/{1..5}.jsonl` 汇总）。本 PR **没有**对 5,120 条训练轨迹逐条用原 scorer 与完整轨迹复算；V1 训练 rollout dump 不含 `num_turns`，仅凭该 dump 也无法逐条精确复算 shaped score。
 
-- **核心结论**：
-  1. **跨架构（GB200 vs TPU v7x vs TPU v5p）SFT 起点高度一致**：在对齐 `16K` 响应长度、`enable_thinking=True`、`MAX_TURNS=16` 与 `retool_tpu.compute_score` 后，GB200 64 卡 Step 0 基线（AIME 2025 **`33.00%`**、AIME 2024 **`45.56%`**）与 Askhat v5p Regime 2（`33.44%` / `46.89%`）、TPU v7x 32 卡（`33.22%` / `46.78%`）及 TPU v7x 64 卡（`31.78%` / `44.78%`）完全处于同一采样分布区间，较此前未开 thinking 的 8K `G2` Step 0（`17.00%` / `23.78%`）翻倍提升（AIME 2025 **`+16.00 pp`**，AIME 2024 **`+21.78 pp`**）；
-  2. **仅 5 步 RL 训练即取得正向提升**：GB200 64 卡经过 5 步更新后，AIME 2025 `mean@30` 从 **`33.00%` 提升至 `35.00%`（`+2.00 pp`）**，AIME 2024 `mean@30` 从 **`45.56%` 提升至 `46.22%`（`+0.67 pp`）**、`maj@30` 从 **`64.81%` 提升至 `66.62%`（`+1.81 pp`）**；
-  3. **`num_turns` 离线 Shaped Reward 对账 100% 闭环**：PR #16 新增的 `validation/{0,5}.jsonl` `num_turns` 导出字段在全部 `3,600 / 3,600` 条评估样本上经 `retool_tpu.compute_score` 独立复算达到 **0 误差**。
+### 9.5 `actor/rollout_corr/rollout_is_*` 指标排查（GPU 与 TPU 现象一致）
 
----
+<!-- BEGIN AUTO-GENERATED rollout_corr_table (gen_g64_report_tables.py) -->
+| Step | `actor/rollout_corr/kl` | `actor/rollout_corr/k3_kl` | `actor/rollout_corr/ppl_ratio` | `actor/rollout_corr/chi2_token` | `actor/rollout_corr/rollout_is_mean` | `actor/rollout_corr/rollout_is_ratio_fraction_low` | `actor/rollout_corr/rollout_is_seq_fraction_low` | `actor/rollout_corr/rollout_is_max` | `actor/rollout_corr/rollout_is_min` |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | `0.0117` | `0.0116` | `1.0127` | `0.0639` | `0.0176` | `0.9844` | `0.9844` | `1.270` | `1.26e-10` |
+| 2 | `0.0092` | `0.0090` | `1.0116` | `0.0319` | `0.0048` | `0.9916` | `0.9916` | `0.093` | `4.92e-11` |
+| 3 | `0.0097` | `0.0097` | `1.0123` | `0.0348` | `0.0065` | `0.9931` | `0.9931` | `0.140` | `7.94e-09` |
+| 4 | `0.0097` | `0.0095` | `1.0121` | `0.0275` | `0.0057` | `0.9924` | `0.9924` | `0.282` | `1.96e-11` |
+| 5 | `0.0101` | `0.0100` | `1.0128` | `0.0327` | `0.0081` | `0.9897` | `0.9897` | `0.170` | `7.37e-11` |
+<!-- END AUTO-GENERATED rollout_corr_table -->
 
-### 9.4 5 步多轮 RL 训练逐 Step 全量指标、Token 级掩码审计与 64 卡吞吐分析
+1. **现象**：`rollout_is_ratio_fraction_low` 约 `0.98–0.99`、`rollout_is_mean` 约 `0.005–0.018`，同时 token 级对齐指标 `kl ≈ k3_kl ≈ 0.009–0.012`、`ppl_ratio ≈ 1.012`。若这些 IS 指标是 token 级的，则二者互相矛盾：`ρ < 0.5` 的 token 其 `k3 = ρ − log ρ − 1 ≥ 0.193`，98% 的 token 低于 0.5 会使 `k3_kl ≥ 0.19`。另外 `rollout_is_min` 低于 token 级下限 `exp(−20) ≈ 2.06e-9`，TPU 侧 `rollout_is_max` 达到 `17.17`（token 级权重被截断在 2.0），且 token 与 sequence 两个 fraction 在每一步都完全相等。
+2. **原因（代码定位）**：V1 trainer 的 bypass 分支（[`trainer_base.py` L1713–L1721](../../../../../verl/trainer/ppo/v1/trainer_base.py#L1713-L1721)）只把 `rollout_log_probs` 复制为 `old_log_probs`，没有像旧 `ray_trainer.py` 那样调用 [`apply_bypass_mode`](../../../../../verl/trainer/ppo/rollout_corr_helper.py#L1109-L1144) 把 `algorithm.rollout_correction` 写入 actor 的 `policy_loss.rollout_correction`。actor 因此使用 dataclass 默认值（[`actor.py` L101](../../../../../verl/workers/config/actor.py#L101) → [`algorithm.py` L179](../../../../../verl/trainer/config/algorithm.py#L179) `rollout_is = "sequence"`），[bypass loss](../../../../../verl/trainer/ppo/core_algos.py#L2475-L2541) 按**序列级**（整条响应 token 比值连乘）计算这些诊断指标。16K thinking 响应平均约 1.5K–2.7K token，`Σ log ρ ≈ −KL × L ≈ −20` 量级，序列级权重自然塌缩到 `e^-20` 附近，与上表一致（`rollout_is_max = exp(min(log_max, 20))`、`rollout_is_min = exp(log_min)` 均未截断，fraction 按序列计数）。
+3. **复现**：[`repro_rollout_is_level.py`](../logs/g64-retool-smoke-04/repro_rollout_is_level.py)（需 CPU `torch`）用仓库原函数 `compute_rollout_correction_and_rejection_mask` 在合成数据上（token KL ≈ 0.0094，平均长度 2,896）复算：`rollout_is="token"` 时 `rollout_is_mean = 1.0004`、`fraction_low = 0`；`rollout_is="sequence"` 时 `rollout_is_mean = 0.0112`、`fraction_low = seq_fraction_low = 0.969`、`rollout_is_max = 3.00`，复现了 GPU/TPU 的模式。
+4. **对训练的影响**：`loss_type = "ppo_clip"` 时这些 IS 权重**只用于指标、不参与 loss**（`rollout_is_weights=None`），训练使用 token 级 PPO 比值 `π_θ / π_rollout` 与 clip。TPU 64 卡 `p3c-retool-25s-01` Steps 1–9 的同名指标呈相同模式（`rollout_is_mean 0.0022–0.0130`，`fraction_low 0.989–0.997`，`kl 0.0098–0.0126`，`ppl_ratio 1.012–1.015`），因此这些数字本身不构成 GPU 侧 logprob 错位的证据；但也不能据此认定两侧对齐完全正确。
+5. **后续建议**：(a) 在共享代码中把 `algorithm.rollout_correction` 下发给 V1 actor（或在 GPU 与 TPU 两个启动脚本中同时显式设置 `actor_rollout_ref.actor.policy_loss.rollout_correction.rollout_is=token`），使诊断指标与配置一致，单独提 PR 并同时覆盖两个平台；(b) 取同一固定 batch（同一 token 序列与同一 SFT 权重），分别在 GPU 与 TPU 上计算 trainer logprob 并与各自 vLLM rollout logprob 对比，量化两侧约 `0.01 nats/token` 的 trainer–rollout 差异来源。
 
-| Step | `pg_loss` | `grad_norm` | **`score/mean`（Shaped）** | `resp_len/mean` (`max`) | **`clip_ratio`** | `num_turns/mean` (`max`) | `<tool_response>` 轨迹占比 (`调用次数`) | `-2.0` `reward_CLIP` | `rollout_audit` 掩码违规 | `gen` / `update_actor` / `update_weights` | **`timing_s/step`** | `total_tokens` (**`tok/s/GPU`**) |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| **1** | `-0.0156` | `0.1518` | **`-0.0169`** | `2,519.1` (`16,384`) | **`1.46%`** | `8.25` (`32`) | `1,015 / 1,024` (`99.12%`, `3,195` 次) | **`0`** | **`0 / 8`** | `51.80s` / `68.58s` / `5.71s` | **`148.45s`**（首步 JIT/warmup） | `2,806,496` (`295.4`) |
-| **2** | `-0.0226` | `0.1188` | **`-0.1306`** | `2,953.5` (`16,384`) | **`2.25%`** | `9.29` (`32`) | `1,019 / 1,024` (`99.51%`, `3,572` 次) | **`0`** | **`0 / 8`** | **`0.04s`** / `26.44s` / `5.17s` | **`32.15s`** | `3,254,307` (**`1,581.7`**) |
-| **3** | `-0.0082` | `0.1235` | **`-0.0970`** | `2,671.5` (`16,384`) | **`1.76%`** | `8.59` (`32`) | `1,016 / 1,024` (`99.22%`, `3,238` 次) | **`0`** | **`0 / 8`** | **`0.04s`** / `23.51s` / `5.47s` | **`29.52s`** | `2,970,842` (**`1,572.6`**) |
-| **4** | `+0.0110` | `0.1288` | **`-0.1257`** | `2,650.2` (`16,384`) | **`2.34%`** | `8.54` (`32`) | `1,019 / 1,024` (`99.51%`, `3,279` 次) | **`0`** | **`0 / 8`** | **`0.03s`** / `22.61s` / `5.11s` | **`28.18s`** | `2,944,081` (**`1,632.3`**) |
-| **5** | `-0.0029` | `0.1327` | **`+0.0234`** | `2,331.4` (`16,384`) | **`1.17%`** | `8.29` (`32`) | `1,019 / 1,024` (`99.51%`, `3,169` 次) | **`0`** | **`0 / 8`** | **`0.03s`** / `20.28s` / `5.69s` | **`25.64s`**（不含末尾评估） | `2,628,433` (**`1,601.5`**) |
-| **汇总 / 稳态（Step 2–5）** | 均值 `-0.0077` | 均值 `0.1311` | Step 1 `-0.0169` $\rightarrow$ Step 5 **`+0.0234`** | 均值 `2,625.1`（较 8K `G2` `760.4` 长 **`3.45x`**） | **全程 `1.17%–2.34%`（远低于 `5%` 门槛）** | 均值 **`8.59`**（`2–32`） | **`5,088 / 5,120` (`99.38%`, 累计 `16,453` 次工具调用)** | **`0 / 5,120`** | **`0 / 40` 会话（`132` `<tool_call>` `mask=1`, `132` `<tool_response>` `mask=0`）** | 稳态 `gen = 0.037s`（**100% 异步重叠**），`update_actor = 23.21s`，`update_weights = 5.36s` | **稳态 Step 2–5 均值 `28.87s/step`（最快 `25.64s/step`）** | 5 步合计 **`14,604,159`** tokens；**稳态吞吐 `1,547.0 tok/s/GPU`（集群总吞吐 `99,008 tok/s`）** |
+### 9.6 本 PR 对共享代码的改动
 
-- **架构与性能关键发现（`G64-D` 64 卡 vs `G2` 8 卡）**：
-  1. **12 个 `TP=4` Async Rollout Replicas 彻底消除生成等待瓶颈**：在每步生成轨迹数翻倍（`n=8 -> 16`，每步 `512 -> 1,024` 条轨迹）且单条轨迹平均长度增长 **`3.45 倍`**（`760.4 -> 2,625.1` tokens，每步总 token 数从 `553K` 增至 **`2.92M`，增长 `5.28 倍`**）的重负载下，`12 × TP=4` Rollout 副本使 Step 2–5 的 Trainer 端生成等待耗时 **`timing_s/gen` 恒定为 `0.03s–0.04s`（均值 `0.037s`）**，实现 **100% 异步生成重叠**；
-  2. **16 卡 `FSDP2=16` Trainer 吸收 `5.28x` Token 增长并缩短单步时间**：尽管每步处理的 token 数是 `G2` 的 `5.28 倍` 且开启了 `calculate_log_probs=True`，`4 节点 × 4 GPU = 16 GPU` Trainer 将稳态 `update_actor` 控制在 **`20.28s–26.44s`（均值 `23.21s`）**，稳态总步时从 `G2` 的 `38.59s/step` 进一步缩短至 **`28.87s/step`（Step 5 仅 `25.64s/step`）**，预计完整 25 步 16K ReTool 训练本体仅需 **约 13.5 分钟**！
-  3. **显存水位充裕**：Trainer 单卡峰值分配 `97.96 GB`、峰值预留 **`121.02 GB`（`112.7 GiB`）**，仅占 GB200 单卡 `184.31 GiB` HBM 的 **`61.2%`**（留有超过 `71 GiB / GPU` 安全裕量）。
-
-
+- [`verl/utils/distributed.py`](../../../../../verl/utils/distributed.py)：恢复 `tpu-main` 中被误删的 TPU 分支（`initialize_global_process_group_ray` 在建 process group 前显式 `import torch_tpu`；`set_numa_affinity` 在 TPU 上跳过 NVIDIA NUMA 设置），新增的 IPv4 Gloo/NCCL 网卡设置在 TPU 上为 no-op，避免改变 TPU 行为；单测对这些分支做结构检查。

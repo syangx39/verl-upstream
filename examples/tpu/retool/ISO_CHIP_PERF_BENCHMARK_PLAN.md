@@ -1,6 +1,6 @@
 # ReTool（Qwen3-30B-A3B）：同物理加速器数量（Iso-Accelerator-Count）TPU v7x vs NVIDIA GB200 性能基准对照计划与占位记录
 
-状态：**TODO / 待执行（Placeholder PR：先完成 `Stage P1c/P3`，再按相同完整 Reward 语义执行 Tier A 对照；Tier B 作为后续扩展）**
+状态：**规划中**。TPU `P3`（32 芯片）与 8-GPU `G2` 已完成；32-GPU 同卡数对照、64-GPU 强扩展以及 **64-TPU v7x vs 64-GB200（Tier C：64 vs 64 同卡数对照）** 正在推进。本文新增 32→64 GB200 强扩展（strong scaling）与 64-TPU v7x (`16 Trainer + 48 Rollout`) vs 64-GB200 同卡数/同切分对照方案；64 GPU 对 32 颗 v7x (`P3`) 仅作为不同资源数的补充参考，不属于 iso-accelerator 对照。
 关联 PR：
 - TPU v7x 实验记录与 `P1c/P3` 规格：PR #7（[`REPRO_RESULTS_TPU7X.md`](https://github.com/syangx39/verl-upstream/pull/7)）
 - NVIDIA GB200 实验结果报告（`G2` 8-GPU 基线）：PR #9（[`REPRO_RESULTS_GB200_ZH.md`](https://github.com/syangx39/verl-upstream/pull/9)）
@@ -15,20 +15,21 @@
 | 实验线 | 加速器型号 | 物理芯片 / GPU 总数 | 逻辑加速核与主机拓扑 | Trainer / Rollout 资源切分与并行策略 | 单物理芯片 / 单卡 HBM 容量 | 全集群总 HBM 容量 | 当前状态 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | **Askhat 上游参照（[`jialei777/verl-upstream#108`](https://github.com/jialei777/verl-upstream/pull/108)）** | Google Cloud TPU v6e (Trillium) | **64 颗物理芯片**（`2 × v6e-32`） | 64 核（1 核/芯片，16 个 TPU Hosts） | `32 芯片 trainer (FSDP2=8, CP=4) + 32 芯片 rollout (TP=32, EP=32)` | `32 GiB` | `2,048 GiB` | PR #108 历史基线（`108.1 s/step`） |
-| **本仓库 TPU v7x 原规格（PR #7 `P1c/P3`）** | Google Cloud TPU v7x (Ironwood) | **32 颗物理芯片**（`2 × 2×2×4` slice） | 64 逻辑 TensorCore（2 核/芯片，4 芯片/Host，共 **8 个 TPU Hosts**） | `16 芯片 / 32 核 trainer (FSDP2=8, CP=4, TP=1, EP=1) + 16 芯片 / 32 核 rollout (1 × TP=32, EP=32)` | `192 GiB`（`96 GiB` / 逻辑核） | `6,144 GiB` | `P2` SFT 完成；`P1c` 同步失败已定位至权重同步路径，具体原因待受控验证（PR #10） |
+| **本仓库 TPU v7x 原规格（PR #7 `P1c/P3`）** | Google Cloud TPU v7x (Ironwood) | **32 颗物理芯片**（`2 × 2×2×4` slice） | 64 逻辑 TensorCore（2 核/芯片，4 芯片/Host，共 **8 个 TPU Hosts**） | `16 芯片 / 32 核 trainer (FSDP2=8, CP=4, TP=1, EP=1) + 16 芯片 / 32 核 rollout (1 × TP=32, EP=32)` | `192 GiB`（`96 GiB` / 逻辑核） | `6,144 GiB` | `P2` SFT、`P3` 25 步已完成；运行期为默认 scorer，详见 PR #7 / #10 |
 | **本仓库 NVIDIA GB200 基线（PR #9 `G2`）** | NVIDIA GB200 (`sm_100a`) | **8 张 GPU**（2 节点 × 4 卡） | 8 张 GPU（2 个 GPU 节点） | `4 GPU trainer (FSDP2=4, TP=1, EP=1, CP=1) + 4 GPU rollout (1 × vLLM TP=4)` | `184.31 GiB` | `1,474.5 GiB` | **PASS**（`G2` 25/25 步完成，Step 3–25 稳态 `38.59 s/step`） |
 
 > **核心比较原则**：
 > 1. **同物理加速器数量（Iso-Accelerator-Count）视角**：TPU v7x 单颗物理芯片（封装 2 个逻辑 TensorCore，共 `192 GiB` HBM3e）与单张 NVIDIA GB200 GPU（`184.31 GiB` HBM3e）在单卡 HBM 容量与算力等级上处于同一量级。按相同物理芯片/GPU 数（**Tier A：8 vs 8**；**Tier B：32 vs 32**）对齐，可消除当前 PR #7（32 芯片）与 PR #9（8 GPU）之间 4 倍卡数差异。
 > 2. **同时保留拓扑、实际 Token 数与计时边界以解释性能差距**：同卡数对照并非唯一维度——由于 TPU v7x 采用每颗芯片 2 个逻辑 TensorCore（例如 Tier A 中 4 颗芯片对应 8 个逻辑核 `FSDP2=8` / `TP=8`，而 4 张 GB200 对应 `FSDP2=4` / `TP=4`），且 RL 多轮生成轨迹长度随训练动态变化，所有对照表**必须同时记录并行拓扑（`FSDP/CP/TP/EP` 及 replica 数）、实际生成的总 Token 数（`sum(total_tokens)` 与 `resp_len/mean`）以及明确的墙钟计时边界（是否包含冷/热编译与 Step 0/25 评估）**，才能准确拆解计算、通信、权重同步与长尾生成对单步耗时的贡献。
 > 3. **执行顺序（Phased Execution Order）**：
->    - **第一步**：先完成 TPU v7x `Stage P1c` 受控运行验证（PR #10）与 `Stage P3`（32 颗物理芯片 `2 × 2×2×4` 原规格 25 步实验，PR #7）；
+>    - **第一步（已完成）**：TPU v7x `Stage P1c` 受控验证（PR #10）与 `Stage P3`（32 颗物理芯片 `2 × 2×2×4` 原规格 25 步实验，PR #7）；
 >    - **第二步（主线同卡数对照 Tier A）**：在 TPU v7x 上使用**与现有 GB200 `G2` 完全相同的运行期完整 Reward 语义**运行 **Tier A（`8 × TPU v7x 物理芯片` vs 现有 `8 × GB200 GPU` `G2`）**，直接复用 `G2` 结果完成首轮同卡数对照；
->    - **第三步（后续扩展 Tier B 与可选 Shaped-Reward 对照）**：扩展至 **Tier B（`32 × TPU v7x 物理芯片` vs `32 × GB200 GPU`）**，以及可选的自定义 `retool_tpu`（`strict_box_verify=True` + 工具调用奖励塑形）双边重跑对照。
+>    - **第三步（扩展 Tier B）**：扩展至 **Tier B（`32 × TPU v7x 物理芯片` vs `32 × GB200 GPU`）**；新增 **64 GB200** 以研究 GPU 32→64 强扩展，见 §2.5 和 §3.3。
+>    - **独立配方**：自定义 `retool_tpu`（`strict_box_verify=True` + 奖励塑形）需要 GPU / TPU 双边按同一配置重跑，不能和 G2 的默认 scorer 轨道混用。
 
 ---
 
-## 2. 奖励函数（Reward Semantics）、超参对齐与两档实验矩阵设计
+## 2. 奖励函数（Reward Semantics）、超参对齐与实验矩阵设计
 
 ### 2.1 奖励函数（Reward Scorer）语义对齐：为什么主线必须与现有 `G2` 保持相同运行期 Scorer
 
@@ -48,7 +49,7 @@
 
 ### 2.2 本项目 TPU/GPU 对照的训练与评估配置
 
-以下以 `G2` [`head.log`](https://github.com/syangx39/verl-upstream/blob/70441d1ff2ed1986853212daaffa868c6270a9f3/examples/tpu/retool/gb200/evidence/g2-retool-rl-25step-01/head.log) 为对照；可核对的共同参数同时参考 Askhat 的 [`run_qwen3_30b_a3b_dapo_torchtitan.sh`](https://github.com/jialei777/verl-upstream/blob/266e793a20c7baa6f849476ba72c8f8052da1477/examples/tpu/retool/run_qwen3_30b_a3b_dapo_torchtitan.sh)。本项目 TPU/GPU 共享本地 P2 checkpoint，尚未证明其与 Askhat 的 checkpoint 一致；本对照运行 25 步，Askhat 的主运行是 400 步，Askhat 实际运行的 scorer 也尚待确认。
+以下以 `G2` [`head.log`](gb200/logs/g2-retool-rl-25step-01/head.log) 为对照；可核对的共同参数同时参考 Askhat 的 [`run_qwen3_30b_a3b_dapo_torchtitan.sh`](https://github.com/jialei777/verl-upstream/blob/266e793a20c7baa6f849476ba72c8f8052da1477/examples/tpu/retool/run_qwen3_30b_a3b_dapo_torchtitan.sh)。本项目 TPU/GPU 共享本地 P2 checkpoint，尚未证明其与 Askhat 的 checkpoint 一致；本对照运行 25 步，Askhat 的主运行是 400 步，具体运行的 scorer 需以其 resolved config 与证据为准。
 
 - **SFT 起点**：共享 `p2-retool-sft-01/checkpoint/global_step_372/huggingface`（20 核心文件组合 SHA-256 `59247a00c13f2364a12aab5ab6b88b6d971d59ff643c57aad8ac4e55a71231b0`）
 - **批次与采样**：`data.train_batch_size = 64`，`actor_rollout_ref.actor.ppo_mini_batch_size = 64`，`actor_rollout_ref.rollout.n = 8`（每步 `64 × 8 = 512` 条训练轨迹；25 步共 `12,800` 条轨迹）
@@ -91,7 +92,43 @@
 
 ---
 
-## 3. 结果记录表（占位 / Placeholder — 待填 TPU v7x 与 32-GPU 实测数据）
+### 2.5 64 × GB200 扩展与 Tier C（`64 × TPU v7x` vs `64 × GB200`）：强扩展、并行候选矩阵与双 Profile 对齐
+
+64 卡基准包含两个互补目标：
+1. **GB200 32→64 GPU 强扩展（Strong Scaling）**：在固定全局训练工作量下，评估 GB200 从 32 卡（8 节点）扩展到 64 卡（16 节点）的加速比与并行效率；
+2. **Tier C（`64 × TPU v7x 物理芯片` vs `64 × NVIDIA GB200 GPU` 同物理加速器对照）**：
+   - 与现有 32 颗 v7x `P3` 的对比属于 **32 TPU 芯片 vs 64 GPU 的非等资源参考**；
+   - 与 **`64 × TPU v7x 物理芯片`（`4 × 2×2×4` slice = `1 Trainer Slice (16 芯片) + 3 Rollout Slices (48 芯片)`，`p3c-retool-25s-01`）** 的对比则构成严格的 **64 vs 64 同物理加速器数量（Iso-Accelerator-Count）对照**。
+
+#### 2.5.1 32 × GB200 vs 64 × GB200 候选并行配置矩阵（已核对 `verl` 与 TorchTitan 约束）
+
+| 候选编号 | 总卡数 / 节点数 (`4 GPU/node`) | Trainer / Rollout 节点与 GPU 切分 | Trainer 并行策略 (`TorchTitan 0.3.0`) | Rollout 并行策略 (`vLLM V1`) | 关键环境变量覆盖（`run_qwen3_30b_a3b_dapo_torchtitan_gb200.sh`） | 设计目的与源码约束说明 |
+| --- | --- | --- | --- | --- | --- | --- |
+| **`G32-Base`** | **32 GPU** (`8` 节点) | `4 Trainer (16 GPU)` + `4 Rollout (16 GPU)` (`1:1`) | `FSDP2 (dp_shard)=16, CP=1, TP=1, EP=1` | `4 × (TP=4, EP=1)` replicas | `NUM_NODES=8 NNODES_TRAINER=4 N_GPUS_TRAINER=4 NNODES_ROLLOUT=4 N_GPUS_ROLLOUT=4 DATA_PARALLEL_SHARD_SIZE=16 TENSOR_PARALLEL_SIZE=1 TRAINER_EP=1 CONTEXT_PARALLEL_SIZE=1 ROLLOUT_TP=4 ROLLOUT_EP=1` | Tier B（32 vs 32）主线基准与 32→64 强扩展起点 |
+| **`G64-A`（1:1 对称主配置）** | **64 GPU** (`16` 节点) | `8 Trainer (32 GPU)` + `8 Rollout (32 GPU)` (`1:1`) | `FSDP2 (dp_shard)=32, CP=1, TP=1, EP=1` | `8 × (TP=4, EP=1)` replicas（单 replica 严格落在单节点 4 卡 NVLink5 内） | `NUM_NODES=16 NNODES_TRAINER=8 N_GPUS_TRAINER=4 NNODES_ROLLOUT=8 N_GPUS_ROLLOUT=4 DATA_PARALLEL_SHARD_SIZE=32 TENSOR_PARALLEL_SIZE=1 TRAINER_EP=1 CONTEXT_PARALLEL_SIZE=1 ROLLOUT_TP=4 ROLLOUT_EP=1` | 与 `G32-Base` 保持完全相同的 `1:1` 切分比例，直接衡量 32→64 强扩展效率 |
+| **`G64-B`（Rollout EP 候选）** | **64 GPU** (`16` 节点) | `8 Trainer (32 GPU)` + `8 Rollout (32 GPU)` (`1:1`) | `FSDP2 (dp_shard)=32, CP=1, TP=1, EP=1` | `8 × (TP=4, EP=4)` replicas（或跨双节点 `4 × (TP=4, DP=2, EP=8)`） | 单节点 replica：`... ROLLOUT_TP=4 ROLLOUT_DP=1 ROLLOUT_EP=4`<br>双节点 replica：`... ROLLOUT_TP=4 ROLLOUT_DP=2 ROLLOUT_EP=8` | **源码约束**：[`verl/workers/config/rollout.py`](../../../verl/workers/config/rollout.py#L298-L301) 强制校验 `expert_parallel_size == tensor_model_parallel_size * data_parallel_size`（[`replica.py`](../../../verl/workers/rollout/replica.py#L107-L111) 中 `world_size = TP * DP * PP`），因此单节点 `TP=4, DP=1` 开启 vLLM EP 时必须设 `ROLLOUT_EP=4`（设 `ROLLOUT_EP=2` 会触发 `AssertionError`） |
+| **`G64-C`（Trainer EP 候选）** | **64 GPU** (`16` 节点) | `8 Trainer (32 GPU)` + `8 Rollout (32 GPU)` (`1:1`) | Dense `FSDP2 (dp_shard)=32`；MoE Experts `EFSDP=8 × EP=4` (`CP=1, TP=1`) | `8 × (TP=4, EP=1)` replicas | `NUM_NODES=16 NNODES_TRAINER=8 N_GPUS_TRAINER=4 NNODES_ROLLOUT=8 N_GPUS_ROLLOUT=4 DATA_PARALLEL_SHARD_SIZE=32 TENSOR_PARALLEL_SIZE=1 TRAINER_EP=4 CONTEXT_PARALLEL_SIZE=1 ROLLOUT_TP=4 ROLLOUT_EP=1` | **源码约束**：[`verl/workers/engine/torchtitan/transformer_impl.py`](../../../verl/workers/engine/torchtitan/transformer_impl.py#L452-L481) 与 TorchTitan `ParallelDims` 要求 `dp_replicate * dp_shard * cp * tp * pp == world_size (32)`，而 `ep=4` 在 `dp_shard=32` 内部将专家层子切分为 `efsdp = 32 // 4 = 8`；因此 `DATA_PARALLEL_SHARD_SIZE` 必须保持 `32`（设 `8` 会导致 mesh 校验失败） |
+| **`G64-D`（1:3 Rollout 倾斜候选 — 对齐 64 卡 TPU v7x 切分）** | **64 GPU** (`16` 节点) | **`4 Trainer (16 GPU)` + `12 Rollout (48 GPU)` (`1:3`)** | `FSDP2 (dp_shard)=16, CP=1, TP=1, EP=1` | **`12 × (TP=4, EP=1)` replicas**（比 `G64-A` 增加 `50%` Rollout 并发 replica） | `NUM_NODES=16 NNODES_TRAINER=4 N_GPUS_TRAINER=4 NNODES_ROLLOUT=12 N_GPUS_ROLLOUT=4 DATA_PARALLEL_SHARD_SIZE=16 TENSOR_PARALLEL_SIZE=1 TRAINER_EP=1 CONTEXT_PARALLEL_SIZE=1 ROLLOUT_TP=4 ROLLOUT_EP=1` | **切分对齐与实测候选**：与 **64 卡 TPU v7x（`1 Trainer Slice = 16 芯片` + `3 Rollout Slices = 48 芯片`）完全保持 `16 : 48` (`1:3`) 同比例切分**，并检验 16K thinking（Profile 2）下增加 Rollout replica 相对 `G64-A` (`1:1`) 的收益。*(注：[`g2_25step_metrics.json`](gb200/logs/g2-retool-rl-25step-01/g2_25step_metrics.json) 中 Steps 1–25 的 `timing_s/gen` 合计 `512.74 s`、`update_actor + old_log_prob` 合计 `463.13 s`，且 `separate_async` 下 `timing_s/gen` 为 Trainer 等待队列的时间而非 Rollout 完整生成墙钟，因此不以 `G2` 数据预判 `1:3` 在 GPU 上的收益，以 64 卡实测为准。)* |
+
+#### 2.5.2 两条工作负载对齐轨道（Profile 1 vs Profile 2）
+
+| 对照维度 | **Profile 1（Track 1 — `G2` 8K Non-Thinking 基线对齐，用于 8→32→64 GPU 强扩展）** | **Profile 2（Track 2 — `P3c` 16K Thinking + Shaped Reward 对齐，用于 64-TPU v7x vs 64-GB200 同卡数对照）** |
+| --- | --- | --- |
+| **适用对比目标** | `8 GPU (G2)` $\rightarrow$ `32 GPU (G32-Base)` $\rightarrow$ `64 GPU (G64-A/D)` 强扩展；以及与 `Stage P3` (32 芯片默认 scorer) 的参考对照 | **`64 × TPU v7x (p3c-retool-25s-01, 16+48)` vs `64 × GB200 (G64-D, 16+48)` 跨平台同卡数 + 同切分对照** |
+| **代码版本锁定（`EXPECT_GIT_SHA`）** | 必须显式传入包含本分支脚本改动的 `EXPECT_GIT_SHA`（或基于该提交重建镜像），禁止回退运行镜像内置旧提交 `a2cbde47` | **必须显式传入包含本分支脚本改动的 `EXPECT_GIT_SHA`（或基于该提交重建镜像）**，并在全部 16 节点 `precheck.json` 与 `head.log` resolved config 中核验生效 |
+| **序列长度上限** | `MAX_PROMPT_LENGTH=2048, MAX_RESPONSE_LENGTH=8192` (`max_model_len=10240`)，`ACTOR_MAX_TOKEN_LEN_PER_GPU=16384`，`TORCHTITAN_MAX_SEQ_LEN=16384` | `MAX_PROMPT_LENGTH=2048, MAX_RESPONSE_LENGTH=16384` (`max_model_len=18432`)，`ACTOR_MAX_TOKEN_LEN_PER_GPU=18432`，`LOG_PROB_MAX_TOKEN_LEN_PER_GPU=18432`，`TORCHTITAN_MAX_SEQ_LEN=18432` |
+| **采样、多轮与异步预热** | `TRAIN_BATCH_SIZE=64, PPO_MINI_BATCH_SIZE=64, N_RESP_PER_PROMPT=8` (`512` 条/步)，`MAX_TURNS=8`，`NUM_WARMUP_BATCHES=2` | `TRAIN_BATCH_SIZE=64, PPO_MINI_BATCH_SIZE=64, N_RESP_PER_PROMPT=16` (`1,024` 条/步)，`MAX_TURNS=16`，`NUM_WARMUP_BATCHES=2` |
+| **学习率、裁剪与策略损失** | `ACTOR_LR=1.4e-6`，`CLIP_GRAD=0.088`（TorchTitan `training.max_norm=1.0`），`ENABLE_THINKING=False`，`BYPASS_MODE=True` (`loss_mode=bypass_mode`)，`ROLLOUT_IS=token`，`ROLLOUT_IS_THRESHOLD=2.0` | **`ACTOR_LR=2e-6`**，`CLIP_GRAD=0.088`（TorchTitan `training.max_norm=1.0`），**`ENABLE_THINKING=True`**，**`BYPASS_MODE=True` (`loss_mode=bypass_mode`)**，`ROLLOUT_IS=token`，`ROLLOUT_IS_THRESHOLD=2.0`（以 64 卡 TPU 正式 run `p3c-retool-25s-01` 的 resolved config 逐项锁定为准） |
+| **运行期 Reward Scorer** | `USE_SHAPED_REWARD=False`（`default_compute_score` / `strict_box_verify=False`，纯 `{-1.0, +1.0}`） | `USE_SHAPED_REWARD=True`（显式注入 `reward.custom_reward_function.path=pkg://examples.tpu.retool.retool_tpu` `name=compute_score`：`strict_box_verify=True` + 错误多轮样本 `[-0.95, -0.6]` 塑形） |
+
+> **多节点启动器与运行门槛说明**：
+> - [`gb200/run_ray_jobset_gb200.sh`](gb200/run_ray_jobset_gb200.sh) 现已参数化支持 `NUM_NODES="${NUM_NODES:-2}"`、`GPUS_PER_NODE="${GPUS_PER_NODE:-4}"`（限制 `1..4` 并同步设置 Pod `requests/limits` 中的 `nvidia.com/gpu: "${GPUS_PER_NODE}"` 且在容器内校验 `nvidia-smi -L` 实际可见 GPU 数）与 `EXPECT_GIT_SHA`（在全部 `${NUM_NODES}` 节点校验 `precheck.json` 的 `git_sha` 与 G0 manifest `composite_sha256` 一致，并对所有 Pod 执行基于 `metadata.uid` 的原子清理，已由 [`gb200/test_launcher_and_sandbox.py`](gb200/test_launcher_and_sandbox.py) 覆盖 19 项单元测试）。
+> - [`gb200/run_qwen3_30b_a3b_dapo_torchtitan_gb200.sh`](gb200/run_qwen3_30b_a3b_dapo_torchtitan_gb200.sh) 默认 `ROLLOUT_TP=${TOTAL_ROLLOUT_GPUS}`，因此在 32 / 64 GPU 下**必须显式设置 `ROLLOUT_TP=4`** 以创建多个 4-GPU vLLM replica。
+> - **关于 `ComputeDomain`**：当前启动器创建单个 `ComputeDomain`（`numNodes: ${COMPUTE_DOMAIN_NUM_NODES}`，默认等于 `NUM_NODES`）并由全部 `${NUM_NODES}` 个 Pod 绑定同一个 `resourceClaimTemplate`；单纯调小单个 `COMPUTE_DOMAIN_NUM_NODES` 并不是已验证的跨 NVLink 域方案。在真实 8 / 16 节点 GB200 集群执行前，需先验证单 `ComputeDomain` 在 8 / 16 节点上的 DRA 调度支持（若跨机架不支持单域，则需先验证按域拆分 `ComputeDomain` 或非 IMEX 回退），并先完成 3 步 smoke 核对 resolved config 后再跑 25 步正式 benchmark。详见 [GB200 README §2.6](gb200/README.md#26-32--64-gb200-scaling-plan--tier-c-64-tpu-v7x-vs-64-gb200-alignment)。
+
+---
+
+## 3. 结果记录表（占位 / Placeholder）
 
 ### 3.1 Tier A（8 物理加速器主线对照：`8 × TPU v7x 物理芯片` vs `8 × NVIDIA GB200 GPU`，Track 1 相同 Reward 语义）
 
@@ -121,9 +158,9 @@
 
 ### 3.2 Tier B（32 物理加速器扩展对照：`32 × TPU v7x 物理芯片` vs `32 × NVIDIA GB200 GPU`）与 Askhat PR #108 (`64 × TPU v6e`) 对照表
 
-> **Askhat 参考数据来源说明**：下表第一列严格引用 Askhat 在 [`jialei777/verl-upstream#108`](https://github.com/jialei777/verl-upstream/pull/108) 正文报告的 **`Qwen3-30B-A3B` 8K response length / 8-turn ReTool DAPO run（`2 × v6e-32` = 64 颗 TPU v6e 物理芯片）** 实测数字（`timing_s/step = 108.1 s`、`update_actor = 94.2 s`、`Raiden P2P update_weights = 13.2 s`、AIME 2024 `22.44% -> 30.00%` at Step 25），不混用早期 v5p 或 16K/16-turn 变体数据。
+> **Askhat 参考数据来源说明**：下表第一列严格引用 Askhat 在 [`jialei777/verl-upstream#108`](https://github.com/jialei777/verl-upstream/pull/108) 正文报告的 **`Qwen3-30B-A3B` 8K response length / 8-turn ReTool DAPO run（`2 × v6e-32` = 64 颗 TPU v6e 物理芯片）** 实测数字（`timing_s/step = 108.1 s`、`update_actor = 94.2 s`、`Raiden P2P update_weights = 13.2 s`；PR #108 正文报告的 AIME 2024 `22.44%` 与 `30.00%` 经 PR #15 运行审计确认来自不同运行，不解释为单次连续训练提升），不混用早期 v5p 或 16K/16-turn 变体数据。
 
-| 指标维度 | Askhat PR #108 基线（`64 × TPU v6e 物理芯片`，`2 × v6e-32`） | TPU v7x `Stage P3` 原规格（`32 × 物理芯片 / 64 逻辑核`，`2 × 2×2×4`，TODO） | NVIDIA GB200（`32 × GPU`，`8 × 4-GPU 节点`，TODO） |
+| 指标维度 | Askhat PR #108 基线（`64 × TPU v6e 物理芯片`，`2 × v6e-32`） | TPU v7x `Stage P3`（`32 × 物理芯片 / 64 逻辑核`，已完成；本表待填） | NVIDIA GB200（`32 × GPU`，`8 × 4-GPU 节点`，待运行） |
 | --- | --- | --- | --- |
 | **物理芯片 / GPU 数与主机数** | **64 颗 v6e 物理芯片**（`32 trainer + 32 rollout`，16 Hosts） | **32 颗 v7x 物理芯片**（`16 trainer + 16 rollout`，**8 个 TPU Hosts**，64 逻辑 TensorCore） | **32 张 GB200 GPU**（`16 trainer + 16 rollout`，**8 个 GPU 节点**） |
 | **Trainer 并行配置** | `FSDP2=8, CP=4, TP=1, EP=1`（32 核） | **`FSDP2=8, CP=4, TP=1, EP=1`**（32 逻辑 TensorCore，PR #7 原规格） | `FSDP2=4, CP=4, TP=1, EP=1` 或 `FSDP2=16, CP=1`（16 GPU） |
@@ -134,20 +171,40 @@
 | **25 步累计训练总 Token 数** | 未在 PR #108 正文单独列出 | *TODO* | *TODO* |
 | **窗口 W1（25 步训练墙钟）总吞吐 `tok/s` / 单物理加速器 `tok/s/accel`** | - | *TODO*（总 `tok/s` 及 `÷ 32` 芯片 `tok/s/chip`） | *TODO*（总 `tok/s` 及 `÷ 32` 卡 `tok/s/GPU`） |
 | **窗口 W2（Step 3–25 稳态）总吞吐 `tok/s` / 单物理加速器 `tok/s/accel`** | - | *TODO*（总 `tok/s` 及 `÷ 32` 芯片 `tok/s/chip`） | *TODO*（总 `tok/s` 及 `÷ 32` 卡 `tok/s/GPU`） |
-| **Step 0 $\rightarrow$ Step 25 AIME 2024 `acc/mean@30`** | **`22.44%` $\rightarrow$ `30.00%`**（`+7.56 pp`，PR #108 8K/8-turn run；待确认其运行期实际 scorer 口径） | *TODO* | *TODO* |
-| **Step 0 $\rightarrow$ Step 25 AIME 2025 `acc/mean@30`** | **`14.17%` $\rightarrow$ `18.33%`**（`+4.16 pp`，PR #108 8K/8-turn run；待确认其运行期实际 scorer 口径） | *TODO* | *TODO* |
+| **Step 0 $\rightarrow$ Step 25 AIME 2024 `acc/mean@30`** | PR #108 报告 **`22.44%` $\rightarrow$ `30.00%`**；PR #15 的运行审计显示两个端点来自不同运行，不应解释为单次训练提升 | *TODO* | *TODO* |
+| **Step 0 $\rightarrow$ Step 25 AIME 2025 `acc/mean@30`** | PR #108 报告 **`14.17%` $\rightarrow$ `18.33%`**；PR #15 的运行审计显示两个端点来自不同运行，不应解释为单次训练提升 | *TODO* | *TODO* |
+
+---
+
+### 3.3 GB200 32→64 强扩展与 Tier C（`64 × TPU v7x` vs `64 × GB200`）对照表（待测）
+
+| 指标 | 32 GB200 (`G32-Base`, Profile 1) | 64 GB200 (`G64-A` `32+32` / `G64-D` `16+48`, Profile 1) | 64 GB200 (`G64-D` `16+48`, Profile 2) | **64 v7x `P3c` (`p3c-retool-25s-01`, `16+48`, Profile 2 同卡数对照)** | 32 v7x `P3`（非等资源参考，Profile 1） |
+| --- | --- | --- | --- | --- | --- |
+| Run / 代码 / image digest / 实际节点拓扑 | TODO | TODO | TODO | `p3c-retool-25s-01` (`53bc215c`, `4 × 2×2×4` = 16 Hosts / 64 芯片) | 查 PR #7 原始记录 (`32` 芯片) |
+| Trainer / Rollout 切分、mesh、replica 放置 | `16 / 16` GPU (`FSDP2=16` + `4 × TP=4`) | `32 / 32` (`G64-A`) 或 `16 / 48` (`G64-D`) | **`16 / 48` GPU (`FSDP2=16` + `12 × TP=4`)** | **`16 / 48` 物理芯片 (`FSDP2=8, CP=4` + `3 × TP=32, EP=32`)** | `16 / 16` 物理芯片 (`FSDP2=8, CP=4` + `1 × TP=32`) |
+| Resolved config / scorer / 序列与轮数上限 | Profile 1 (`8K, n=8, 8t, default_compute_score`) | Profile 1 (`8K, n=8, 8t, default_compute_score`) | **Profile 2 (`16K, n=16, 16t, lr=2e-6, bypass=True, thinking, shaped retool_tpu`)** | **Profile 2 (`16K, n=16, 16t, lr=2e-6, bypass=True, thinking, shaped retool_tpu`)** | Profile 1 (`8K, n=8, default_compute_score`) |
+| W1 训练墙钟 / 总 `tok/s` / 每卡 `tok/s` | TODO | TODO | TODO | TODO | TODO |
+| W2 Step 3–25 耗时 / 总 `tok/s` / 每卡 `tok/s` | TODO | TODO | TODO | TODO | TODO |
+| `timing_s/gen`、`update_actor`、`update_weights`，队列与 staleness | TODO | TODO | TODO | TODO（以 64 卡实测为准） | TODO |
+| Step 0 / 25 评估、端到端墙钟、加速器小时数 | TODO | TODO | TODO | TODO（小样本 32 卡 Smoke Step 0 `n=2`: AIME24 `41.67%`, AIME25 `28.33%`；正式以 `n=30` 为准） | TODO / TPU-chip-hours |
+| Step 0→25 AIME 2024 / 2025、样本完整性 | TODO | TODO | TODO | TODO | 查 PR #7，核对评估口径 |
+| 扩展加速比 / 跨平台同卡数比值 | 基准 `1×` | `T32 / T64` & `(T32/T64)/2` | 对齐右侧 `64 v7x P3c` | 对齐左侧 `64 GB200 G64-D` | 非等资源参考 |
 
 ---
 
 ## 4. 分阶段执行路线图与前置条件清单（Checklist）
 
 - [x] **完成 NVIDIA GB200 `8 × GPU`（`4 trainer + 4 rollout`）25 步基线实测与原始证据归档（PR #9）**：已归档完整 `head.log`、3,600 条评估样本、双口径（`strict_box_verify=False` vs `True`）复算脚本与墙钟计时拆解。
-- [x] **将 TPU v7x `Stage P1c` 失败隔离定位至 Raiden 权重同步路径并制定受控验证计划（PR #10）**：已确认 `p1c-retool-rl-05` Step-0 权重同步在 32 个 rollout rank 上共出现 `10,414` 处 `exact` mismatch，具体根因（H1 pre-H2D staging / H2 H2D raw-buffer 传输 / H3 layout 转换）待新版镜像受控运行验证。
-- [ ] **阶段 1（完成 `Stage P1c` 与 `Stage P3` 原规格基线）**：
-  - [ ] 按 PR #10 受控验证计划完成 TPU v7x `Stage P1c`（3 步多轮 RL smoke，Step 0 `exact` 校验 `0 mismatch, 0 unresolved`，Step 1–2 `norm` 校验通过且 `ppl_ratio ~ 1.0`）；
-  - [ ] 运行 TPU v7x `Stage P3`（32 颗物理芯片 `2 × 2×2×4`，Trainer `FSDP2=8, CP=4, TP=1, EP=1` + Rollout `1 × TP=32, EP=32`）25 步实验，填入表 3.2。
+- [x] **完成 TPU v7x `Stage P1c` 同步问题诊断与新版路径验证（PR #10）**：`p1c-retool-rl-05` 曾出现大量 Step-0 `exact` mismatch；后续运行的初始逐元素检查和逐步 norm 检查范围不同，详细证据与归因边界见 PR #10。
+- [x] **阶段 1：完成 `Stage P1c` 受控验证与 `Stage P3` 原规格 25 步**；具体证据与逐步同步检查边界见 PR #7 / #10。表 3.2 待按统一口径填数。
+- [x] **完成 TPU v7x Profile 2（16K Thinking + Shaped Reward `retool_tpu.compute_score`）代码修复与 32 卡早期部分 Smoke 验证（PR #15 `p3c-retool-smoke-01`）**：Step 0 单副本 `13,920` 分片零 mismatch、`n=2` 验证集对账、固定样例经 `NaiveRewardManager` 9/9 核验以及 Step 1 训练/审计/分布式范数检查通过（Step 2 权重同步阶段因动态预约到期回收，原定 5 步门槛未全部跑完；改为以 64 卡正式 run 的前 3 步作为三副本 96 ranks 在线放行检查）。
+- [x] **参数化 GB200 多节点启动器 [`gb200/run_ray_jobset_gb200.sh`](gb200/run_ray_jobset_gb200.sh) 与训练脚本 [`gb200/run_qwen3_30b_a3b_dapo_torchtitan_gb200.sh`](gb200/run_qwen3_30b_a3b_dapo_torchtitan_gb200.sh)**：支持 `NUM_NODES=8/16`、`GPUS_PER_NODE`（`1..4` 同步 Pod GPU requests/limits 与 `nvidia-smi` 实测 GPU 数校验）、`EXPECT_GIT_SHA` 跨节点代码锁定、`ENABLE_THINKING`、`USE_SHAPED_REWARD` 与 `ROLLOUT_DP`，并通过 19 项单元测试。
 - [ ] **阶段 2（执行 Tier A 主线同物理卡数对照：`8 × TPU v7x 物理芯片` vs 现有 `8 × GB200 GPU` `G2`）**：
   - [ ] 在 2 个 TPU v7x Hosts（`2 × 2×2×1` = 8 颗物理芯片 / 16 逻辑 TensorCore）上使用**与 `G2` 完全相同的运行期 Reward 语义（Track 1：`default_compute_score` / `strict_box_verify=False`）**与超参（`BS=64, n=8, lr=1.4e-6, trainer.v1.separate_async.num_warmup_batches=2`）运行 25 步实验，填入表 3.1 并完成同卡数吞吐/耗时拆解分析。
 - [ ] **阶段 3（后续扩展：Tier B `32 × GB200 GPU` 对照与可选 Track 2 Shaped-Reward 实验）**：
   - [ ] 视集群资源情况扩展运行 `32 × NVIDIA GB200 GPU`（8 节点）25 步实验，与 `Stage P3`（`32 × TPU v7x 物理芯片`）完成 Tier B 对照；
   - [ ] （可选 Track 2）若需评估 `retool_tpu.compute_score`（`strict_box_verify=True` + 错误样本工具调用奖励塑形），在 GPU 与 TPU 两侧均显式设置 `reward.custom_reward_function.path=pkg://examples.tpu.retool.retool_tpu` 重新运行 25 步对照。
+- [ ] **阶段 4（64-TPU v7x `p3c-retool-25s-01` 与 64-GB200 强扩展 / Tier C 同卡数对照）**：
+  - [ ] 在 `r-b0f80` 预约窗口（`4 × 2×2×4` = 64 颗 TPU v7x 物理芯片，`16 Trainer + 48 Rollout`）运行 25 步正式实验 `p3c-retool-25s-01`（Profile 2，以 Steps 0–3 作为三副本在线放行门槛）；
+  - [ ] 在 16 节点 GB200（64 GPU）上显式指定 `EXPECT_GIT_SHA` 先执行 3 步 smoke 核验 resolved config，再运行 25 步正式 benchmark（覆盖 Profile 1 强扩展 `G64-A`/`G64-D` 以及与 `p3c-retool-25s-01` resolved config 逐项锁定的 Profile 2 同卡数/同切分对照 `G64-D`），填入表 3.3。
+

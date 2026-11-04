@@ -1,4 +1,4 @@
-# Derived GB200 (linux/arm64 / aarch64) image for ReTool TorchTitan + veRL + vLLM parity & performance runs.
+# Derived GB200 (linux/arm64 / aarch64) image for ReTool TorchTitan + verl + vLLM parity & performance runs.
 #
 # Base image: verlai/verl:uv.cu130.dev5 (published 2026-10-23T05:30:38Z, 11.90 GB compressed)
 #   - Multi-arch manifest index : sha256:21e75451badbd7080a221f4cf408306ce637b77d5bb9df80a37e4387b5310146

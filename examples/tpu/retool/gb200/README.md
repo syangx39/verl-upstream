@@ -120,13 +120,15 @@ To rebuild and push on a native `linux/arm64` builder (note that the build conte
 | File | Role |
 | --- | --- |
 | [`examples/tpu/retool/gb200/run_qwen3_30b_a3b_dapo_torchtitan_gb200.sh`](./run_qwen3_30b_a3b_dapo_torchtitan_gb200.sh) | Final GB200 multi-turn DAPO RL recipe script (`verl.trainer.main_ppo` with TorchTitan + vLLM V1) |
-| [`examples/tpu/retool/gb200/run_ray_jobset_gb200.sh`](./run_ray_jobset_gb200.sh) | 2-node (`head + worker-0`) GKE K8s + `ComputeDomain` launcher with atomic UID-preconditioned cleanup |
+| [`examples/tpu/retool/gb200/run_ray_jobset_gb200.sh`](./run_ray_jobset_gb200.sh) | Multi-node (`NUM_NODES` default `2`: `head + worker-0..worker-$((NUM_NODES-2))`) GKE K8s + `ComputeDomain` launcher with atomic UID-preconditioned cleanup |
 | [`examples/tpu/retool/gb200/verify_venv_lock.py`](./verify_venv_lock.py) | Node precheck: 264-package `uv.lock`, GB200 SM100, 12-pair NVLink P2P `can_device_access_peer`, and `configure_qwen3_moe_for_rl` |
 | [`examples/tpu/retool/gb200/verify_g0_gb200.py`](./verify_g0_gb200.py) | `/dev/shm` checkpoint staging, 20-file SHA-256 manifest check, and 1-step `debugmodel_moe` `to_hf()->from_hf()` routing check |
 | [`examples/tpu/retool/retool_tpu.py`](../retool_tpu.py) | `CustomRLHFDataset` prompt/tool formatting and ReTool `compute_score` |
 | [`examples/tpu/retool/sandbox_fusion_server.py`](../sandbox_fusion_server.py) | FastAPI `/run_code` Python execution server with fail-closed privilege drop |
 | [`examples/tpu/retool/sandbox_fusion_tools.py`](../sandbox_fusion_tools.py) | Ray `ExecutionWorker` client with sliding-window rate limiting and external URL support |
 | [`examples/tpu/retool/sandbox_fusion_tool_config_tpu.yaml`](../sandbox_fusion_tool_config_tpu.yaml) | `code_interpreter` tool schema and `SandboxFusionTool` configuration |
+
+**Multi-node scaling (`NUM_NODES=2 / 8 / 16`):** [`run_ray_jobset_gb200.sh`](./run_ray_jobset_gb200.sh) defaults to `NUM_NODES=2` (`2 × 4 GPU = 8 GPUs`) and supports `NUM_NODES=8` (`32 GPUs`) or `NUM_NODES=16` (`64 GPUs`) by creating `worker-0 .. worker-$((NUM_NODES-2))`, waiting for `${TOTAL_GPUS}.0 GPU` and `${NUM_NODES}` G0 manifest files, and cleaning up every pod by `metadata.uid`. See [§2.6](#26-32--64-gb200-scaling-plan) for the candidate parallel configs (`G64-A..D`), Profile 1 vs. Profile 2 alignment with 64-chip TPU v7x (`p3c-retool-25s-01`), and cluster validation steps.
 
 ### 2.1 The Launch Script
 
@@ -239,8 +241,10 @@ bash examples/tpu/retool/gb200/run_ray_jobset_gb200.sh
 | **GB200 `G2` (`g2-retool-rl-25step-01`)** | **2 nodes × 4 GB200 (`8 GPUs`)** | `4 GPU (FSDP2=4)` + `4 GPU (TP=4)` | `64 × 8 = 512` (`25` steps) | **`39.84 s`** (Steps 2–25) / **`38.59 s`** (Steps 3–25) / **`18.55–24.63 s`** (overlapped) | **`14,362.0 tok/s`** (`1,795.2 tok/s/GPU`, Steps 3–25); peak **`28,659.7 tok/s`** (`3,582.5 tok/s/GPU`, Step 25) | **`23.78% -> 28.78%` (`+5.00 pp`)** (`strict=True`: `24.22% -> 29.67%`, `+5.44 pp`) | **`17.00% -> 17.89%` (`+0.89 pp`)** (`strict=True`: `17.11% -> 18.00%`, `+0.89 pp`) | **PASS** |
 | **TPU v7x Tier A (Iso-8-Chip, Planned)** | **2 × `2×2×1` (`8 v7x chips` / 16 cores)** | `4 chips (FSDP2=8, CP=1)` + `4 chips (TP=8, EP=8)` | `64 × 8 = 512` (`25` steps) | TBD ([`ISO_CHIP_PERF_BENCHMARK_PLAN.md`](../ISO_CHIP_PERF_BENCHMARK_PLAN.md)) | TBD | TBD | TBD | Planned |
 | **GB200 Tier B (Iso-32-GPU, Planned)** | **8 nodes × 4 GB200 (`32 GPUs`)** | `16 GPU (FSDP2=16)` + `16 GPU (4 × TP=4)` | `64 × 8 = 512` (`25` steps) | TBD ([`ISO_CHIP_PERF_BENCHMARK_PLAN.md`](../ISO_CHIP_PERF_BENCHMARK_PLAN.md)) | TBD | TBD | TBD | Planned |
-| **TPU v7x `P3` / Tier B (Iso-32-Chip)** | **2 × `2×2×4` (`32 v7x chips` / 64 cores)** | `16 chips (FSDP2=8, CP=4)` + `16 chips (TP=32, EP=32)` | `64 × 8 = 512` (`25` steps) | TBD (pending `P1c` gate) | TBD | TBD | TBD | In Progress |
-| **Askhat TPU v6e Baseline ([`#108`](https://github.com/jialei777/verl-upstream/pull/108))** | **2 × `v6e-32` (`64 v6e chips`)** | `32 chips (FSDP2=8, CP=4)` + `32 chips (TP=32, EP=32)` | `64 × 8 = 512` (`25+` steps) | `108.1 s` | - | `22.44% -> 30.00%` (`+7.56 pp`) | - | Reference |
+| **GB200 64-GPU Strong Scaling (`G64-A..D`, Planned)** | **16 nodes × 4 GB200 (`64 GPUs`)** | `G64-A`: `32 GPU (FSDP2=32)` + `32 GPU (8 × TP=4)`<br>`G64-D`: `16 GPU (FSDP2=16)` + `48 GPU (12 × TP=4)` | Profile 1: `64 × 8 = 512`<br>Profile 2: `64 × 16 = 1,024` (`25` steps) | TBD | TBD | TBD | TBD | Planned (`NUM_NODES=16` supported in launcher) |
+| **TPU v7x `P3c` / Tier C (`p3c-retool-25s-01`, Iso-64-Chip)** | **4 × `2×2×4` (`64 v7x chips` / 128 cores)** | `16 chips (FSDP2=8, CP=4)` + `48 chips (3 × TP=32, EP=32)` | Profile 2: `64 × 16 = 1,024` (`25` steps, 16K thinking, shaped reward) | TBD (32-chip early partial smoke verified in PR #15; Steps 0–3 64-chip gate pending) | TBD | TBD | TBD | Scheduled on `r-b0f80` (`64` chips) |
+| **TPU v7x `P3` / Tier B (Iso-32-Chip)** | **2 × `2×2×4` (`32 v7x chips` / 64 cores)** | `16 chips (FSDP2=8, CP=4)` + `16 chips (TP=32, EP=32)` | `64 × 8 = 512` (`25` steps) | See [`REPRO_RESULTS_TPU7X.md`](../REPRO_RESULTS_TPU7X.md) | See results | See results | See results | 25 steps completed; compare only after matching scorer and measurement windows |
+| **Askhat TPU v6e Baseline ([`#108`](https://github.com/jialei777/verl-upstream/pull/108))** | **2 × `v6e-32` (`64 v6e chips`)** | `32 chips (FSDP2=8, CP=4)` + `32 chips (TP=32, EP=32)` | `64 × 8 = 512` (`yjowd03u` Steps 0–15 + `ci0k54pl` Steps 15–25) | `108.1 s` | - | PR #108 reports `22.44%` (Step 0) and `30.00%` (Step 25) from two separate runs (not a single continuous run; audited `mean@8`: `yjowd03u` `26.25% -> 29.58%` Steps 0–15, `ci0k54pl` `29.17% -> 33.75%` Steps 15–25) | PR #108 reports `14.17%` and `18.33%` from two separate runs (`mean@8`: `yjowd03u` `14.58% -> 20.42%`, `ci0k54pl` `20.00% -> 22.92%`) | Reference |
 
 ---
 
@@ -293,3 +297,117 @@ bash examples/tpu/retool/gb200/run_ray_jobset_gb200.sh
 | **Sandbox Tool Invocations (`<tool_response>`)** | `740` (across `512` trajs) | `1,024` (across `512` trajs) | **`24,106` calls** (`11,933 / 12,800 = 93.23%` trajs) | `200 / 200` audited sessions have **`0` mask violations** |
 | **Tokens per Step (`perf/total_num_tokens`)** | `473,629` | `629,878` | **`553,017` tok/step** (`13,825,419` total) | Balanced across 4 FSDP2 shards (`global_seqlen/mean=138,254/GPU`) |
 | **Trainer HBM Peak (`max_memory_allocated` / `reserved`)** | `117.34 GB` / `125.76 GB` | `154.47 GB` / `172.57 GB` | **`143.86 GiB` allocated / `160.72 GiB` reserved** | Fits comfortably within `184.31 GiB` per GB200 GPU (`0` OOMs) |
+
+### 2.6 32 → 64 GB200 Scaling Plan & Tier C (`64-TPU v7x` vs. `64-GB200`) Alignment
+
+**Status: Multi-node launcher (`NUM_NODES=8/16`) and unit tests implemented; 32/64-GPU cluster execution pending.** This plan covers two complementary evaluations:
+1. **GB200 32 → 64 GPU Strong Scaling (Profile 1 / `G2` 8K Baseline Parity)**: Holds the global workload fixed (`BS=64, n=8, 8K response, 8 turns, enable_thinking=False, default_compute_score`) and measures speedup and parallel efficiency from 32 GPUs (`8` nodes) to 64 GPUs (`16` nodes). Comparing 64 GPUs with the existing 32-chip TPU `P3` run is an additional non-iso-resource reference, **not** an iso-accelerator comparison.
+2. **Tier C (`64 × TPU v7x` vs. `64 × GB200` Iso-Accelerator & Iso-Split Comparison, Profile 2 / `P3c` 16K Thinking Parity)**: Compares 64 GB200 GPUs directly against our 64-chip TPU v7x run (`p3c-retool-25s-01`, `4 × 2×2×4` slices = `16 Trainer chips + 48 Rollout chips`) under the exact same **`16 Trainer : 48 Rollout` (`1:3`)** accelerator split (`G64-D`) and 16K thinking + shaped-reward (`retool_tpu.compute_score`) recipe. See [`../ISO_CHIP_PERF_BENCHMARK_PLAN.md`](../ISO_CHIP_PERF_BENCHMARK_PLAN.md) for the full matrix and result table.
+
+#### Candidate Parallel Configurations (Verified Against `verl` & TorchTitan Constraints)
+
+| Candidate | Scale (`4 GPU/node`) | Trainer / Rollout Split | Trainer Parallelism (`TorchTitan 0.3.0`) | Rollout Parallelism (`vLLM V1`) | Key Environment Overrides | Rationale & Code Constraints |
+| --- | --- | --- | --- | --- | --- | --- |
+| **`G32-Base`** | **32 GPUs** (`NUM_NODES=8`) | `4 Trainer (16 GPU)` + `4 Rollout (16 GPU)` (`1:1`) | `FSDP2 (dp_shard)=16, CP=1, TP=1, EP=1` | `4 × (TP=4, EP=1)` | `NUM_NODES=8 JOBENV_NNODES_TRAINER=4 JOBENV_N_GPUS_TRAINER=4 JOBENV_NNODES_ROLLOUT=4 JOBENV_N_GPUS_ROLLOUT=4 JOBENV_DATA_PARALLEL_SHARD_SIZE=16 JOBENV_ROLLOUT_TP=4 JOBENV_ROLLOUT_EP=1` | Tier B (`32 vs 32`) baseline and `1×` reference for 32→64 strong scaling |
+| **`G64-A` (1:1 Default)** | **64 GPUs** (`NUM_NODES=16`) | `8 Trainer (32 GPU)` + `8 Rollout (32 GPU)` (`1:1`) | `FSDP2 (dp_shard)=32, CP=1, TP=1, EP=1` | `8 × (TP=4, EP=1)` | `NUM_NODES=16 JOBENV_NNODES_TRAINER=8 JOBENV_N_GPUS_TRAINER=4 JOBENV_NNODES_ROLLOUT=8 JOBENV_N_GPUS_ROLLOUT=4 JOBENV_DATA_PARALLEL_SHARD_SIZE=32 JOBENV_ROLLOUT_TP=4 JOBENV_ROLLOUT_EP=1` | Direct `2×` strong-scaling counterpart to `G32-Base`; each `TP=4` vLLM replica stays within one 4-GPU NVLink5 node |
+| **`G64-B` (Rollout EP)** | **64 GPUs** (`NUM_NODES=16`) | `8 Trainer (32 GPU)` + `8 Rollout (32 GPU)` (`1:1`) | `FSDP2 (dp_shard)=32, CP=1, TP=1, EP=1` | `8 × (TP=4, EP=4)` (or `4 × (TP=4, DP=2, EP=8)`) | Single-node replica: `... JOBENV_ROLLOUT_TP=4 JOBENV_ROLLOUT_DP=1 JOBENV_ROLLOUT_EP=4`<br>2-node replica: `... JOBENV_ROLLOUT_TP=4 JOBENV_ROLLOUT_DP=2 JOBENV_ROLLOUT_EP=8` | [`verl/workers/config/rollout.py`](../../../../verl/workers/config/rollout.py#L298-L301) enforces `expert_parallel_size == tensor_model_parallel_size * data_parallel_size` (and `world_size = TP * DP * PP` in [`replica.py`](../../../../verl/workers/rollout/replica.py#L107-L111)), so single-node `TP=4, DP=1` requires `ROLLOUT_EP=4` (setting `ROLLOUT_EP=2` raises `AssertionError`) |
+| **`G64-C` (Trainer EP)** | **64 GPUs** (`NUM_NODES=16`) | `8 Trainer (32 GPU)` + `8 Rollout (32 GPU)` (`1:1`) | Dense `FSDP2=32`; MoE Experts `EFSDP=8 × EP=4` | `8 × (TP=4, EP=1)` | `NUM_NODES=16 JOBENV_NNODES_TRAINER=8 JOBENV_N_GPUS_TRAINER=4 JOBENV_NNODES_ROLLOUT=8 JOBENV_N_GPUS_ROLLOUT=4 JOBENV_DATA_PARALLEL_SHARD_SIZE=32 JOBENV_TRAINER_EP=4 JOBENV_ROLLOUT_TP=4 JOBENV_ROLLOUT_EP=1` | In TorchTitan `0.3.0` `ParallelDims` ([`transformer_impl.py`](../../../../verl/workers/engine/torchtitan/transformer_impl.py#L452-L481)), `dp_replicate * dp_shard * cp * tp * pp` must equal `world_size (32)` while `ep=4` sub-divides `dp_shard=32` into `efsdp=8, ep=4` for experts; keep `DATA_PARALLEL_SHARD_SIZE=32` (setting `8` fails mesh validation) |
+| **`G64-D` (1:3 Rollout-Heavy Candidate / Iso-Split with 64-Chip TPU v7x)** | **64 GPUs** (`NUM_NODES=16`) | **`4 Trainer (16 GPU)` + `12 Rollout (48 GPU)` (`1:3`)** | `FSDP2 (dp_shard)=16, CP=1, TP=1, EP=1` | **`12 × (TP=4, EP=1)`** (`+50%` rollout replicas vs. `G64-A`) | `NUM_NODES=16 JOBENV_NNODES_TRAINER=4 JOBENV_N_GPUS_TRAINER=4 JOBENV_NNODES_ROLLOUT=12 JOBENV_N_GPUS_ROLLOUT=4 JOBENV_DATA_PARALLEL_SHARD_SIZE=16 JOBENV_ROLLOUT_TP=4 JOBENV_ROLLOUT_EP=1` | Matches the exact `16 Trainer : 48 Rollout` (`1:3`) accelerator split of 64-chip TPU v7x (`1 Trainer Slice + 3 Rollout Slices`) for Tier C iso-split comparison, and tests whether adding rollout replicas improves throughput under 16K thinking (`Profile 2`). *(Note: in `G2` [`g2_25step_metrics.json`](./logs/g2-retool-rl-25step-01/g2_25step_metrics.json) over Steps 1–25, trainer queue-wait `timing_s/gen` was `512.74 s` and `update_actor + old_log_prob` was `463.13 s`; `timing_s/gen` under `separate_async` is queue wait time rather than full rollout wall-clock, so `1:3` vs. `1:1` on GB200 must be evaluated empirically rather than assumed from `G2`.)* |
+
+> **Important Notes on `ROLLOUT_TP` and `EXPECT_GIT_SHA`**:
+> 1. **`ROLLOUT_TP`**: In [`run_qwen3_30b_a3b_dapo_torchtitan_gb200.sh`](./run_qwen3_30b_a3b_dapo_torchtitan_gb200.sh), `ROLLOUT_TP` defaults to `TOTAL_ROLLOUT_GPUS`. For multi-node rollout (`16`, `32`, or `48` rollout GPUs), always pass `JOBENV_ROLLOUT_TP=4` explicitly so `verl` instantiates `4`, `8`, or `12` independent `TP=4` vLLM replicas.
+> 2. **`EXPECT_GIT_SHA` (Must point to the `gb200-retool-runtime` lineage matching the image's `uv.lock`)**: The prebuilt image `@sha256:087366ae...` was built from commit `a2cbde47ba729d0cba7e881da1692df20d8e05e4` on the `gb200-retool-runtime` branch (whose `uv.lock` SHA-256 is `df508db0b957fa181c229fb75885cd3863cb651fd5233d0fa5af95e990bda0be` and matches all 264 locked packages in `/workspace/verl-pin/.venv`). Because `tpu-main` is based on an earlier upstream `uv.lock` (`d30f7e35...`), checking out a `tpu-main` commit inside the GB200 container would fail `verify_venv_lock.py --expect-lock-sha256 df508db0...`. Instead, pass `EXPECT_GIT_SHA="32cbf016aa0de19bc4b70802c350aa78b3a4da3b"` (on `gb200-retool-runtime`, directly on top of `a2cbde47`, with zero diff in `uv.lock` or `pyproject.toml`, containing the V1 validation `num_turns` dump fix in `verl/trainer/ppo/v1/trainer_base.py` for offline shaped-reward reconciliation plus the updated `run_qwen3_30b_a3b_dapo_torchtitan_gb200.sh`, `run_ray_jobset_gb200.sh`, and `verify_venv_lock.py --output-json`) so every Pod checks out `32cbf016...`, verifies both `uv.lock` (`df508db0...`) and `git_sha` via `verify_venv_lock.py --output-json "${RUN_DIR}/env/${LAUNCH_ID}-${HOST_TAG}-precheck.json"`, and passes the cross-node JSON readiness gate.
+
+#### Example 64-GPU Launch Commands (`NUM_NODES=16`)
+
+1. **Profile 1 (Track 1 — `G2` 8K Non-Thinking Strong Scaling on 64 GPUs, `G64-A` `32+32` or `G64-D` `16+48`)**:
+   ```bash
+   RUN_NAME="g64a-retool-rl-25step-$(date -u +%Y%m%d-%H%M%S)" \
+   NUM_NODES="16" \
+   GPUS_PER_NODE="4" \
+   EXPECT_GIT_SHA="32cbf016aa0de19bc4b70802c350aa78b3a4da3b" \
+   KUBE_CONTEXT="<YOUR_GB200_KUBE_CONTEXT>" \
+   NODEPOOL="<YOUR_4xGB200_NV18_NODEPOOL>" \
+   GCS_BUCKET="<YOUR_GCS_BUCKET>" \
+   RUN_ROOT="<YOUR_USER>/retool-gb200/runs" \
+   INPUTS_ROOT="<YOUR_USER>/retool-v7x/inputs" \
+   IMAGE="us-central1-docker.pkg.dev/supercomputer-testing/pirillo-gcr/verl-torchtitan-cu130-arm64@sha256:087366ae58a31888c2af2c25992c33ea77471b1b2c58d221b370899f4721e689" \
+   JOBENV_MODEL_SRC_PATH="/data/<YOUR_USER>/retool-v7x/runs/p2-retool-sft-01/checkpoint/global_step_372/huggingface" \
+   JOBENV_NNODES_TRAINER="8" \
+   JOBENV_N_GPUS_TRAINER="4" \
+   JOBENV_NNODES_ROLLOUT="8" \
+   JOBENV_N_GPUS_ROLLOUT="4" \
+   JOBENV_DATA_PARALLEL_SHARD_SIZE="32" \
+   JOBENV_ROLLOUT_TP="4" \
+   JOBENV_ROLLOUT_EP="1" \
+   JOBENV_ACTOR_LR="1.4e-6" \
+   JOBENV_BYPASS_MODE="True" \
+   JOBENV_ROLLOUT_IS="token" \
+   JOBENV_ROLLOUT_IS_THRESHOLD="2.0" \
+   JOBENV_ENABLE_THINKING="False" \
+   JOBENV_USE_SHAPED_REWARD="False" \
+   JOBENV_TRAIN_BATCH_SIZE="64" \
+   JOBENV_PPO_MINI_BATCH_SIZE="64" \
+   JOBENV_N_RESP_PER_PROMPT="8" \
+   JOBENV_N_RESP_PER_PROMPT_VAL="30" \
+   JOBENV_NUM_WARMUP_BATCHES="2" \
+   JOBENV_TOTAL_TRAINING_STEPS="25" \
+   JOBENV_VAL_BEFORE_TRAIN="True" \
+   JOBENV_TEST_FREQ="25" \
+   JOBENV_SAVE_FREQ="-1" \
+   bash examples/tpu/retool/gb200/run_ray_jobset_gb200.sh
+   ```
+
+2. **Profile 2 (Track 2 — `P3c` 16K Thinking + Shaped Reward Iso-64-Accelerator & Iso-1:3-Split Candidate vs. 64-Chip TPU v7x `p3c-retool-25s-01`, `G64-D` `16+48`)**:
+   > **Parity lock requirement**: Before labeling a 64-GPU run as Profile 2 parity against 64-chip TPU v7x (`p3c-retool-25s-01`), verify that every resolved Hydra parameter (`actor.optim.lr=2e-6`, `bypass_mode=True`, `loss_mode=bypass_mode`, `rollout_is=token`, `rollout_is_threshold=2.0`, `num_warmup_batches=2`, `max_turns=16`, `max_response_length=16384`, `enable_thinking=True`, `reward.custom_reward_function.path=pkg://examples.tpu.retool.retool_tpu`) matches the resolved config of `p3c-retool-25s-01`.
+   ```bash
+   RUN_NAME="g64d-p3c-parity-25s-$(date -u +%Y%m%d-%H%M%S)" \
+   NUM_NODES="16" \
+   GPUS_PER_NODE="4" \
+   EXPECT_GIT_SHA="32cbf016aa0de19bc4b70802c350aa78b3a4da3b" \
+   KUBE_CONTEXT="<YOUR_GB200_KUBE_CONTEXT>" \
+   NODEPOOL="<YOUR_4xGB200_NV18_NODEPOOL>" \
+   GCS_BUCKET="<YOUR_GCS_BUCKET>" \
+   RUN_ROOT="<YOUR_USER>/retool-gb200/runs" \
+   INPUTS_ROOT="<YOUR_USER>/retool-v7x/inputs" \
+   IMAGE="us-central1-docker.pkg.dev/supercomputer-testing/pirillo-gcr/verl-torchtitan-cu130-arm64@sha256:087366ae58a31888c2af2c25992c33ea77471b1b2c58d221b370899f4721e689" \
+   JOBENV_MODEL_SRC_PATH="/data/<YOUR_USER>/retool-v7x/runs/p2-retool-sft-01/checkpoint/global_step_372/huggingface" \
+   JOBENV_NNODES_TRAINER="4" \
+   JOBENV_N_GPUS_TRAINER="4" \
+   JOBENV_NNODES_ROLLOUT="12" \
+   JOBENV_N_GPUS_ROLLOUT="4" \
+   JOBENV_DATA_PARALLEL_SHARD_SIZE="16" \
+   JOBENV_ROLLOUT_TP="4" \
+   JOBENV_ROLLOUT_EP="1" \
+   JOBENV_MAX_PROMPT_LENGTH="2048" \
+   JOBENV_MAX_RESPONSE_LENGTH="16384" \
+   JOBENV_ACTOR_MAX_TOKEN_LEN_PER_GPU="18432" \
+   JOBENV_LOG_PROB_MAX_TOKEN_LEN_PER_GPU="18432" \
+   JOBENV_TORCHTITAN_MAX_SEQ_LEN="18432" \
+   JOBENV_MAX_TURNS="16" \
+   JOBENV_N_RESP_PER_PROMPT="16" \
+   JOBENV_N_RESP_PER_PROMPT_VAL="30" \
+   JOBENV_ACTOR_LR="2e-6" \
+   JOBENV_CLIP_GRAD="0.088" \
+   JOBENV_ENABLE_THINKING="True" \
+   JOBENV_BYPASS_MODE="True" \
+   JOBENV_ROLLOUT_IS="token" \
+   JOBENV_ROLLOUT_IS_THRESHOLD="2.0" \
+   JOBENV_USE_SHAPED_REWARD="True" \
+   JOBENV_TRAIN_BATCH_SIZE="64" \
+   JOBENV_PPO_MINI_BATCH_SIZE="64" \
+   JOBENV_NUM_WARMUP_BATCHES="2" \
+   JOBENV_TOTAL_TRAINING_STEPS="25" \
+   JOBENV_VAL_BEFORE_TRAIN="True" \
+   JOBENV_TEST_FREQ="25" \
+   JOBENV_SAVE_FREQ="5" \
+   bash examples/tpu/retool/gb200/run_ray_jobset_gb200.sh
+   ```
+
+**Validation and execution sequence:**
+
+1. Verify `ComputeDomain` / DRA domain limits on the target 8- or 16-node GKE nodepool: [`run_ray_jobset_gb200.sh`](./run_ray_jobset_gb200.sh) creates a single `ComputeDomain` (`numNodes: ${COMPUTE_DOMAIN_NUM_NODES}`, default `NUM_NODES`) whose `resourceClaimTemplate` is attached by all `${NUM_NODES}` Pods. Simply setting `COMPUTE_DOMAIN_NUM_NODES < NUM_NODES` on a single `ComputeDomain` while all `${NUM_NODES}` Pods still claim it is **not** a validated multi-domain solution; if 8 or 16 nodes span multiple NVLink domains that cannot join one `ComputeDomain`, per-domain `ComputeDomain` partitioning or non-IMEX cross-rack fallback must be validated on the target cluster first.
+2. [`run_ray_jobset_gb200.sh`](./run_ray_jobset_gb200.sh) sets Pod `nvidia.com/gpu` requests/limits to `GPUS_PER_NODE` (`1..4`, default `4`), verifies that `nvidia-smi -L` reports exactly `GPUS_PER_NODE` GPUs on every node, runs [`verify_venv_lock.py`](./verify_venv_lock.py) (`${LAUNCH_ID}-${HOST_TAG}-precheck.json`) and [`verify_g0_gb200.py`](./verify_g0_gb200.py) (`${LAUNCH_ID}-${HOST_TAG}-g0-verify.json`) on **every** node (`head` + `worker-0 .. worker-$((NUM_NODES-2))`), and blocks training until all `${NUM_NODES}` nodes match `EXPECT_GIT_SHA`, `EXPECT_CHECKPOINT_SHA256`, and `ray status` (`${TOTAL_GPUS}.0 GPU`).
+3. Run a 3-step smoke at 32 GPUs and 64 GPUs first to verify resolved Hydra config parity, finite gradients, actual optimizer updates, `0` `<tool_response>` mask violations, multi-turn sandbox execution, no OOM, and NCCL weight broadcast to all `4 / 8 / 12` rollout replicas.
+4. Run the 25-step benchmark (with Step 0 and Step 25 `n=30` AIME 2024/2025 evaluations) under Profile 1 (for 8→32→64 GPU strong scaling) and Profile 2 (for 64-GPU GB200 vs. 64-chip TPU v7x `p3c-retool-25s-01` iso-accelerator comparison), and archive all metrics and wall-clock windows (`W1`, `W2`, evaluation, and end-to-end).
+

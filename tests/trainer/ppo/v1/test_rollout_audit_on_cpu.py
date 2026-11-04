@@ -740,21 +740,35 @@ def test_validate_dump_writes_data_source_and_question_id(tmp_path, monkeypatch)
             for row, (uid, data_source) in enumerate(zip(uids, data_sources, strict=True)):
                 for session in range(n):
                     correct = session == 0
-                    response = torch.full((2 + session,), 7)
-                    rm_scores = torch.zeros(len(response))
-                    rm_scores[-1] = 1.0 if correct else -0.6
-                    key = f"{uid}_{session}_0"
-                    storage[key] = {
-                        "uid": uid,
-                        "prompts": torch.arange(1, 4 + row),  # prompt lengths differ, so reads come back nested
-                        "responses": response,
-                        "rm_scores": rm_scores,
-                        "num_turns": 2,
-                        "reward_model": {"ground_truth": "1"},
-                        "data_source": data_source,
-                        "extra_fields": {"reward_extra_info": {"acc": correct, "score": float(rm_scores[-1])}},
-                    }
-                    self.keys.append(key)
+                    # Session 0 has 1 output (num_turns=2); session 1 has 2 outputs (_0 intermediate, _1 final)
+                    # so session_final_indices must propagate the session's final num_turns (4 or 6) to the dump.
+                    num_outputs = 1 if correct else 2
+                    final_turns = 2 if correct else (4 + 2 * row)
+                    shaped_score = 1.0 if correct else min(-0.6, -1.0 + (final_turns - 2) / 2 * 0.1)
+                    for out_idx in range(num_outputs):
+                        is_final = out_idx == num_outputs - 1
+                        response = torch.full((2 + session + out_idx,), 7)
+                        rm_scores = torch.zeros(len(response))
+                        if is_final:
+                            rm_scores[-1] = shaped_score
+                        key = f"{uid}_{session}_{out_idx}"
+                        storage[key] = {
+                            "uid": uid,
+                            "prompts": torch.arange(1, 4 + row),  # prompt lengths differ, so reads come back nested
+                            "responses": response,
+                            "rm_scores": rm_scores,
+                            "num_turns": final_turns if is_final else 2,
+                            "reward_model": {"ground_truth": "1"},
+                            "data_source": data_source,
+                            # Scorer extra_info intentionally omits num_turns (matching retool_tpu.compute_score).
+                            "extra_fields": {
+                                "reward_extra_info": {
+                                    "acc": correct if is_final else False,
+                                    "score": float(rm_scores[-1]),
+                                }
+                            },
+                        }
+                        self.keys.append(key)
 
     agent_loop_manager = _AgentLoopManager()
 
@@ -815,11 +829,18 @@ def test_validate_dump_writes_data_source_and_question_id(tmp_path, monkeypatch)
     # The dump keys are additive: the validation metrics do not change.
     assert metrics_with_dump == pytest.approx(metrics_without_dump, nan_ok=True)
     rows = [json.loads(line) for line in (tmp_path / "0.jsonl").read_text().splitlines()]
-    assert len(rows) == 2 * n
+    # 2 questions * (1 output for session 0 + 2 outputs for session 1) = 6 rows.
+    assert len(rows) == 6
     expected_ids = {"aime_2024": validation_question_id({}, dataset_rows[0]["raw_prompt"]), "aime_2025": "index:5"}
+    expected_session_turns = {("aime_2024", 0): 2, ("aime_2024", 1): 4, ("aime_2025", 0): 2, ("aime_2025", 1): 6}
     for row in rows:
         assert row["question_id"] == expected_ids[row["data_source"]]
-        assert {"input", "output", "gts", "score", "step", "acc", "uid"} <= row.keys()
+        assert {"input", "output", "gts", "score", "step", "acc", "num_turns", "uid"} <= row.keys()
+        _, session_key, _ = split_trajectory_key(row["uid"])
+        session_idx = int(session_key.rsplit("_", 1)[1])
+        assert row["num_turns"] == expected_session_turns[(row["data_source"], session_idx)]
+        expected_score = 1.0 if session_idx == 0 else min(-0.6, -1.0 + (row["num_turns"] - 2) / 2 * 0.1)
+        assert row["score"] == pytest.approx(expected_score)
     summary = summarize_validation_dump(
         rows, expected_n=n, expected_questions={source: [qid] for source, qid in expected_ids.items()}
     )
@@ -828,3 +849,184 @@ def test_validate_dump_writes_data_source_and_question_id(tmp_path, monkeypatch)
         "aime_2024": 0.5,
         "aime_2025": 0.5,
     }
+    assert {source: stats["mean_score"] for source, stats in summary["data_sources"].items()} == {
+        "aime_2024": pytest.approx(0.05),
+        "aime_2025": pytest.approx(0.1),
+    }
+
+
+def test_validate_dump_writes_num_turns_and_reconciles_shaped_reward(tmp_path):
+    """CPU-only regression test for PPOTrainer._validate dump num_turns without transfer_queue/torchtitan."""
+    import ast
+    import os
+    import uuid
+    from collections import defaultdict
+    from concurrent.futures import ThreadPoolExecutor
+    from types import SimpleNamespace
+
+    repo_root = Path(verl.__file__).parent.parent
+
+    # Load math_dapo.py and AST-extract compute_score from examples/tpu/retool/retool_tpu.py
+    spec_dapo = importlib.util.spec_from_file_location("math_dapo", repo_root / "verl/utils/reward_score/math_dapo.py")
+    math_dapo = importlib.util.module_from_spec(spec_dapo)
+    spec_dapo.loader.exec_module(math_dapo)
+
+    retool_tree = ast.parse((repo_root / "examples/tpu/retool/retool_tpu.py").read_text())
+    compute_score_node = next(
+        node for node in retool_tree.body if isinstance(node, ast.FunctionDef) and node.name == "compute_score"
+    )
+    retool_ns = {"math_dapo": math_dapo, "Any": object}
+    exec(compile(ast.Module(body=[compute_score_node], type_ignores=[]), "retool_tpu.py", "exec"), retool_ns)
+    retool_compute_score = retool_ns["compute_score"]
+
+    # AST-extract PPOTrainer._validate and dump helpers from verl/trainer/ppo/v1/trainer_base.py
+    tb_tree = ast.parse((repo_root / "verl/trainer/ppo/v1/trainer_base.py").read_text())
+    ppo_cls_node = next(node for node in tb_tree.body if isinstance(node, ast.ClassDef) and node.name == "PPOTrainer")
+    wanted = {
+        "_validate",
+        "_write_generations",
+        "_dump_generations",
+        "_init_dump_executor",
+        "_shutdown_dump_executor",
+    }
+    method_nodes = [node for node in ppo_cls_node.body if isinstance(node, ast.FunctionDef) and node.name in wanted]
+    cls_def = ast.ClassDef(name="ExtractedPPOTrainer", bases=[], keywords=[], body=method_nodes, decorator_list=[])
+    ast.fix_missing_locations(cls_def)
+
+    class _ListLike(list):
+        def tolist(self):
+            return list(self)
+
+        def sum(self, dim=1):
+            return _ListLike([sum(x) for x in self])
+
+    class _NestedField(list):
+        def to_padded_tensor(self, padding=0):
+            return self
+
+    tb_ns = {
+        "Optional": object,
+        "defaultdict": defaultdict,
+        "ThreadPoolExecutor": ThreadPoolExecutor,
+        "uuid": uuid,
+        "os": os,
+        "json": json,
+        "np": np,
+        "tu": SimpleNamespace(
+            get_tensordict=lambda d: dict(d),
+            assign_non_tensor_data=lambda b, k, v: b.__setitem__(k, v),
+        ),
+        "tq": SimpleNamespace(),
+        "KVBatchMeta": object,
+        "validation_dump_identities": validation_dump_identities,
+        "validation_dump_identity_columns": validation_dump_identity_columns,
+    }
+    exec(compile(ast.Module(body=[cls_def], type_ignores=[]), "trainer_base.py", "exec"), tb_ns)
+    ExtractedPPOTrainer = tb_ns["ExtractedPPOTrainer"]
+
+    storage = {}
+    n = 2
+
+    class _AgentLoopManager:
+        def generate_sequences(self, batch):
+            self.keys = []
+            for row, (uid, data_source) in enumerate(zip(batch["uid"], batch["data_source"], strict=True)):
+                for session in range(n):
+                    correct = session == 0
+                    num_outputs = 1 if correct else 2
+                    final_turns = 2 if correct else (4 + 2 * row)
+                    for out_idx in range(num_outputs):
+                        is_final = out_idx == num_outputs - 1
+                        text = (
+                            "Step 1... \\boxed{42}"
+                            if (correct and is_final)
+                            else ("tool call..." if not is_final else "Try again \\boxed{41}")
+                        )
+                        res = retool_compute_score(
+                            data_source, text, "42", extra_info={"num_turns": final_turns if is_final else 2}
+                        )
+                        score = res["score"] if is_final else 0.0
+                        key = f"{uid}_{session}_{out_idx}"
+                        storage[key] = {
+                            "uid": uid,
+                            "prompts": f"prompt_{row}",
+                            "responses": text,
+                            "rm_scores": [0.0, score],
+                            "num_turns": final_turns if is_final else 2,
+                            "reward_model": {"ground_truth": "42"},
+                            "data_source": data_source,
+                            "extra_fields": {
+                                "reward_extra_info": {"acc": res["acc"] if is_final else False, "pred": res["pred"]}
+                            },
+                        }
+                        self.keys.append(key)
+
+    agent_loop_manager = _AgentLoopManager()
+    tb_ns["tq"].kv_batch_put = lambda **kwargs: None
+    tb_ns["tq"].kv_clear = lambda **kwargs: None
+
+    def kv_batch_get(keys, partition_id, select_fields):
+        out = {}
+        for f in select_fields:
+            vals = [storage[k][f] for k in keys]
+            out[f] = _NestedField(vals) if f in ("prompts", "responses") else _ListLike(vals)
+        return out
+
+    tb_ns["tq"].kv_batch_get = kv_batch_get
+
+    trainer = ExtractedPPOTrainer()
+    trainer.config = SimpleNamespace(
+        trainer={"validation_data_dir": str(tmp_path), "log_val_generations": 0},
+        actor_rollout_ref=SimpleNamespace(rollout=SimpleNamespace(val_kwargs=SimpleNamespace(n=n))),
+    )
+    trainer.global_steps = 0
+    trainer.tokenizer = SimpleNamespace(pad_token_id=0, decode=lambda s, skip_special_tokens=True: s)
+    dataset_rows = [
+        {
+            "data_source": "Maxwell-Jia/AIME_2024",
+            "extra_info": {"index": 1},
+            "raw_prompt": [{"role": "user", "content": "p1"}],
+        },
+        {
+            "data_source": "yentinglin/aime_2025",
+            "extra_info": {"index": 2},
+            "raw_prompt": [{"role": "user", "content": "p2"}],
+        },
+    ]
+    trainer.val_dataloader = [_collate(dataset_rows)]
+    trainer.agent_loop_manager = agent_loop_manager
+    trainer.replay_buffer = SimpleNamespace(
+        sample=lambda global_steps, partition_id, batch_size: (
+            SimpleNamespace(keys=list(agent_loop_manager.keys), partition_id=partition_id),
+            {},
+        )
+    )
+    trainer.reward_loop_manager = SimpleNamespace(reward_loop_worker_handles=[object()])
+    trainer._maybe_log_val_generations = lambda **kwargs: None
+    trainer._val_metrics_update = lambda *args, **kwargs: {"ok": 1.0}
+    trainer._init_dump_executor()
+    trainer._validate()
+    trainer._shutdown_dump_executor()
+
+    rows = [json.loads(line) for line in (tmp_path / "0.jsonl").read_text().splitlines()]
+    assert len(rows) == 6
+    summary = summarize_validation_dump(
+        rows,
+        expected_n=2,
+        expected_questions={"Maxwell-Jia/AIME_2024": ["index:1"], "yentinglin/aime_2025": ["index:2"]},
+    )
+    assert (summary["complete"], summary["score_complete"]) == (True, True)
+
+    by_session = {}
+    for r in rows:
+        assert "num_turns" in r
+        _, session_key, oidx = split_trajectory_key(r["uid"])
+        if session_key not in by_session or oidx > by_session[session_key][0]:
+            by_session[session_key] = (oidx, r)
+    assert len(by_session) == 4
+    for _, r in by_session.values():
+        recomputed = retool_compute_score(
+            r["data_source"], r["output"], r["gts"], extra_info={"num_turns": r["num_turns"]}
+        )
+        assert recomputed["acc"] == r["acc"]
+        assert recomputed["score"] == pytest.approx(r["score"])

@@ -17,6 +17,7 @@
 import asyncio
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -511,6 +512,128 @@ exit 0
                 self.assertIn(expected_err, res.stderr)
                 self.assertEqual(_MockKubeProxyHandler.deletes, [])
 
+    def test_multinode_16_nodes_partial_create_cleans_up_all_created_workers_by_uid(self):
+        """Verify NUM_NODES=16 (64 GPUs) creates worker-0..worker-14 and cleans up all created pods on failure."""
+        launcher = REPO_ROOT / "examples" / "tpu" / "retool" / "gb200" / "run_ray_jobset_gb200.sh"
+        with tempfile.TemporaryDirectory() as td:
+            # Objects: 1=CD, 2=Service, 3..17=worker-0..worker-14, 18=head. Fail on 18 (head).
+            bin_dir = self._make_mock_bins(Path(td), fail_on_create_idx=18)
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PATH": f"{bin_dir}:{env.get('PATH', '')}",
+                    "RUN_NAME": "scale16-run",
+                    "LAUNCH_ID": "launch-scale16",
+                    "NUM_NODES": "16",
+                    "KUBE_CONTEXT": "mock-ctx",
+                    "NODEPOOL": "mock-pool",
+                    "GCS_BUCKET": "mock-bucket",
+                    "RUN_ROOT": "mock-runs",
+                    "INPUTS_ROOT": "mock-inputs",
+                    "IMAGE": "mock-image:latest",
+                }
+            )
+            res = subprocess.run(["bash", str(launcher)], env=env, capture_output=True, text=True)
+            self.assertNotEqual(res.returncode, 0)
+            deleted = dict(_MockKubeProxyHandler.deletes)
+            # Delete CD (uid-obj-1), Service (uid-obj-2), and 15 workers worker-0..worker-14 (uid-obj-3..uid-obj-17).
+            self.assertEqual(len(deleted), 17, f"Expected 17 atomic deletes for NUM_NODES=16, got {len(deleted)}")
+            for w in range(15):
+                self.assertEqual(
+                    deleted[f"/api/v1/namespaces/default/pods/scale16-run-worker-{w}"]["preconditions"]["uid"],
+                    f"uid-obj-{w + 3}",
+                )
+
+    def test_gpus_per_node_validation_and_pod_resource_matching(self):
+        """Verify GPUS_PER_NODE rejects >4 or <1 and renders matching Pod GPU requests/limits and EXPECT_GIT_SHA."""
+        launcher = REPO_ROOT / "examples" / "tpu" / "retool" / "gb200" / "run_ray_jobset_gb200.sh"
+        with tempfile.TemporaryDirectory() as td:
+            bin_dir = self._make_mock_bins(Path(td), fail_on_create_idx=99)
+            for bad_gpus in ("0", "5", "8", "abc"):
+                env = os.environ.copy()
+                env.update(
+                    {
+                        "PATH": f"{bin_dir}:{env.get('PATH', '')}",
+                        "RUN_NAME": "bad-gpu-run",
+                        "GPUS_PER_NODE": bad_gpus,
+                        "KUBE_CONTEXT": "mock-ctx",
+                        "NODEPOOL": "mock-pool",
+                        "GCS_BUCKET": "mock-bucket",
+                        "RUN_ROOT": "mock-runs",
+                        "INPUTS_ROOT": "mock-inputs",
+                        "IMAGE": "mock-image:latest",
+                    }
+                )
+                res = subprocess.run(["bash", str(launcher)], env=env, capture_output=True, text=True)
+                self.assertNotEqual(res.returncode, 0)
+                self.assertIn("GPUS_PER_NODE must be an integer between 1 and 4", res.stderr)
+
+        src = launcher.read_text(encoding="utf-8")
+        self.assertEqual(src.count('nvidia.com/gpu: "${GPUS_PER_NODE}"'), 4)
+        self.assertNotIn('nvidia.com/gpu: "4"', src)
+        self.assertEqual(src.count("- name: EXPECT_GIT_SHA"), 2)
+
+    def test_precheck_json_emission_and_cross_node_readiness_parsing(self):
+        """Verify verify_venv_lock writes structured JSON and the launcher readiness snippet parses it end-to-end."""
+        from examples.tpu.retool.gb200 import verify_venv_lock
+
+        launcher = REPO_ROOT / "examples" / "tpu" / "retool" / "gb200" / "run_ray_jobset_gb200.sh"
+        src = launcher.read_text(encoding="utf-8")
+        self.assertEqual(
+            src.count('--output-json "${RUN_DIR}/env/${LAUNCH_ID}-\\${HOST_TAG}-precheck.json"'),
+            2,
+        )
+        m = re.search(r"python3 -c '([^']+)' \"\$\{RUN_DIR\}/env\"", src)
+        self.assertIsNotNone(m, "Failed to extract cross-node readiness Python snippet from launcher")
+        readiness_code = m.group(1)
+
+        with tempfile.TemporaryDirectory() as td:
+            env_dir = Path(td)
+            lid = "launch-001"
+            expected_sha = "a2cbde47ba729d0cba7e881da1692df20d8e05e4"
+            lock_sha = "df508db0b957fa181c229fb75885cd3863cb651fd5233d0fa5af95e990bda0be"
+            comp_sha = "1" * 64
+
+            for host in ("head", "worker-0"):
+                verify_venv_lock.write_precheck_json(
+                    str(env_dir / f"{lid}-{host}-precheck.json"),
+                    repo="/workspace/verl-pin",
+                    head_sha=expected_sha,
+                    lock_sha=lock_sha,
+                    expect_git_sha=expected_sha,
+                    expect_lock_sha256=lock_sha,
+                    checked_packages={"torch": "2.13.0+cu130", "vllm": "0.32.0"},
+                )
+                (env_dir / f"{lid}-{host}-g0-verify.json").write_text(
+                    json.dumps({"g0_checkpoint_manifest": {"composite_sha256": comp_sha}}),
+                    encoding="utf-8",
+                )
+
+            ok_res = subprocess.run(
+                [sys.executable, "-c", readiness_code, str(env_dir), lid, "2", expected_sha],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(ok_res.returncode, 0, msg=ok_res.stderr)
+            self.assertIn(expected_sha, ok_res.stdout)
+
+            # Mismatched EXPECT_GIT_SHA must fail
+            bad_expect = subprocess.run(
+                [sys.executable, "-c", readiness_code, str(env_dir), lid, "2", "deadbeef" * 5],
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(bad_expect.returncode, 0)
+
+            # Plain-text non-JSON in *-precheck.json must fail with JSONDecodeError
+            (env_dir / f"{lid}-worker-0-precheck.json").write_text("plain text output\n", encoding="utf-8")
+            bad_json = subprocess.run(
+                [sys.executable, "-c", readiness_code, str(env_dir), lid, "2", expected_sha],
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(bad_json.returncode, 0)
+
 
 class TestG0ManifestCompositeHashCheck(unittest.TestCase):
     """Verify verify_g0_gb200.verify_checkpoint_manifest checks --expect-composite-sha256."""
@@ -537,6 +660,68 @@ class TestG0ManifestCompositeHashCheck(unittest.TestCase):
             rep_bad = verify_g0_gb200.verify_checkpoint_manifest(model_dir, expect_composite_sha256="0" * 64)
             self.assertEqual(rep_bad["expected_composite_sha256"], "0" * 64)
             self.assertFalse(rep_bad["composite_sha256_match"])
+
+
+class TestV1ValidateDumpNumTurns(unittest.TestCase):
+    """Verify V1 PPOTrainer._validate writes session num_turns for shaped reward reconciliation."""
+
+    def test_v1_validate_dump_writes_num_turns_and_reconciles_shaped_reward(self):
+        import ast
+        import importlib
+        import importlib.util
+        import math
+        import types
+
+        test_path = REPO_ROOT / "tests/trainer/ppo/v1/test_rollout_audit_on_cpu.py"
+        tree = ast.parse(test_path.read_text(encoding="utf-8"))
+        nodes = [
+            n
+            for n in tree.body
+            if isinstance(n, ast.FunctionDef)
+            and n.name in ("_collate", "test_validate_dump_writes_num_turns_and_reconciles_shaped_reward")
+        ]
+        mod = ast.Module(body=nodes, type_ignores=[])
+        ast.fix_missing_locations(mod)
+
+        ra_spec = importlib.util.spec_from_file_location(
+            "verl.trainer.ppo.v1.rollout_audit", REPO_ROOT / "verl/trainer/ppo/v1/rollout_audit.py"
+        )
+        ra_mod = importlib.util.module_from_spec(ra_spec)
+        ra_spec.loader.exec_module(ra_mod)
+
+        pytest_mod = types.ModuleType("pytest")
+
+        class _Approx:
+            def __init__(self, val, rel=1e-6, abs_tol=1e-12):
+                self.val = val
+                self.rel = rel
+                self.abs_tol = abs_tol
+
+            def __eq__(self, other):
+                return math.isclose(self.val, other, rel_tol=self.rel, abs_tol=self.abs_tol)
+
+        pytest_mod.approx = lambda val, **_kw: _Approx(val)
+        verl_pkg = types.ModuleType("verl")
+        verl_pkg.__file__ = str(REPO_ROOT / "verl/__init__.py")
+        ns = {
+            "Path": Path,
+            "verl": verl_pkg,
+            "pytest": pytest_mod,
+            "json": json,
+            "np": types.SimpleNamespace(
+                array=lambda x, dtype=object: list(x),
+                fromiter=lambda it, dtype=object, count=None: list(it),
+            ),
+            "importlib": importlib,
+            "split_trajectory_key": ra_mod.split_trajectory_key,
+            "summarize_validation_dump": ra_mod.summarize_validation_dump,
+            "validation_dump_identities": ra_mod.validation_dump_identities,
+            "validation_dump_identity_columns": ra_mod.validation_dump_identity_columns,
+            "validation_question_id": ra_mod.validation_question_id,
+        }
+        exec(compile(mod, str(test_path), "exec"), ns)
+        with tempfile.TemporaryDirectory() as td:
+            ns["test_validate_dump_writes_num_turns_and_reconciles_shaped_reward"](Path(td))
 
 
 if __name__ == "__main__":

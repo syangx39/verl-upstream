@@ -23,7 +23,6 @@ import ray
 import torch.distributed
 from torch.distributed import TCPStore
 
-from verl.plugin.platform import get_platform
 from verl.utils.device import get_device_name, get_nccl_backend, get_resource_name, get_torch_device, is_npu_available
 from verl.utils.net_utils import is_ipv6
 
@@ -35,11 +34,6 @@ def set_numa_affinity():
 
     initialized = False
     try:
-        device_name = get_resource_name()
-        # NUMA affinity via pynvml is NVIDIA GPU-specific; return early on TPU.
-        if device_name == "TPU":
-            return
-
         libnuma = ctypes.CDLL("libnuma.so")
         if libnuma.numa_available() < 0:
             return
@@ -65,7 +59,17 @@ def set_numa_affinity():
             pynvml.nvmlShutdown()
 
 
+def _configure_ipv4_socket_env_if_needed():
+    """Ensure Gloo/NCCL bind to the routable IPv4 interface when MASTER_ADDR is IPv4."""
+    master_addr = os.environ.get("MASTER_ADDR", "")
+    if master_addr and not is_ipv6(master_addr) and os.path.exists("/sys/class/net/eth0"):
+        os.environ.setdefault("GLOO_SOCKET_IFNAME", "eth0")
+        os.environ.setdefault("NCCL_SOCKET_IFNAME", "eth0")
+        os.environ.setdefault("NCCL_SOCKET_FAMILY", "AF_INET")
+
+
 def initialize_global_process_group(timeout_second=36000):
+    _configure_ipv4_socket_env_if_needed()
     backend = f"cpu:gloo,{get_device_name()}:{get_nccl_backend()}"
     torch.distributed.init_process_group(
         backend=backend,
@@ -91,10 +95,7 @@ def initialize_global_process_group_ray(timeout_second=None, backend=None):
 
     import torch.distributed
 
-    # On TPU platforms, import torch_tpu to register the TPU communication backend with torch.distributed.
-    if get_platform().device_name == "tpu":
-        import torch_tpu  # noqa: F401
-
+    _configure_ipv4_socket_env_if_needed()
     timeout = timedelta(seconds=timeout_second) if timeout_second is not None else None
     backend = backend or f"cpu:gloo,{get_device_name()}:{get_nccl_backend()}"
     if not torch.distributed.is_initialized():

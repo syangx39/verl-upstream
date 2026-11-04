@@ -69,14 +69,14 @@
   "totals": {
     "total_trajectories": 5120,
     "trajectories_with_tool_response": 5088,
-    "trajectories_with_tool_response_ratio": 0.99375,
     "total_tool_responses": 16453,
     "total_clip_neg2_count": 0,
     "total_audit_sessions": 40,
-    "audit_sessions_with_tool_response": 40,
     "audit_mask_length_matches": 40,
+    "audit_sessions_with_tool_response": 40,
     "audit_tool_call_segments": 132,
     "audit_tool_response_segments": 132,
-    "audit_mask_violations": 0
+    "audit_mask_violations": 0,
+    "trajectories_with_tool_response_ratio": 0.99375
   }
 }

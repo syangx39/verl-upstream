@@ -33,7 +33,7 @@ from pathlib import Path
 
 import torch
 
-REPO_ROOT = Path(__file__).resolve().parents[6]
+REPO_ROOT = Path(__file__).resolve().parents[5]
 HELPER_FUNCS = {
     "_parse_rollout_is_threshold",
     "compute_rollout_correction_weights",

@@ -792,9 +792,9 @@ class TestDistributedTpuGuards(unittest.TestCase):
 
 
 class TestG64ReportTables(unittest.TestCase):
-    """README / REPRO_RESULTS G64-D tables must be the verbatim output of gen_g64_report_tables.py."""
+    """README / REPRO_RESULTS G64-D tables must be the verbatim output of logs/gen_g64_report_tables.py."""
 
-    EV_DIR = REPO_ROOT / "examples" / "tpu" / "retool" / "gb200" / "logs" / "g64-retool-smoke-04"
+    LOGS_DIR = REPO_ROOT / "examples" / "tpu" / "retool" / "gb200" / "logs"
     DOCS = (
         REPO_ROOT / "examples" / "tpu" / "retool" / "gb200" / "README.md",
         REPO_ROOT / "examples" / "tpu" / "retool" / "gb200" / "exp" / "REPRO_RESULTS_GB200_ZH.md",
@@ -804,44 +804,112 @@ class TestG64ReportTables(unittest.TestCase):
     def setUpClass(cls):
         import importlib.util
 
-        spec = importlib.util.spec_from_file_location("gen_g64", cls.EV_DIR / "gen_g64_report_tables.py")
+        spec = importlib.util.spec_from_file_location("gen_g64", cls.LOGS_DIR / "gen_g64_report_tables.py")
         cls.gen = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.gen)
-        cls.out = cls.gen.build_all()
+        cls.out = {run: cls.gen.build_all(run) for run in cls.gen.RUNS}
 
     def test_head_log_matches_metrics_json_and_reviewer_spot_checks(self):
-        self.assertGreater(self.out["head_log_vs_metrics_json_values_compared"], 900)
-        steps = self.gen.parse_head_log_steps(self.EV_DIR / "head.log")
+        self.assertGreater(self.out["g64-retool-smoke-04"]["head_log_vs_metrics_json_values_compared"], 900)
+        self.assertGreater(self.out["g64-retool-25s-01"]["head_log_vs_metrics_json_values_compared"], 2500)
+        steps = self.gen.parse_head_log_steps(self.LOGS_DIR / "g64-retool-smoke-04" / "head.log")
         self.assertAlmostEqual(steps[1]["metrics"]["actor/grad_norm"], 0.17162081599235535, places=12)
         self.assertAlmostEqual(steps[5]["metrics"]["critic/score/mean"], -0.008007812313735485, places=12)
-        self.assertIn("`0.1716`", self.out["training_table"])
-        self.assertIn("`-0.0080`", self.out["training_table"])
-        self.assertIn("Steps 2–5 mean (4 steps only)", self.out["training_table"])
+        smoke = self.out["g64-retool-smoke-04"]["training_table"]
+        self.assertIn("`0.1716`", smoke)
+        self.assertIn("`-0.0080`", smoke)
+        self.assertIn("Steps 2–5 mean (4 steps)", smoke)
+        self.assertIn("Steps 2–25 mean (24 steps)", self.out["g64-retool-25s-01"]["training_table"])
+        self.assertIn("askhat_table", self.out["g64-retool-25s-01"])
 
     def test_doc_blocks_match_generator(self):
         for doc in self.DOCS:
             text = doc.read_text(encoding="utf-8")
-            for name in ("training_table", "rollout_corr_table", "eval_table"):
-                m = re.search(
-                    rf"<!-- BEGIN AUTO-GENERATED {name} \(gen_g64_report_tables\.py\) -->\n(.*?)\n"
-                    rf"<!-- END AUTO-GENERATED {name} -->",
-                    text,
-                    re.S,
-                )
-                self.assertIsNotNone(m, f"{doc.name}: missing AUTO-GENERATED {name} block")
-                self.assertEqual(m.group(1), self.out[name], f"{doc.name}: {name} differs from generator output")
+            for run, tables in self.out.items():
+                for name in self.gen.TABLES:
+                    if name not in tables:
+                        continue
+                    m = re.search(
+                        rf"<!-- BEGIN AUTO-GENERATED {run}/{name} \(gen_g64_report_tables\.py\) -->\n(.*?)\n"
+                        rf"<!-- END AUTO-GENERATED {run}/{name} -->",
+                        text,
+                        re.S,
+                    )
+                    self.assertIsNotNone(m, f"{doc.name}: missing AUTO-GENERATED {run}/{name} block")
+                    self.assertEqual(m.group(1), tables[name], f"{doc.name}: {run}/{name} differs from generator")
+
+    def test_25_step_run_config_matches_smoke_except_step_count_and_paths(self):
+        changed = {
+            d[1:].strip().split("'")[1]
+            for d in self.gen.resolved_config_diff("g64-retool-smoke-04", "g64-retool-25s-01")
+        }
+        self.assertEqual(
+            changed,
+            {
+                "experiment_name",
+                "TENSORBOARD_DIR",
+                "default_local_dir",
+                "rollout_audit_dir",
+                "rollout_data_dir",
+                "test_freq",
+                "total_training_steps",
+                "validation_data_dir",
+            },
+        )
 
     def test_recompute_script_uses_runtime_scorer(self):
-        script = self.EV_DIR / "recompute_g64_smoke_metrics.py"
+        script = self.LOGS_DIR / "recompute_g64_metrics.py"
         self.assertNotIn("def compute_expected_shaped_score", script.read_text(encoding="utf-8"))
-        res = subprocess.run([sys.executable, str(script)], capture_output=True, text=True, cwd=str(REPO_ROOT))
-        self.assertEqual(res.returncode, 0, res.stderr[-2000:])
-        summary = json.loads(res.stdout)
-        self.assertIn("retool_tpu.py::compute_score", summary["validation_scorer"]["function"])
-        for step_key in ("validation_step_0", "validation_step_5"):
-            for ds in ("aime_2024", "aime_2025"):
-                self.assertEqual(summary[step_key][ds]["rescored_samples_matching_logged_pred_acc_score"], "900 / 900")
-        self.assertEqual(summary["training_rollouts"]["per_sample_rescoring"].split(" ")[0], "not")
+        for run, final in (("g64-retool-smoke-04", 5), ("g64-retool-25s-01", 25)):
+            res = subprocess.run(
+                [sys.executable, str(script), "--run", run], capture_output=True, text=True, cwd=str(REPO_ROOT)
+            )
+            self.assertEqual(res.returncode, 0, res.stderr[-2000:])
+            summary = json.loads(res.stdout)
+            self.assertEqual(summary["env_verification"]["num_nodes_verified"], 16)
+            self.assertIn("retool_tpu.py::compute_score", summary["validation_scorer"]["function"])
+            for step_key in ("validation_step_0", f"validation_step_{final}"):
+                for ds in ("aime_2024", "aime_2025"):
+                    self.assertEqual(
+                        summary[step_key][ds]["rescored_samples_matching_logged_pred_acc_score"], "900 / 900"
+                    )
+            self.assertEqual(summary["training_rollouts"]["per_sample_rescoring"].split(" ")[0], "not")
+
+    def test_mask_audit_flags_tool_response_in_loss_tokens(self):
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("build_ev", self.LOGS_DIR / "build_g64_run_evidence.py")
+        build_ev = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(build_ev)
+
+        def session(mask, segments):
+            return {
+                "response_ids": list(range(len(mask))),
+                "response_mask": mask,
+                "mask_length_matches": True,
+                "missing_fields": [],
+                "error": None,
+                "segments": segments,
+            }
+
+        good = session(
+            [1, 1, 0, 0, 1],
+            [
+                {"mask": 1, "start": 0, "end": 2, "text": "think <tool_call>run</tool_call>"},
+                {"mask": 0, "start": 2, "end": 4, "text": "<tool_response>4</tool_response>"},
+                {"mask": 1, "start": 4, "end": 5, "text": "\\boxed{4}"},
+            ],
+        )
+        leaked = session([1, 1], [{"mask": 1, "start": 0, "end": 2, "text": "<tool_response>4</tool_response>"}])
+        inconsistent = session([1, 0], [{"mask": 1, "start": 0, "end": 2, "text": "answer"}])
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "1.jsonl"
+            path.write_text("\n".join(json.dumps(s) for s in (good, leaked, inconsistent)) + "\n", encoding="utf-8")
+            res = build_ev.audit_sessions(path)
+        self.assertEqual(res["audit_sessions"], 3)
+        self.assertEqual(res["audit_mask_violations"], 2)
+        self.assertEqual(res["audit_tool_call_segments"], 1)
+        self.assertEqual(res["audit_tool_response_segments"], 1)
 
 
 class TestV1ValidateDumpNumTurns(unittest.TestCase):
@@ -951,17 +1019,10 @@ if nodes:
         self.assertIn("- bad-node-2", res.stdout)
 
     def test_recompute_g64_smoke_metrics_script(self):
-        recompute_script = (
-            REPO_ROOT
-            / "examples"
-            / "tpu"
-            / "retool"
-            / "gb200"
-            / "logs"
-            / "g64-retool-smoke-04"
-            / "recompute_g64_smoke_metrics.py"
+        recompute_script = REPO_ROOT / "examples" / "tpu" / "retool" / "gb200" / "logs" / "recompute_g64_metrics.py"
+        res = subprocess.run(
+            [sys.executable, str(recompute_script), "--run", "g64-retool-smoke-04"], capture_output=True, text=True
         )
-        res = subprocess.run([sys.executable, str(recompute_script)], capture_output=True, text=True)
         self.assertEqual(res.returncode, 0, res.stderr)
         payload = json.loads(res.stdout)
         self.assertEqual(payload["run_name"], "g64-retool-smoke-04")

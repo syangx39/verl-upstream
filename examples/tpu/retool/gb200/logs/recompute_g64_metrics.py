@@ -12,11 +12,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Recompute Stage G64-D (64-GPU GB200, ``g64-retool-smoke-04``) validation metrics from the archived samples.
+"""Recompute Stage G64-D (64-GPU GB200) validation metrics of a run from its archived samples.
+
+Usage: ``python3 recompute_g64_metrics.py --run g64-retool-25s-01`` (or ``--run g64-retool-smoke-04``).
 
 Scope (what this script does and does not establish):
 
-* Validation (Step 0 and Step 5, 1,800 samples each): every sample is rescored by the runtime scorer
+* Validation (Step 0 and the final step, 1,800 samples each): every sample is rescored by the runtime scorer
   ``examples/tpu/retool/retool_tpu.py::compute_score``. Its source is taken verbatim from that file (via
   ``ast``) and executed with ``verl/utils/reward_score/math_dapo.py``, so no scoring formula is re-implemented
   here; this avoids importing the module's training-time dependencies (datasets, sandbox tool, RLHFDataset).
@@ -24,8 +26,8 @@ Scope (what this script does and does not establish):
   scoring the full output only because ``math_dapo.compute_score`` itself truncates ``solution_str`` to its
   last 300 characters; the script checks ``len(output_tail_300) == min(300, output_chars)`` but cannot check
   the tail content against the full text, which is not archived (only ``output_sha256`` is).
-* Training (Steps 1-5, 5,120 trajectories): only the aggregated ``rollout_and_audit_summary.json`` is read.
-  The 5,120 training trajectories were NOT rescored per sample from full outputs here, and the V1 training
+* Training (Steps 1..N, 1,024 trajectories per step): only the aggregated ``rollout_and_audit_summary.json`` is read.
+  The training trajectories were NOT rescored per sample from full outputs here, and the V1 training
   rollout dump has no ``num_turns`` field, so exact per-sample shaped-score recomputation is not possible
   from that dump alone.
 * Checkpoint: checks that all 16 nodes report the same staged composite SHA-256 equal to the pinned value.
@@ -33,6 +35,7 @@ Scope (what this script does and does not establish):
   ``ref_composite_sha256`` field echoes the pinned value rather than an independent hash of the reference.
 """
 
+import argparse
 import ast
 import importlib.util
 import json
@@ -42,7 +45,8 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[6]
+LOGS_DIR = Path(__file__).resolve().parent
+REPO_ROOT = LOGS_DIR.parents[4]
 RETOOL_TPU_PATH = REPO_ROOT / "examples" / "tpu" / "retool" / "retool_tpu.py"
 MATH_DAPO_PATH = REPO_ROOT / "verl" / "utils" / "reward_score" / "math_dapo.py"
 
@@ -180,28 +184,42 @@ def verify_env_artifacts(env_dir: Path) -> dict:
     }
 
 
+def load_runs() -> dict:
+    spec = importlib.util.spec_from_file_location("gen_g64_report_tables", LOGS_DIR / "gen_g64_report_tables.py")
+    assert spec is not None and spec.loader is not None
+    gen = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gen)
+    return gen.RUNS
+
+
 def main() -> None:
-    ev_dir = Path(__file__).resolve().parent
-    metrics = json.loads((ev_dir / "g64_smoke_04_metrics.json").read_text(encoding="utf-8"))
+    runs = load_runs()
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--run", choices=sorted(runs), default="g64-retool-smoke-04")
+    args = parser.parse_args()
+    final = runs[args.run]["final_step"]
+    ev_dir = LOGS_DIR / args.run
+    metrics = json.loads((ev_dir / runs[args.run]["metrics"]).read_text(encoding="utf-8"))
     rollout_sum = json.loads((ev_dir / "rollout_and_audit_summary.json").read_text(encoding="utf-8"))
     env_info = verify_env_artifacts(ev_dir / "env")
     compute_score = load_runtime_compute_score()
 
     val0 = verify_validation_samples(ev_dir / "validation_step0_samples.jsonl", 0, metrics["0"], compute_score)
-    val5 = verify_validation_samples(ev_dir / "validation_step5_samples.jsonl", 5, metrics["5"], compute_score)
-    window = [metrics[str(i)] for i in range(2, 6)]
+    valn = verify_validation_samples(
+        ev_dir / f"validation_step{final}_samples.jsonl", final, metrics[str(final)], compute_score
+    )
+    window = [metrics[str(i)] for i in range(2, final + 1)]
 
     summary = {
-        "run_name": "g64-retool-smoke-04",
-        "wandb_run_url": "https://wandb.ai/google-trellis/verl-torchtpu-grpo-test/runs/hv1k9rwo",
+        "run_name": args.run,
         "env_verification": env_info,
         "validation_scorer": {
             "function": "examples/tpu/retool/retool_tpu.py::compute_score (verbatim source, executed via ast)",
             "input": "archived output_tail_300 (math_dapo truncates to the last 300 chars) + dumped num_turns",
             "limitation": "full outputs are not archived; tail content is not checked against the full text",
         },
-        "timing_steps_2_to_5": {
-            "note": "4 steps only; not a validated 25-step steady state",
+        f"timing_steps_2_to_{final}": {
+            "note": f"timing_s/step only (post-step dump/logging work is outside it); {len(window)} steps",
             "step_1_s": round(metrics["1"]["timing_s/step"], 2),
             "mean_s": round(statistics.mean(s["timing_s/step"] for s in window), 2),
             "min_s": round(min(s["timing_s/step"] for s in window), 2),
@@ -211,7 +229,7 @@ def main() -> None:
             "update_actor_s_mean": round(statistics.mean(s["timing_s/update_actor"] for s in window), 2),
         },
         "validation_step_0": val0,
-        "validation_step_5": val5,
+        f"validation_step_{final}": valn,
         "training_rollouts": {
             "source": "rollout_and_audit_summary.json (aggregates only)",
             "per_sample_rescoring": "not performed (no num_turns in the V1 training rollout dump)",

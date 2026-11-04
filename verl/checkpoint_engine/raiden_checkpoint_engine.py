@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -147,6 +148,7 @@ def validate_and_sanitize_tensors(
         device = torch.device("tpu")
 
     sanitized = []
+    rebased = []
     for item in named_tensors:
         name, p = item[0], item[1]
         if p is None:
@@ -173,15 +175,106 @@ def validate_and_sanitize_tensors(
 
         # tpu-sync raw transfer binds the tensor's whole device storage, so a view onto part of a larger
         # buffer (non-zero offset or a smaller extent) is rejected; give such tensors their own buffer.
+        # [tpu-sync raw-transfer] Newer tpu-sync also requires the base buffer's leading dim to equal the tensor's (or a
+        # rank-1 base under a rank-2 view).
         try:
+            base = getattr(t, "_base", None)
+            base_major_differs = (
+                base is not None
+                and base.dim() > 0
+                and int(base.shape[0]) != int(t.shape[0])
+                and not (base.dim() == 1 and t.dim() == 2)
+            )
             if t.storage_offset() != 0 or t.untyped_storage().nbytes() != t.numel() * t.element_size():
+                t = t.clone()
+            elif base_major_differs:
+                rebased.append(f"{name}{tuple(t.shape)}<-{tuple(base.shape)}")
                 t = t.clone()
         except Exception:
             pass
 
         sanitized.append((name, t))
 
+    if rebased:
+        logger.warning(
+            f"[RAIDEN] {len(rebased)} tensors were views whose leading dim differs from their base allocation; "
+            f"bound fresh buffers instead (first 6: {rebased[:6]})"
+        )
     return sanitized
+
+
+# Raw-transfer probe. tpu-sync's raw transfer requires a tensor's leading dim to equal its base storage buffer's
+# (tpu_sync/frameworks/torch/torch_tpu_utils.cc, UnpackTorchTensor). Since torch_tpu 449c975e1 (2026-09-24; in
+# torch-tpu 0.1.2.dev20261006 / the verl-tpu:v20261006-tsync1006 image) a full-buffer TPU->TPU copy (clone, copy_)
+# shares the source's base buffer instead of allocating one with the destination's shape, so the folded MoE expert
+# stacks ([E_local * F, D] views of an [E_local, F, D] base) are rejected even after a clone; only a host round trip
+# allocates a buffer with the folded shape. Probe once per tensor class and rebind what tpu-sync rejects.
+_TENSOR_CLASS_RE = re.compile(r"\.\d+\.")
+
+
+def _raw_transfer_error(t: torch.Tensor, bind_ip: str) -> Optional[str]:
+    """None if tpu-sync accepts ``t`` for raw transfer, else its error (probed with a throwaway synchronizer)."""
+    try:
+        ws = create_torch_weight_synchronizer([[t]], local_port=0, parallelism=1, listener_port=0, bind_ip=bind_ip)
+    except ValueError as e:
+        return str(e)
+    del ws
+    return None
+
+
+def _rank1_backed(t: torch.Tensor) -> torch.Tensor:
+    """Copy of ``t`` in a fresh rank-1 buffer, viewed as rank 2 ``[t.shape[0], -1]``."""
+    flat = torch.empty(t.numel(), dtype=t.dtype, device=t.device)
+    flat.copy_(t.reshape(-1))
+    return flat.view(t.shape[0], -1)
+
+
+def _host_roundtrip(t: torch.Tensor) -> torch.Tensor:
+    """``t`` re-uploaded from host memory: a device buffer allocated with exactly ``t``'s logical shape."""
+    return t.detach().to("cpu").to(t.device)
+
+
+_REBIND_METHODS = {"clone": lambda t: t.clone(), "rank1_view": _rank1_backed, "host_roundtrip": _host_roundtrip}
+
+
+def rebind_for_raw_transfer(t: torch.Tensor, method: str) -> torch.Tensor:
+    return _REBIND_METHODS[method](t)
+
+
+def adapt_for_raw_transfer(
+    named: list[tuple[str, torch.Tensor]], bind_ip: str, who: str
+) -> tuple[list[tuple[str, torch.Tensor]], dict, list[str]]:
+    """Rebind the tensors tpu-sync's raw transfer rejects; returns (new list, {name: method}, report)."""
+    first = {}
+    for n, t in named:
+        first.setdefault((_TENSOR_CLASS_RE.sub(".N.", n), tuple(t.shape), t.dtype), t)
+    chosen, report = {}, []
+    for key, t in first.items():
+        err = _raw_transfer_error(t, bind_ip)
+        if err is None:
+            continue
+        tried = []
+        chosen[key] = None
+        for method in _REBIND_METHODS:
+            err2 = _raw_transfer_error(rebind_for_raw_transfer(t, method), bind_ip)
+            tried.append(f"{method} {'accepted' if err2 is None else 'rejected'}")
+            if err2 is None:
+                chosen[key] = method
+                break
+        report.append(
+            f"{key[0]}{list(key[1])}/{str(key[2]).replace('torch.', '')}: rejected ({err[:40]}...); {', '.join(tried)}"
+        )
+    out, methods = [], {}
+    for n, t in named:
+        key = (_TENSOR_CLASS_RE.sub(".N.", n), tuple(t.shape), t.dtype)
+        if key not in chosen:
+            out.append((n, t))
+        elif chosen[key] is not None:
+            out.append((n, rebind_for_raw_transfer(t, chosen[key])))
+            methods[n] = chosen[key]
+        else:
+            raise ValueError(f"[RAIDEN] {who}: tpu-sync rejects {n} {tuple(t.shape)} in every layout tried: {report}")
+    return out, methods, report
 
 
 def _dim0_shard_info(spec) -> Optional[tuple[tuple, int, int]]:
@@ -275,8 +368,10 @@ def export_local_shards(
             if wire_shape != full_shape:
                 # whole experts folded into rows: still a contiguous dim-0 block of the 2-D wire tensor.
                 # tpu-sync binds each tensor's device storage as-is and rejects a view whose leading (block)
-                # dim differs from its storage's, so the folded stack gets its own 2-D buffer (one extra copy
-                # of this rank's expert shards, freed with the synchronizer after the sync).
+                # dim differs from its storage's. Before torch_tpu 449c975e1 (2026-09-24) this clone gave the
+                # folded stack its own 2-D buffer; since then a full-buffer TPU->TPU copy shares the source's
+                # [E_local, F, D] base buffer, so tpu-sync still rejects it and adapt_for_raw_transfer (called
+                # in send_weights) rebinds it.
                 local_shape = (int(local_shape[0]) * full_shape[1], full_shape[2])
                 named.append((wire_name, local.reshape(local_shape).clone()))
             else:
@@ -325,6 +420,29 @@ def merge_rank_stats(rank_stats: dict) -> dict:
     }
 
 
+def compute_expected_checked_params(vllm_model: Any, received_lm_head: bool) -> int:
+    """Return the expected number of ``RaidenParityCheck.check_exact`` calls on ``vllm_model``.
+
+    When ``received_lm_head`` is False and ``vllm_model`` has ``lm_head.weight``, ``install_raiden_weights``
+    populates ``lm_head.weight`` by copying from ``embed_tokens.weight`` after the staging install loop rather
+    than checking it via ``check_exact``. If ``lm_head.weight`` and ``embed_tokens.weight`` share the same
+    ``nn.Parameter`` instance, ``vllm_model.named_parameters()`` already deduplicates them; only when
+    ``lm_head.weight`` is a distinct parameter object from ``embed_tokens.weight`` should its parameter ID be
+    excluded from the expected ``check_exact`` count.
+    """
+    param_ids = {id(p) for _, p in vllm_model.named_parameters()}
+    if not received_lm_head and hasattr(vllm_model, "lm_head") and hasattr(vllm_model.lm_head, "weight"):
+        lm_head_w = vllm_model.lm_head.weight
+        embed_w = None
+        if hasattr(vllm_model, "model") and hasattr(vllm_model.model, "embed_tokens"):
+            embed_w = getattr(vllm_model.model.embed_tokens, "weight", None)
+        elif hasattr(vllm_model, "embed_tokens"):
+            embed_w = getattr(vllm_model.embed_tokens, "weight", None)
+        if embed_w is None or id(lm_head_w) != id(embed_w):
+            param_ids.discard(id(lm_head_w))
+    return len(param_ids)
+
+
 class RaidenParityError(RuntimeError):
     """Raised when an enabled Raiden parity check finds wrong weights or cannot collect what it needs to verify."""
 
@@ -338,10 +456,11 @@ class RaidenParityCheck:
       orchestrator compares them with the samplers' stats after the install (``verify_norms``). Cheap, but blind to
       misplaced bytes: a reordered or mis-sliced tensor keeps its norms.
     * ``"exact"``: on the step-0 sync of a fresh run, when the trainer weights equal the checkpoint vLLM loaded,
-      every sampler worker compares each received tensor bit for bit with the vLLM parameter it is about to
-      overwrite (``check_exact``) and returns the result (``exact_result``); the orchestrator logs one summary for
-      all ranks (``report_exact``). Catches any wrong byte (shard slice, tiling, fusion/transpose). Use it after
-      changing sharding or upgrading tpu-sync / torch-tpu. Cost: ~0.4 s once per rank (Qwen3-32B, TP32).
+      every sampler worker compares each received tensor elementwise in float32 (``max|ref - new| == 0.0``) with the
+      vLLM parameter it is about to overwrite (``check_exact``) and returns the result (``exact_result``); the
+      orchestrator logs one summary for all ranks (``report_exact``). Catches any wrong element value (shard slice,
+      tiling, fusion/transpose). Use it after changing sharding or upgrading tpu-sync / torch-tpu. Cost: ~0.4 s once
+      per rank (Qwen3-32B, TP32).
 
     ``"all"`` enables both; ``False`` / ``"off"`` (default) neither.
 
@@ -353,8 +472,21 @@ class RaidenParityCheck:
     MODES = ("off", "norm", "exact", "all")
     MAX_DETAIL_LINES = 60
 
-    def __init__(self, mode: Any = "off") -> None:
+    def __init__(
+        self,
+        mode: Any = "off",
+        expected_checked_per_rank: Optional[int] = None,
+        dump_dir: Optional[str] = None,
+    ) -> None:
         self.mode = self.parse_mode(mode)
+        if expected_checked_per_rank is None:
+            env_expected = os.environ.get("RAIDEN_PARITY_EXPECTED_CHECKED_PER_RANK", "").strip()
+            if env_expected:
+                expected_checked_per_rank = int(env_expected)
+        self.expected_checked_per_rank = (
+            int(expected_checked_per_rank) if expected_checked_per_rank is not None else None
+        )
+        self.dump_dir = dump_dir
         self.checked = 0
         self.mismatched: list[str] = []
 
@@ -372,8 +504,16 @@ class RaidenParityCheck:
 
     @classmethod
     def from_config(cls, engine_kwargs) -> "RaidenParityCheck":
-        """Read ``engine_kwargs.raiden.verify_parity``, the same key the trainer's RaidenCheckpointEngine receives."""
-        return cls((engine_kwargs.get("raiden") or {}).get("verify_parity", False))
+        """Read ``engine_kwargs.raiden.*`` parity settings, with env-var fallbacks."""
+        raiden_cfg = ((engine_kwargs or {}).get("raiden") or {}) if isinstance(engine_kwargs, dict) else {}
+        raw_expected = raiden_cfg.get("expected_checked_per_rank")
+        expected_checked = int(raw_expected) if raw_expected is not None and str(raw_expected).strip() != "" else None
+        dump_dir = raiden_cfg.get("parity_dump_dir") or None
+        return cls(
+            raiden_cfg.get("verify_parity", False),
+            expected_checked_per_rank=expected_checked,
+            dump_dir=dump_dir,
+        )
 
     @property
     def norm(self) -> bool:
@@ -394,34 +534,163 @@ class RaidenParityCheck:
         return {"exact_parity": True} if self.exact and not global_steps else {}
 
     @classmethod
-    def report_exact(cls, global_steps: Optional[int], install_results: list) -> bool:
-        """Log one summary of the per-rank ``exact_result`` dicts that every sampler worker returns under
-        ``install_raiden_weights(...)["exact_parity"]``.
+    def _resolve_dump_dir(cls, dump_dir: Optional[str] = None) -> str:
+        if dump_dir and str(dump_dir).strip():
+            return str(dump_dir).strip()
+        env_dump = os.environ.get("RAIDEN_PARITY_DUMP_DIR", "").strip()
+        if env_dump:
+            return env_dump
+        for run_env in ("VERL_NAP_RUN_DIR", "RUN_DIR"):
+            run_dir = os.environ.get(run_env, "").strip()
+            if run_dir:
+                return os.path.join(run_dir, "env")
+        return "/tmp"
 
-        Returns True when every received tensor matches bit for bit. Raises ``RaidenParityError`` on any mismatched
-        or unresolved tensor, or when no sampler returned a result.
+    @classmethod
+    def report_exact(
+        cls,
+        global_steps: Optional[int],
+        install_results: list,
+        expected_ranks: Optional[int] = None,
+        expected_checked_per_rank: Optional[int] = None,
+        dump_dir: Optional[str] = None,
+        expected_workers_per_replica: Optional[list[int]] = None,
+    ) -> bool:
+        """Log one summary of the per-rank ``exact_result`` dicts that every sampler worker returns under
+        ``install_raiden_weights(...)["exact_parity"]``, archive full per-rank results to JSON, and verify
+        full rank/tensor coverage.
+
+        Returns True when every expected sampler rank (0..W_r-1 per replica) returned a unique result with
+        uniform expected tensor coverage, the JSON report was archived, and every received tensor matches
+        elementwise in float32 (``max|ref - new| == 0.0``). Raises ``RaidenParityError`` on any mismatched,
+        unresolved, duplicate/out-of-range rank, incomplete tensor coverage, or JSON archive write failure.
         """
-        results = [
-            w["exact_parity"]
-            for res in install_results
-            for w in (res if isinstance(res, list | tuple) else [res])
-            if isinstance(w, dict) and isinstance(w.get("exact_parity"), dict)
-        ]
+        if expected_checked_per_rank is None:
+            env_expected = os.environ.get("RAIDEN_PARITY_EXPECTED_CHECKED_PER_RANK", "").strip()
+            if env_expected:
+                expected_checked_per_rank = int(env_expected)
+
+        results = []
+        for replica_idx, res in enumerate(install_results):
+            workers = res if isinstance(res, list | tuple) else [res]
+            for w in workers:
+                if isinstance(w, dict) and isinstance(w.get("exact_parity"), dict):
+                    entry = dict(w["exact_parity"])
+                    entry.setdefault("replica", replica_idx)
+                    results.append(entry)
         step = global_steps or 0
         if not results:
             raise RaidenParityError(f"[RAIDEN PARITY EXACT | Step {step}] no sampler returned a result")
-        results.sort(key=lambda r: r["rank"])
+        results.sort(key=lambda r: (int(r.get("replica", 0)), int(r["rank"])))
+        replica_rank_pairs = [(int(r.get("replica", 0)), int(r["rank"])) for r in results]
+        distinct_pairs = sorted(set(replica_rank_pairs))
+        distinct_ranks = sorted({int(r["rank"]) for r in results})
         num_mismatched = sum(r["num_mismatched"] for r in results)
         num_unresolved = sum(len(r["unresolved"]) for r in results)
-        checked_per_rank = sorted({r["checked"] for r in results})
+        checked_per_rank = sorted({int(r["checked"]) for r in results})
+
+        coverage_errors = []
+        if len(distinct_pairs) != len(results):
+            coverage_errors.append(
+                f"duplicate sampler (replica, rank) IDs in exact_parity results: {replica_rank_pairs}"
+            )
+        if expected_ranks is not None and len(distinct_pairs) != expected_ranks:
+            coverage_errors.append(
+                f"expected {expected_ranks} sampler worker results, got {len(distinct_pairs)} ({replica_rank_pairs})"
+            )
+
+        # Verify that each replica's returned rank IDs form the exact 0-indexed set 0..W_r-1.
+        if expected_workers_per_replica is not None:
+            if len(install_results) != len(expected_workers_per_replica):
+                coverage_errors.append(
+                    f"expected {len(expected_workers_per_replica)} rollout replicas, got {len(install_results)}"
+                )
+            for replica_idx, expected_w in enumerate(expected_workers_per_replica):
+                expected_set = list(range(int(expected_w)))
+                actual_set = sorted(int(r["rank"]) for r in results if int(r.get("replica", 0)) == replica_idx)
+                if actual_set != expected_set:
+                    coverage_errors.append(
+                        f"replica {replica_idx} expected rank IDs 0..{int(expected_w) - 1}, got {actual_set}"
+                    )
+        else:
+            num_replicas = max(len(install_results), 1)
+            for replica_idx in sorted({int(r.get("replica", 0)) for r in results}):
+                actual_set = sorted(int(r["rank"]) for r in results if int(r.get("replica", 0)) == replica_idx)
+                if expected_ranks is not None and expected_ranks % num_replicas == 0:
+                    expected_w = expected_ranks // num_replicas
+                else:
+                    expected_w = len(actual_set)
+                expected_set = list(range(int(expected_w)))
+                if actual_set != expected_set:
+                    coverage_errors.append(
+                        f"replica {replica_idx} expected rank IDs 0..{int(expected_w) - 1}, got {actual_set}"
+                    )
+
+        if len(checked_per_rank) != 1 or checked_per_rank[0] <= 0:
+            coverage_errors.append(f"non-uniform or zero tensors checked per rank: {checked_per_rank}")
+        if expected_checked_per_rank is not None and checked_per_rank != [expected_checked_per_rank]:
+            coverage_errors.append(
+                f"expected [{expected_checked_per_rank}] tensors checked per rank, got {checked_per_rank}"
+            )
+        for r in results:
+            worker_expected = r.get("expected_checked")
+            if worker_expected is not None and int(r["checked"]) != int(worker_expected):
+                coverage_errors.append(
+                    f"replica {int(r.get('replica', 0))} rank {int(r['rank'])} checked {int(r['checked'])} tensors, "
+                    f"expected {int(worker_expected)} installed model parameters"
+                )
+
+        target_dir = cls._resolve_dump_dir(dump_dir)
+        archive_path = os.path.join(target_dir, f"raiden_exact_parity_step_{step}.json")
+        archived_note = ""
+        try:
+            os.makedirs(target_dir, exist_ok=True)
+            archive_payload = {
+                "step": step,
+                "num_results": len(results),
+                "expected_ranks": expected_ranks,
+                "expected_workers_per_replica": expected_workers_per_replica,
+                "expected_checked_per_rank": expected_checked_per_rank,
+                "replica_rank_pairs": replica_rank_pairs,
+                "distinct_ranks": distinct_ranks,
+                "checked_per_rank": checked_per_rank,
+                "num_mismatched": num_mismatched,
+                "num_unresolved": num_unresolved,
+                "coverage_errors": list(coverage_errors),
+                "ranks": [
+                    {
+                        "replica": int(r.get("replica", 0)),
+                        "rank": int(r["rank"]),
+                        "checked": int(r["checked"]),
+                        "expected_checked": r.get("expected_checked"),
+                        "num_mismatched": int(r["num_mismatched"]),
+                        "unresolved": list(r.get("unresolved", [])),
+                        "all_mismatched": list(r.get("all_mismatched", r.get("mismatched", []))),
+                    }
+                    for r in results
+                ],
+            }
+            with open(archive_path, "w", encoding="utf-8") as f:
+                json.dump(archive_payload, f, indent=2)
+            archived_note = f" (full per-rank report archived to {archive_path})"
+        except Exception as exc:
+            archive_err = f"failed to archive exact_parity JSON report to {archive_path}: {exc}"
+            archived_note = f" (UNARCHIVED: {archive_err})"
+            logger.error(f"[RAIDEN PARITY EXACT | Step {step}] {archive_err}")
+            coverage_errors.append(archive_err)
+
         summary = (
-            f"[RAIDEN PARITY EXACT | Step {step}] {len(results)} sampler ranks, {checked_per_rank} tensors checked "
-            f"per rank, {num_mismatched} mismatched, {num_unresolved} unresolved"
+            f"[RAIDEN PARITY EXACT | Step {step}] {len(results)} sampler ranks "
+            f"(distinct_workers={len(distinct_pairs)}, ranks={distinct_ranks}), {checked_per_rank} tensors "
+            f"checked per rank, {num_mismatched} mismatched, {num_unresolved} unresolved{archived_note}"
         )
-        if num_mismatched == 0 and num_unresolved == 0:
-            logger.info(f"{summary}: every received tensor matches the checkpoint bit for bit")
+        if num_mismatched == 0 and num_unresolved == 0 and not coverage_errors:
+            logger.info(
+                f"{summary}: every received tensor matches the checkpoint elementwise in float32 (max|diff| == 0.0)"
+            )
             return True
-        details = [f"  * rank {r['rank']}: {line}" for r in results for line in r["mismatched"]]
+        details = [f"  * coverage: {err}" for err in coverage_errors]
+        details += [f"  * rank {r['rank']}: {line}" for r in results for line in r["mismatched"]]
         details += [f"  * rank {r['rank']}: unresolved {r['unresolved'][:5]}" for r in results if r["unresolved"]]
         detail_text = "\n".join(details[: cls.MAX_DETAIL_LINES])
         raise RaidenParityError(f"{summary}\n{detail_text}")
@@ -429,8 +698,20 @@ class RaidenParityCheck:
     # ---- exact check: sampler worker side ----
 
     @torch.no_grad()
-    def check_exact(self, name: str, target: torch.Tensor, received: torch.Tensor) -> None:
-        """Compare ``received`` with ``target``; call before ``target`` is overwritten."""
+    def check_exact(
+        self,
+        name: str,
+        target: torch.Tensor,
+        received: torch.Tensor,
+        extra_info: Optional[str] = None,
+        staging_tensors: Optional[dict[str, torch.Tensor]] = None,
+    ) -> None:
+        """Compare ``received`` with ``target``; call before ``target`` is overwritten.
+
+        ``staging_tensors`` (optional mapping of label -> post-H2D staging tensor) is reduced ONLY when a
+        mismatch (``diff != 0.0``) is detected and ``VERL_RAIDEN_DIAG_STAGING != "0"``, avoiding extra TPU
+        reductions and ``.item()`` host syncs on matching tensors.
+        """
         try:
             ref, new = target.detach().float(), received.detach().float()
             if ref.shape != new.shape:
@@ -439,21 +720,54 @@ class RaidenParityCheck:
             self.checked += 1
             diff = (ref - new).abs().max().item()
             if diff != 0.0:
+                ref_zero_frac = (ref == 0).float().mean().item()
+                recv_zero_frac = (new == 0).float().mean().item()
+                half_note = ""
+                if name.endswith(".w13_weight") and new.ndim == 3 and new.shape[-1] % 2 == 0:
+                    half = new.shape[-1] // 2
+                    h0_absmean = new[..., :half].abs().mean().item()
+                    h0_zero = (new[..., :half] == 0).float().mean().item()
+                    h1_absmean = new[..., half:].abs().mean().item()
+                    h1_zero = (new[..., half:] == 0).float().mean().item()
+                    half_note = (
+                        f" w13_h0(gate)_absmean={h0_absmean:.4g}(zero={h0_zero:.4g})"
+                        f" w13_h1(up)_absmean={h1_absmean:.4g}(zero={h1_zero:.4g})"
+                    )
+                extra_parts = []
+                if staging_tensors and os.environ.get("VERL_RAIDEN_DIAG_STAGING", "1") != "0":
+                    for st_label, st_tensor in staging_tensors.items():
+                        st_f = st_tensor.detach().float()
+                        st_absmean = st_f.abs().mean().item()
+                        st_zero = (st_f == 0).float().mean().item()
+                        extra_parts.append(f"staging_{st_label}_absmean={st_absmean:.4g}(zero={st_zero:.4g})")
+                if extra_info:
+                    extra_parts.append(extra_info)
+                extra_suffix = (" " + " ".join(extra_parts)) if extra_parts else ""
                 self.mismatched.append(
                     f"{name}: max|diff|={diff:.4g} ref_absmean={ref.abs().mean().item():.4g} "
-                    f"recv_absmean={new.abs().mean().item():.4g}"
+                    f"recv_absmean={new.abs().mean().item():.4g} ref_zero_frac={ref_zero_frac:.4g} "
+                    f"recv_zero_frac={recv_zero_frac:.4g}{half_note}{extra_suffix}"
                 )
         except Exception as e:  # never break the sync because of the check
             self.mismatched.append(f"{name}: parity check failed: {e}")
 
-    def exact_result(self, rank: int, unresolved: list[str]) -> dict:
-        return {
+    def exact_result(
+        self,
+        rank: int,
+        unresolved: list[str],
+        expected_checked: Optional[int] = None,
+    ) -> dict:
+        res = {
             "rank": rank,
             "checked": self.checked,
             "num_mismatched": len(self.mismatched),
             "mismatched": self.mismatched[: self.MAX_DETAIL_LINES],
+            "all_mismatched": list(self.mismatched),
             "unresolved": list(unresolved),
         }
+        if expected_checked is not None:
+            res["expected_checked"] = int(expected_checked)
+        return res
 
     # ---- norm check: orchestrator side ----
 
@@ -742,7 +1056,8 @@ class RaidenCheckpointEngine(CheckpointEngine):
         )
 
         def _full_shape(name: str, p: torch.Tensor) -> list[int]:
-            shape = list(p.shape)
+            # [tpu-sync raw-transfer] tensors rebound by adapt_for_raw_transfer keep their logical shape.
+            shape = list(getattr(self, "_logical_shapes", {}).get(name, p.shape))
             if name in self._shard_info:
                 shape[0] *= self._shard_info[name][0]
             return shape
@@ -884,6 +1199,25 @@ class RaidenCheckpointEngine(CheckpointEngine):
 
         sorted_weights = sorted(unfused_weights.items(), key=lambda x: x[0])
         valid_weights = validate_and_sanitize_tensors(sorted_weights, device=torch.device("tpu"))
+
+        # [tpu-sync raw-transfer] probe once which tensor classes tpu-sync accepts for raw transfer and rebind the rest.
+        if not getattr(self, "_raw_probe_done", False):
+            self._raw_probe_done = True
+            logical = {n: tuple(t.shape) for n, t in valid_weights}
+            valid_weights, self._rebind_methods, report = adapt_for_raw_transfer(
+                valid_weights, ray.util.get_node_ip_address().strip("[]"), f"Trainer Rank {self.rank}"
+            )
+            self._logical_shapes = {n: logical[n] for n in self._rebind_methods}
+            if report and self.rank == 0:
+                logger.warning(
+                    f"[RAIDEN] raw-transfer probe (trainer rank 0): rebound {len(self._rebind_methods)} tensors "
+                    f"({sorted(set(self._rebind_methods.values()))}); {'; '.join(report)}"
+                )
+        elif getattr(self, "_rebind_methods", None):
+            valid_weights = [
+                (n, rebind_for_raw_transfer(t, self._rebind_methods[n]) if n in self._rebind_methods else t)
+                for n, t in valid_weights
+            ]
 
         torch_tpu_sync.synchronize(wait=True)
 
@@ -1143,7 +1477,16 @@ async def update_raiden_weights(
     #    resumes generation on wrong weights. Off by default, so it adds nothing to the resume path.
     t_parity_start = time.perf_counter()
     if install_kwargs:
-        parity.report_exact(global_steps, install_results)
+        expected_workers_per_replica = [_replica_num_workers(r) for r in manager.replicas]
+        expected_sampler_ranks = sum(expected_workers_per_replica)
+        parity.report_exact(
+            global_steps,
+            install_results,
+            expected_ranks=expected_sampler_ranks or None,
+            expected_checked_per_rank=parity.expected_checked_per_rank,
+            dump_dir=parity.dump_dir,
+            expected_workers_per_replica=expected_workers_per_replica or None,
+        )
     if parity.norm:
         await parity.verify_norms(manager, global_steps)
     t_parity = time.perf_counter() - t_parity_start

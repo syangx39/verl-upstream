@@ -82,14 +82,40 @@ class RunCodeRequest(BaseModel):
     fetch_files: list[str] = Field(default_factory=list)
 
 
+def _infer_executable_owner_uid_gid(executable_path: Optional[str] = None) -> tuple[int, int]:
+    """Return (65534, 65534) unless an ancestor directory of sys.executable is 0750 owned by an unprivileged user."""
+    target = executable_path or sys.executable
+    candidates = [os.path.abspath(target)]
+    real_target = os.path.realpath(target)
+    if real_target not in candidates:
+        candidates.append(real_target)
+    for path in candidates:
+        curr = os.path.dirname(path)
+        visited: set[str] = set()
+        while curr and curr not in visited:
+            visited.add(curr)
+            try:
+                st = os.stat(curr)
+            except OSError:
+                break
+            if (st.st_mode & 0o001) == 0 and st.st_uid > 0 and st.st_gid > 0 and (st.st_mode & 0o110) != 0:
+                return (st.st_uid, st.st_gid)
+            parent = os.path.dirname(curr)
+            if parent == curr:
+                break
+            curr = parent
+    return (65534, 65534)
+
+
 def _resolve_drop_uid_gid() -> Optional[tuple[int, int]]:
     """Return unprivileged (uid, gid) to drop to when running as root, or raise if root execution is disallowed."""
     if os.geteuid() != 0:
         return None
     if os.environ.get("SANDBOX_ALLOW_ROOT_EXEC", "0") == "1":
         return None
-    uid = int(os.environ.get("SANDBOX_UNPRIVILEGED_UID", "65534"))
-    gid = int(os.environ.get("SANDBOX_UNPRIVILEGED_GID", "65534"))
+    default_uid, default_gid = _infer_executable_owner_uid_gid()
+    uid = int(os.environ.get("SANDBOX_UNPRIVILEGED_UID", str(default_uid)))
+    gid = int(os.environ.get("SANDBOX_UNPRIVILEGED_GID", str(default_gid)))
     if uid <= 0 or gid <= 0:
         raise PermissionError(f"Refusing to drop to privileged uid={uid} gid={gid}")
     return (uid, gid)
@@ -180,18 +206,19 @@ async def run_code(req: RunCodeRequest) -> dict[str, Any]:
                 env["PYTHONPATH"] = os.environ["PYTHONPATH"]
 
             start_t = time.monotonic()
-            proc = await asyncio.create_subprocess_exec(
-                sys.executable,
-                "-u",
-                script_path,
-                stdin=asyncio.subprocess.PIPE if stdin_bytes else asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=tmp_dir,
-                env=env,
-                preexec_fn=_make_preexec_fn(req.memory_limit_MB, drop_uid_gid),
-            )
+            proc = None
             try:
+                proc = await asyncio.create_subprocess_exec(
+                    sys.executable,
+                    "-u",
+                    script_path,
+                    stdin=asyncio.subprocess.PIPE if stdin_bytes else asyncio.subprocess.DEVNULL,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=tmp_dir,
+                    env=env,
+                    preexec_fn=_make_preexec_fn(req.memory_limit_MB, drop_uid_gid),
+                )
                 stdout_bytes, stderr_bytes = await asyncio.wait_for(
                     proc.communicate(input=stdin_bytes if stdin_bytes else None),
                     timeout=timeout,
@@ -214,11 +241,12 @@ async def run_code(req: RunCodeRequest) -> dict[str, Any]:
                 }
             except asyncio.TimeoutError:
                 elapsed = time.monotonic() - start_t
-                try:
-                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-                except OSError:
-                    proc.kill()
-                await proc.wait()
+                if proc is not None:
+                    try:
+                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    except OSError:
+                        proc.kill()
+                    await proc.wait()
                 return {
                     "status": "Failed",
                     "message": "TimeLimitExceeded",
@@ -233,10 +261,11 @@ async def run_code(req: RunCodeRequest) -> dict[str, Any]:
                 }
             except (RuntimeError, OSError) as exc:
                 elapsed = time.monotonic() - start_t
-                try:
-                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-                except OSError:
-                    pass
+                if proc is not None:
+                    try:
+                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    except OSError:
+                        pass
                 return {
                     "status": "Failed",
                     "message": "ExecutionError",
@@ -246,7 +275,7 @@ async def run_code(req: RunCodeRequest) -> dict[str, Any]:
                         "execution_time": elapsed,
                         "return_code": -1,
                         "stdout": "",
-                        "stderr": f"{type(exc).__name__}\n",
+                        "stderr": f"{type(exc).__name__}: {exc}\n",
                     },
                 }
 

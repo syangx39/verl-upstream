@@ -1,0 +1,49 @@
+{
+ "sources": {
+  "aime_2024": "1332803ea03085cce9222b6c0b295b4115507ab5984aee9d3e9cb3db3c2ee948",
+  "aime_2025": "4f4432a5252cf673ddd696a3dba24f75bfd662c0ef1d54b6e0f442c24119f8ed"
+ },
+ "training_rollout_audit": {
+  "audited_training_sessions": 200,
+  "incorrect_multi_turn_sessions": 143,
+  "logged_score_and_pred_match_math_dapo_strict_box_verify_false": 200,
+  "logged_score_matches_math_dapo_strict_box_verify_true": 167,
+  "sessions_where_retool_compute_score_would_differ": 147
+ },
+ "validation_step_0": {
+  "mean_at_30_if_strict_box_verify_true": {
+   "aime_2024": 0.2577777777777778,
+   "aime_2025": 0.17444444444444446
+  },
+  "rows": 1800,
+  "rows_matching_math_dapo_strict_box_verify_false": {
+   "acc": 1800,
+   "pred": 1800,
+   "score": 1800
+  },
+  "rows_matching_math_dapo_strict_box_verify_true_acc": 1797,
+  "rows_whose_gts_matches_the_source_answer": 1800,
+  "score_values": {
+   "-1.0": 1414,
+   "1.0": 386
+  }
+ },
+ "validation_step_25": {
+  "mean_at_30_if_strict_box_verify_true": {
+   "aime_2024": 0.2777777777777778,
+   "aime_2025": 0.17777777777777776
+  },
+  "rows": 1800,
+  "rows_matching_math_dapo_strict_box_verify_false": {
+   "acc": 1800,
+   "pred": 1800,
+   "score": 1800
+  },
+  "rows_matching_math_dapo_strict_box_verify_true_acc": 1791,
+  "rows_whose_gts_matches_the_source_answer": 1800,
+  "score_values": {
+   "-1.0": 1399,
+   "1.0": 401
+  }
+ }
+}

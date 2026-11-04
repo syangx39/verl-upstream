@@ -1,6 +1,6 @@
 # Reproduction plan: ReTool (Qwen3-30B-A3B) on TPU 7x
 
-Status: **rev 3** (2026-10-29). Rev 2 was merged as the execution plan (#2). P0 is in progress; no TPU run yet.
+Status: **rev 3** (2026-10-29). Rev 2 was merged as the execution plan (#2); rev 3 was merged in #3. P0 preparation (#4, #5, #6) is complete and hardware execution is tracked in [`REPRO_RESULTS_TPU7X.md`](REPRO_RESULTS_TPU7X.md).
 Owner: @syangx39.
 
 Rev 2 folded in the review of rev 1 and the strongest checks from the alternative plan in #1 (now closed). Rev 3 fixes

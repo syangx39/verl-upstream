@@ -26,7 +26,12 @@ export VLLM_USE_V1=0
 export PYTHONUNBUFFERED=1
 export RAY_memory_monitor_refresh_ms=0
 export RAY_memory_usage_threshold=0.99
-export LIBTPU_INIT_ARGS="${LIBTPU_INIT_ARGS:---xla_tpu_use_enhanced_launch_barrier=false}"
+if [[ "${TPU_ACCELERATOR_TYPE}" == *7x* ]]; then
+    DEFAULT_LIBTPU_INIT_ARGS="--xla_tpu_use_enhanced_launch_barrier=false --xla_tpu_bf16_emission_mode=PROMOTE_F32"
+else
+    DEFAULT_LIBTPU_INIT_ARGS="--xla_tpu_use_enhanced_launch_barrier=false"
+fi
+export LIBTPU_INIT_ARGS="${LIBTPU_INIT_ARGS:-${DEFAULT_LIBTPU_INIT_ARGS}}"
 export VERL_TPU_SEQ_BUCKET_SIZE="${VERL_TPU_SEQ_BUCKET_SIZE:-2048}"
 export VERL_AGENT_LOOP_MAX_INFLIGHT_PROMPTS="${VERL_AGENT_LOOP_MAX_INFLIGHT_PROMPTS:-64}"
 if [[ -n "${TORCH_LOGS-recompiles}" ]]; then
@@ -67,9 +72,12 @@ aime_2025="${DATA_ROOT}/dataset/yentinglin/aime_2025"
 
 sft_experiment_name="${SFT_EXPERIMENT_NAME:-multiturn-sft-qwen3-30b-a3b-tpu}"
 DEFAULT_SFT_SRC="${RAY_DATA_HOME}/checkpoint/${sft_experiment_name}/global_step_372/huggingface"
+FALLBACK_P2_SFT_SRC="$(dirname "${RAY_DATA_HOME}")/runs/p2-retool-sft-01/checkpoint/global_step_372/huggingface"
 if [[ -z "${MODEL_SRC_PATH:-}" ]]; then
     if [[ -f "${DEFAULT_SFT_SRC}/model.safetensors.index.json" ]]; then
         MODEL_SRC_PATH="${DEFAULT_SFT_SRC}"
+    elif [[ -f "${FALLBACK_P2_SFT_SRC}/model.safetensors.index.json" ]]; then
+        MODEL_SRC_PATH="${FALLBACK_P2_SFT_SRC}"
     else
         MODEL_SRC_PATH="${RAY_DATA_HOME}/assets/hf/Qwen3-30B-A3B"
     fi
@@ -87,7 +95,8 @@ test_files="['${aime_2025}', '${aime_2024}']"
 tool_config_path="examples/tpu/retool/sandbox_fusion_tool_config_tpu.yaml"
 retool_py_path="pkg://examples.tpu.retool.retool_tpu"
 
-project_name="${PROJECT_NAME:-verl_tpu_retool}"
+export WANDB_ENTITY="${WANDB_ENTITY:-google-trellis}"
+project_name="${PROJECT_NAME:-verl-torchtpu-grpo-test}"
 experiment_name="${EXPERIMENT_NAME:-qwen3-30b-a3b_retool_dapo_tpu}"
 default_local_dir="${CKPTS_DIR:-/tmp/checkpoint/${experiment_name}}"
 
@@ -105,21 +114,36 @@ clip_ratio_high=0.28
 max_turns="${MAX_TURNS:-8}"
 max_prompt_length="${MAX_PROMPT_LENGTH:-2048}"
 max_response_length="${MAX_RESPONSE_LENGTH:-8192}"
-max_model_len=$((max_prompt_length + max_response_length))
-actor_lr="${ACTOR_LR:-1.4e-6}"
+max_model_len="${MAX_MODEL_LEN:-$((max_prompt_length + max_response_length))}"
+enable_thinking="${ENABLE_THINKING:-False}"
+if (( max_response_length >= 16384 )); then
+    default_actor_lr="2e-6"
+    default_n_resp="16"
+else
+    default_actor_lr="1.4e-6"
+    default_n_resp="8"
+fi
+actor_lr="${ACTOR_LR:-${default_actor_lr}}"
 min_lr_factor="${MIN_LR_FACTOR:-1.0}"
-clip_grad="${CLIP_GRAD:-0.088}"
+clip_grad="${CLIP_GRAD:-${MAX_NORM:-0.088}}"
 
 train_batch_size="${TRAIN_BATCH_SIZE:-64}"
 ppo_mini_batch_size="${PPO_MINI_BATCH_SIZE:-64}"
-n_resp_per_prompt="${N_RESP_PER_PROMPT:-8}"
-n_resp_per_prompt_val="${N_RESP_PER_PROMPT_VAL:-30}"
+n_resp_per_prompt="${N_RESP_PER_PROMPT:-${default_n_resp}}"
+n_resp_per_prompt_val="${N_RESP_PER_PROMPT_VAL:-${N_VAL:-30}}"
 
-# ================= TPU 2 x v6e-32 slice topology & MoE parallelism =================
-export NNODES_TRAINER="${NNODES_TRAINER:-8}"
-export N_CHIPS_TRAINER="${N_CHIPS_TRAINER:-4}"
-export NNODES_ROLLOUT="${NNODES_ROLLOUT:-8}"
-export N_CHIPS_ROLLOUT="${N_CHIPS_ROLLOUT:-4}"
+# ================= TPU slice topology & MoE parallelism =================
+if [[ "${TPU_ACCELERATOR_TYPE}" == *7x* ]]; then
+    export NNODES_TRAINER="${NNODES_TRAINER:-4}"
+    export N_CHIPS_TRAINER="${N_CHIPS_TRAINER:-8}"
+    export NNODES_ROLLOUT="${NNODES_ROLLOUT:-4}"
+    export N_CHIPS_ROLLOUT="${N_CHIPS_ROLLOUT:-8}"
+else
+    export NNODES_TRAINER="${NNODES_TRAINER:-8}"
+    export N_CHIPS_TRAINER="${N_CHIPS_TRAINER:-4}"
+    export NNODES_ROLLOUT="${NNODES_ROLLOUT:-8}"
+    export N_CHIPS_ROLLOUT="${N_CHIPS_ROLLOUT:-4}"
+fi
 
 TOTAL_ROLLOUT_CHIPS=$((NNODES_ROLLOUT * N_CHIPS_ROLLOUT))
 TOTAL_TRAINER_CHIPS=$((NNODES_TRAINER * N_CHIPS_TRAINER))
@@ -189,7 +213,11 @@ TEST_FREQ="${TEST_FREQ:-25}"
 TOTAL_EPOCHS="${TOTAL_EPOCHS:-2}"
 TOTAL_TRAINING_STEPS="${TOTAL_TRAINING_STEPS:-400}"
 TRUNCATION="${TRUNCATION:-left}"
-LOGGER_LIST="${LOGGER_LIST:-['console','tensorboard']}"
+LOGGER_LIST="${LOGGER_LIST:-${LOGGER:-['console','tensorboard']}}"
+if [[ -n "${AUDIT_LOG_DIR:-}" ]]; then
+    LOSS_ARGS+=("+trainer.rollout_audit_dir=${AUDIT_LOG_DIR}")
+    LOSS_ARGS+=("+trainer.rollout_audit_sessions=${AUDIT_MAX_RECORDS_PER_STEP:-8}")
+fi
 
 python3 -m verl.trainer.main_ppo \
     "+ray_kwargs.ray_init.runtime_env.env_vars.PYTHONPATH=${PYTHONPATH}" \
@@ -219,10 +247,12 @@ python3 -m verl.trainer.main_ppo \
     +data.max_token_len_per_gpu="${actor_max_token_len_per_gpu}" \
     data.filter_overlong_prompts=False \
     data.truncation="${TRUNCATION}" \
-    +data.apply_chat_template_kwargs.enable_thinking=False \
+    +data.apply_chat_template_kwargs.enable_thinking="${enable_thinking}" \
     +data.pad_mode=no_padding \
     data.custom_cls.path="${retool_py_path}" \
     data.custom_cls.name=CustomRLHFDataset \
+    reward.custom_reward_function.path="${retool_py_path}" \
+    reward.custom_reward_function.name=compute_score \
     custom_reward_function.path="${retool_py_path}" \
     custom_reward_function.name=compute_score \
     actor_rollout_ref.actor.strategy=torchtitan \

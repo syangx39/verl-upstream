@@ -19,7 +19,33 @@
       }
     },
     "train_score_mean_steps_1_5": -0.202383,
-    "train_score_mean_steps_21_25": 0.431582
+    "train_score_mean_steps_21_25": 0.431582,
+    "timing": {
+      "source": "PR #17: examples/tpu/retool/step_timing_breakdown.py on examples/tpu/retool/gb200/logs/g64-retool-25s-01/{g64_25s_01_metrics.json, tensorboard/events.out.tfevents.1793824080.g64-retool-25s-01-worker-7.1081.0, head.log ('update_weights done' lines)}",
+      "steps_2_24": {
+        "steps": [
+          2,
+          24
+        ],
+        "n": 23,
+        "mean_wall_s": 73.171,
+        "mean_timing_s_step": 30.655,
+        "mean_timing_s_gen": 0.038,
+        "mean_timing_s_update_actor": 24.45,
+        "mean_timing_s_update_weights": 5.474,
+        "mean_timing_s_testing": 0.0,
+        "mean_outside_timers_s": 42.516,
+        "mean_tb_span_prev_step_s": 39.956,
+        "mean_tb_scalars_prev_step": 98,
+        "mean_residual_s": 2.559,
+        "mean_post_sync_to_log_s": 2.566,
+        "min_timing_s_step": 25.361,
+        "max_timing_s_step": 35.036
+      },
+      "timing_s_step_mean_steps_2_25": 30.783,
+      "mean_perf_total_num_tokens_steps_2_24": 3010284.0,
+      "mean_timing_per_token_ms_update_actor_steps_2_24": 0.008112
+    }
   },
   "askhat_v5p": {
     "source": "examples/tpu/retool/results/askhat-v5p/askhat_v5p_runs.json (PR #19)",

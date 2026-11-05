@@ -1,0 +1,24 @@
+{
+  "run": "p3c-retool-25s-02",
+  "code_sha": "348bbff9f4d303da43b27001a79d5734628d8b43",
+  "source": "env/run_record.json code_sha; the same commit ran p3c-retool-25s-01",
+  "github": {
+    "tag": "run-code/p3c-retool-25s-01-02",
+    "tree_url": "https://github.com/syangx39/verl-upstream/tree/run-code/p3c-retool-25s-01-02",
+    "commit_url": "https://github.com/syangx39/verl-upstream/commit/348bbff9f4d303da43b27001a79d5734628d8b43",
+    "parent": "c4726400d1816939adf78ea26dd25f3b8d662ea3"
+  },
+  "gcs_tarball": {
+    "uri": "gs://ubench-logs/xiaotongyang/retool-v7x/runs/p3c-retool-25s-02/src-348bbff9f4d3.tar.gz",
+    "made_by": "examples/tpu/gke/run_ray_jobset_v7x_nap.sh: git archive --format=tar.gz <CODE_SHA>",
+    "sha256": "950dbf26f8045dc1885698faad7de37eef330e3f78d498c743ba600c04dd7701",
+    "gcs_md5_base64": "1pXBq4Njd3OpvXrzJh31Hg==",
+    "size": 3807974,
+    "files": 1350,
+    "pax_comment": "348bbff9f4d303da43b27001a79d5734628d8b43"
+  },
+  "check": "verify_code_snapshot.py: all 1350 regular files of the tarball have the git blob hash of git ls-tree -r 348bbff9",
+  "code_changes_since_run_on_this_branch": [
+    "examples/tpu/retool/run_qwen3_30b_a3b_dapo_torchtitan.sh: default_local_dir falls back to ${VERL_NAP_RUN_DIR}/checkpoints when CKPTS_DIR is unset (the run set CKPTS_DIR explicitly, see env/job_spec.json)"
+  ]
+}

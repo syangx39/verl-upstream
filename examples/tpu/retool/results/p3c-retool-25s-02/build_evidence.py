@@ -15,18 +15,23 @@
 """Build the evidence directory of a TPU v7x NAP ReTool run from its downloaded artifacts.
 
 Inputs: a local copy of ``gs://<bucket>/<RUN_ROOT>/<RUN_NAME>/`` (``validation/``, ``rollout/``, ``rollout_audit/``,
-``env/``, ``run_record.json``, ``job_spec.json``) and the launcher's driver log (``/tmp/verl_nap_logs/<run>/head.log``).
-Outputs (in ``--out-dir``):
+``tensorboard/``, ``env/``, ``run_record.json``, ``job_spec.json``) and the launcher's driver log
+(``/tmp/verl_nap_logs/<run>/head.log``). Outputs (in ``--out-dir``):
 
 * ``head_taskrunner.log``: the ``(TaskRunnerV1 ...)`` driver lines of ``head.log`` with ANSI colors stripped (the
   full log is ~50 MB of vLLM/XLA worker output and is not archived), and ``tqdm_progress.log``: the distinct
-  ``Training Progress`` updates (wall-clock elapsed per step);
+  ``Training Progress`` updates;
 * ``metrics.json``: every ``step:N`` metrics line parsed into ``{step: {metric: value}}``;
 * ``validation_step{0,N}_samples.jsonl``: compact validation samples (hashed question id, ``pred``/``acc``/``score``,
   ``num_turns``, ``output_sha256`` prefix and the last 300 output characters, the window ``math_dapo`` scores);
-* ``rollout_and_audit_summary.json``: per-step training-rollout aggregates and token-mask audit counts. A session is
-  a violation if its mask length mismatches, the mask array disagrees with a segment, a ``mask=1`` segment contains
-  ``<tool_response>`` or a ``mask=0`` segment contains ``<tool_call>``;
+* ``rollout_audit/<step>.jsonl.gz``: the raw token-level audit sessions (``gzip`` of the GCS files, unchanged) and
+  ``tensorboard/<scalar event file>``: the TensorBoard scalars, with ``raw_manifest.json`` (GCS URI, size, MD5 as
+  in the GCS object metadata, SHA-256 of the uncompressed file);
+* ``rollout_and_audit_summary.json``: per-step training-rollout aggregates and the whole-session token-mask audit of
+  ``examples/tpu/retool/rollout_mask_audit.py`` (``verify_evidence.py`` recomputes it from ``rollout_audit/``);
+* ``step_timing_breakdown.json``: wall clock per step split into the ``step`` timer, validation, TensorBoard logging
+  and the rest (``examples/tpu/retool/step_timing_breakdown.py``, from ``metrics.json``, the TensorBoard event file
+  and the Raiden end-of-sync lines of ``head_taskrunner.log``);
 * ``raiden_norm_checks.json``: per step, the replicas whose post-sync ``DISTRIBUTED NORM PARITY`` check passed;
 * ``eval_summary.json``: Step 0 vs. Step N ``mean@30`` with a two-level paired bootstrap interval
   (10,000 replicates, seed 0, the same procedure as the GB200 G64-D report);
@@ -39,13 +44,31 @@ Usage::
 """
 
 import argparse
+import base64
+import gzip
 import hashlib
+import importlib.util
 import json
 import random
 import re
 import shutil
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+RETOOL_DIR = HERE.parents[1]
+
+
+def _load_tool(name: str):
+    spec = importlib.util.spec_from_file_location(name, RETOOL_DIR / f"{name}.py")
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+mask_audit = _load_tool("rollout_mask_audit")
+step_timing = _load_tool("step_timing_breakdown")
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 STEP_LINE_RE = re.compile(r"\bstep:(\d+) - (.*)")
@@ -53,6 +76,7 @@ NP_SCALAR_RE = re.compile(r"^np\.\w+\((.*)\)$")
 NORM_RE = re.compile(
     r"\[RAIDEN PARITY VERIFIED \| Step (\d+) \| Replica (\d+)\] 100% DISTRIBUTED NORM PARITY CONFIRMED!"
 )
+SYNC_DONE_REGEX = r"\[RAIDEN TELEMETRY \| Orchestrator\] Step \d+ Completed"
 TQDM_RE = re.compile(r"Training Progress:[^\r\n]*")
 BOOTSTRAP_REPS = 10_000
 BOOTSTRAP_SEED = 0
@@ -131,36 +155,52 @@ def compact_validation(path: Path) -> list[dict]:
     return out
 
 
-def audit_sessions(path: Path) -> dict[str, int]:
-    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    res = dict(
-        audit_sessions=len(rows),
-        audit_mask_length_matches=0,
-        audit_sessions_with_tool_response=0,
-        audit_tool_call_segments=0,
-        audit_tool_response_segments=0,
-        audit_mask_violations=0,
-    )
-    for a in rows:
-        mask = a.get("response_mask", [])
-        length_ok = bool(a.get("mask_length_matches")) and len(a.get("response_ids", [])) == len(mask)
-        res["audit_mask_length_matches"] += length_ok
-        bad = not length_ok or bool(a.get("error")) or bool(a.get("missing_fields"))
-        tool_responses = 0
-        for seg in a.get("segments", []):
-            text = seg.get("text", "")
-            if any(m != seg["mask"] for m in mask[seg["start"] : seg["end"]]):
-                bad = True
-            if seg["mask"] == 1:
-                res["audit_tool_call_segments"] += text.count("<tool_call>")
-                bad = bad or "<tool_response>" in text
-            else:
-                tool_responses += text.count("<tool_response>")
-                bad = bad or "<tool_call>" in text
-        res["audit_tool_response_segments"] += tool_responses
-        res["audit_sessions_with_tool_response"] += tool_responses > 0
-        res["audit_mask_violations"] += bad
-    return res
+def audit_sessions(path: Path) -> dict:
+    """Whole-session token-mask audit of one ``rollout_audit/<step>.jsonl[.gz]`` (see ``rollout_mask_audit.py``)."""
+    return mask_audit.audit_records(mask_audit.load_records(path))
+
+
+def gcs_uri(run_record: dict, rel: str) -> str:
+    """GCS URI of a file of the run directory (``run_dir`` is the GCS Fuse path ``/data/<object prefix>``)."""
+    prefix = run_record["run_dir"].removeprefix("/data/").strip("/")
+    return f"gs://{run_record['gcs_bucket']}/{prefix}/{rel}"
+
+
+def file_digest(data: bytes) -> dict:
+    return {
+        "bytes": len(data),
+        "md5_base64": base64.b64encode(hashlib.md5(data).digest()).decode(),
+        "sha256": hashlib.sha256(data).hexdigest(),
+    }
+
+
+def scalar_event_file(tb_dir: Path) -> Path:
+    """The event file written by ``trainer.logger`` (the one with the most summary values)."""
+    files = sorted(tb_dir.glob("events.out.tfevents.*"))
+    return max(files, key=lambda p: len(step_timing.read_scalar_events(p)))
+
+
+def archive_raw(src: Path, out_dir: Path, run_record: dict, final_step: int) -> dict:
+    """Copy the raw audit sessions (gzip, mtime 0) and the TensorBoard scalars; return the manifest."""
+    entries = []
+    (out_dir / "rollout_audit").mkdir(exist_ok=True)
+    for s in range(1, final_step + 1):
+        rel = f"rollout_audit/{s}.jsonl"
+        data = (src / rel).read_bytes()
+        (out_dir / f"{rel}.gz").write_bytes(gzip.compress(data, compresslevel=9, mtime=0))
+        entries.append({"path": f"{rel}.gz", "gzip_of": rel, "gcs_uri": gcs_uri(run_record, rel), **file_digest(data)})
+    tb = scalar_event_file(src / "tensorboard")
+    (out_dir / "tensorboard").mkdir(exist_ok=True)
+    shutil.copy2(tb, out_dir / "tensorboard" / tb.name)
+    rel = f"tensorboard/{tb.name}"
+    entries.append({"path": rel, "gcs_uri": gcs_uri(run_record, rel), **file_digest(tb.read_bytes())})
+    manifest = {
+        "note": "md5_base64 equals the GCS object md5Hash (checked with `gcloud storage ls --json` when archived); "
+        "sha256 is of the uncompressed file",
+        "files": entries,
+    }
+    (out_dir / "raw_manifest.json").write_text(json.dumps(manifest, indent=1) + "\n", encoding="utf-8")
+    return manifest
 
 
 def rollout_step(path: Path) -> dict[str, int]:
@@ -237,6 +277,40 @@ def eval_summary(v0: list[dict], vn: list[dict], m0: dict, mn: dict, final_step:
     return out
 
 
+def audit_steps(audit_dir: Path, final_step: int, ext: str) -> dict[str, dict]:
+    """``{step: whole-session audit counts}`` of ``<audit_dir>/<step><ext>`` for steps ``1..final_step``."""
+    return {str(s): audit_sessions(audit_dir / f"{s}{ext}") for s in range(1, final_step + 1)}
+
+
+def rollout_audit_summary(src: Path, final_step: int) -> dict:
+    """Per-step rollout aggregates of ``rollout/`` plus the whole-session audit of ``rollout_audit/``."""
+    steps: dict[str, dict] = {}
+    totals: dict = defaultdict(int)
+    reasons: Counter = Counter()
+    for s, audit in audit_steps(src / "rollout_audit", final_step, ".jsonl").items():
+        reasons.update(audit["violation_reasons"])
+        steps[s] = {"step": int(s), **rollout_step(src / "rollout" / f"{s}.jsonl"), **audit}
+        for key, value in steps[s].items():
+            if key not in ("step", "violation_reasons"):
+                totals[key] += value
+    return {"steps": steps, "totals": {**totals, "violation_reasons": dict(sorted(reasons.items()))}}
+
+
+def timing_breakdown(out_dir: Path, metrics: dict, final_step: int) -> dict:
+    """Per-step wall-clock breakdown from the archived metrics, TensorBoard scalars and driver log."""
+    (tb,) = sorted((out_dir / "tensorboard").glob("events.out.tfevents.*"))
+    res = step_timing.run_breakdown(
+        metrics, tb, final_step, out_dir / "head_taskrunner.log", SYNC_DONE_REGEX, None, 2, final_step - 1
+    )
+    res["inputs"] = {
+        "metrics": "metrics.json",
+        "tb_events": f"tensorboard/{tb.name}",
+        "log": "head_taskrunner.log",
+        "sync_done_regex": SYNC_DONE_REGEX,
+    }
+    return res
+
+
 def build(src: Path, head_log: Path, out_dir: Path, final_step: int) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     env_out = out_dir / "env"
@@ -263,21 +337,18 @@ def build(src: Path, head_log: Path, out_dir: Path, final_step: int) -> dict:
     ev = eval_summary(val[0], val[final_step], metrics["0"], metrics[str(final_step)], final_step)
     (out_dir / "eval_summary.json").write_text(json.dumps(ev, indent=2) + "\n", encoding="utf-8")
 
-    steps: dict[str, dict] = {}
-    totals: dict[str, int] = defaultdict(int)
-    for s in range(1, final_step + 1):
-        row = {
-            "step": s,
-            **rollout_step(src / "rollout" / f"{s}.jsonl"),
-            **audit_sessions(src / "rollout_audit" / f"{s}.jsonl"),
-        }
-        steps[str(s)] = row
-        for key, value in row.items():
-            if key != "step":
-                totals[key] += value
-    summary = {"steps": steps, "totals": dict(totals)}
+    run_record = json.loads((src / "run_record.json").read_text(encoding="utf-8"))
+    archive_raw(src, out_dir, run_record, final_step)
+    summary = rollout_audit_summary(src, final_step)
     (out_dir / "rollout_and_audit_summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
-    return {"eval": ev, "rollout_totals": dict(totals), "norm_check_steps": len(norms)}
+    timing = timing_breakdown(out_dir, metrics, final_step)
+    (out_dir / "step_timing_breakdown.json").write_text(json.dumps(timing, indent=1) + "\n", encoding="utf-8")
+    return {
+        "eval": ev,
+        "rollout_totals": summary["totals"],
+        "norm_check_steps": len(norms),
+        "timing_summary": timing["summary"],
+    }
 
 
 def main() -> None:

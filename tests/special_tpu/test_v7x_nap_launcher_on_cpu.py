@@ -1009,3 +1009,34 @@ def test_p3c_retool_25s_02_evidence_and_report_tables():
     doc = repo_root / "examples" / "tpu" / "retool" / "RETOOL_REWARD_CLIP_RERUN_PLAN_ZH.md"
     subprocess.run([sys.executable, str(ev_dir / "verify_evidence.py")], check=True)
     subprocess.run([sys.executable, str(ev_dir / "report_tables.py"), "--check", str(doc)], check=True)
+
+
+def test_p3c_retool_25s_02_code_snapshot_check_detects_a_changed_file(tmp_path):
+    repo_root = Path(__file__).resolve().parents[2]
+    ev_dir = repo_root / "examples" / "tpu" / "retool" / "results" / "p3c-retool-25s-02"
+    spec = importlib.util.spec_from_file_location("verify_code_snapshot", ev_dir / "verify_code_snapshot.py")
+    assert spec is not None and spec.loader is not None
+    snap = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(snap)
+
+    repo = tmp_path / "repo"
+    (repo / "pkg").mkdir(parents=True)
+    (repo / "pkg" / "a.py").write_text("x = 1\n")
+    (repo / "run.sh").write_text("echo run\n")
+    git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@example.com"]
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run([*git, "add", "-A"], check=True)
+    subprocess.run([*git, "commit", "-q", "-m", "c"], check=True)
+    sha = subprocess.run([*git, "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+    tarball = tmp_path / "src.tar.gz"
+    subprocess.run([*git, "archive", "--format=tar.gz", "-o", str(tarball), sha], check=True)
+
+    comment, tar = snap.tarball_blobs(tarball)
+    assert comment == sha and tar == snap.tree_blobs(repo, sha) and len(tar) == 2
+    (repo / "pkg" / "a.py").write_text("x = 2\n")
+    subprocess.run([*git, "commit", "-q", "-am", "c2"], check=True)
+    assert tar != snap.tree_blobs(repo, "HEAD")
+
+    archived = json.loads((ev_dir / "env" / "code_snapshot.json").read_text(encoding="utf-8"))
+    record = json.loads((ev_dir / "env" / "run_record.json").read_text(encoding="utf-8"))
+    assert archived["code_sha"] == record["code_sha"] == archived["gcs_tarball"]["pax_comment"]

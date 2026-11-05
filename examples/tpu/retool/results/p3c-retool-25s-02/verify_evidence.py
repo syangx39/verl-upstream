@@ -26,12 +26,23 @@ Checks (any failure raises ``AssertionError``):
   to the last 300 characters itself (full outputs are not archived);
 * recomputed ``acc/mean@30`` and shaped ``reward/mean@30`` equal the logged ``val-core`` / ``val-aux`` values;
 * ``eval_summary.json`` equals a fresh recomputation (counts and paired bootstrap interval);
-* the Raiden distributed norm check passed for all three rollout replicas at every training step;
-* the token-mask audit found no violation.
+* every raw file listed in ``raw_manifest.json`` (the audit sessions, gunzipped, and the TensorBoard scalars) has the
+  recorded size, MD5 (the GCS object ``md5Hash``) and SHA-256;
+* the whole-session token-mask audit (``examples/tpu/retool/rollout_mask_audit.py``) recomputed from the raw
+  ``rollout_audit/<step>.jsonl.gz`` sessions equals ``rollout_and_audit_summary.json`` and finds no violation;
+* ``step_timing_breakdown.json`` equals a fresh recomputation from ``metrics.json``, the TensorBoard scalars and
+  ``head_taskrunner.log``;
+* the Step 0 Raiden element-wise check (``env/raiden_exact_parity_step_0.json``) covered 3 x 32 ranks with no
+  mismatch, and the Raiden distributed norm check passed for all three rollout replicas at every training step
+  (a norm-level check, not an element-wise comparison);
+* ``env/code_snapshot.json`` names the commit of ``env/run_record.json``.
 """
 
 import argparse
 import ast
+import base64
+import gzip
+import hashlib
 import importlib.util
 import json
 import sys
@@ -90,6 +101,63 @@ def verify_validation(rows: list[dict], step: int, logged: dict, compute_score) 
     return out
 
 
+def verify_raw_manifest() -> int:
+    """Every raw file has the size / MD5 / SHA-256 recorded when it was archived from GCS."""
+    manifest = json.loads((HERE / "raw_manifest.json").read_text(encoding="utf-8"))
+    for f in manifest["files"]:
+        data = (HERE / f["path"]).read_bytes()
+        if f["path"].endswith(".gz"):
+            data = gzip.decompress(data)
+        assert len(data) == f["bytes"], f"{f['path']}: {len(data)} bytes, manifest {f['bytes']}"
+        assert base64.b64encode(hashlib.md5(data).digest()).decode() == f["md5_base64"], f"{f['path']}: md5 differs"
+        assert hashlib.sha256(data).hexdigest() == f["sha256"], f"{f['path']}: sha256 differs"
+    return len(manifest["files"])
+
+
+def verify_mask_audit(final: int) -> dict:
+    """Recompute the whole-session audit from the raw sessions and compare with the archived summary."""
+    rollout = json.loads((HERE / "rollout_and_audit_summary.json").read_text(encoding="utf-8"))
+    fresh = build_evidence.audit_steps(HERE / "rollout_audit", final, ".jsonl.gz")
+    for s, audit in fresh.items():
+        archived = {k: rollout["steps"][s][k] for k in audit}
+        assert archived == audit, f"step {s}: archived audit {archived} != recomputed {audit}"
+    t = rollout["totals"]
+    for key in build_evidence.mask_audit.COUNT_KEYS:
+        assert t[key] == sum(a[key] for a in fresh.values()), f"totals[{key}] differs from the steps"
+    assert t["audit_sessions"] == 8 * final, f"expected {8 * final} audited sessions, got {t['audit_sessions']}"
+    for key in (
+        "audit_mask_violations",
+        "audit_tool_response_tokens_in_loss",
+        "audit_tool_call_tokens_not_in_loss",
+        "audit_mask0_runs_not_tool_turn",
+        "audit_im_start_in_loss",
+    ):
+        assert t[key] == 0, f"token-mask audit: {key} = {t[key]} ({t['violation_reasons']})"
+    assert t["audit_mask_length_matches"] == t["audit_sessions"] and t["violation_reasons"] == {}
+    return t
+
+
+def verify_raiden(final: int) -> dict:
+    exact = json.loads((HERE / "env" / "raiden_exact_parity_step_0.json").read_text(encoding="utf-8"))
+    ranks = exact["ranks"]
+    assert exact["num_results"] == exact["expected_ranks"] == len(ranks) == 96, "Step 0 exact parity: rank count"
+    assert sorted((r["replica"], r["rank"]) for r in ranks) == [(p, k) for p in range(3) for k in range(32)]
+    assert exact["num_mismatched"] == 0 and exact["num_unresolved"] == 0 and not exact["coverage_errors"]
+    assert all(r["checked"] == r["expected_checked"] == 435 and r["num_mismatched"] == 0 for r in ranks)
+    norms = json.loads((HERE / "raiden_norm_checks.json").read_text(encoding="utf-8"))
+    assert all(norms.get(str(s)) == [0, 1, 2] for s in range(1, final + 1)), f"norm checks incomplete: {norms}"
+    return {"step0_exact_ranks": len(ranks), "step0_exact_tensors": sum(r["checked"] for r in ranks)}
+
+
+def verify_code_snapshot() -> str:
+    snap = json.loads((HERE / "env" / "code_snapshot.json").read_text(encoding="utf-8"))
+    record = json.loads((HERE / "env" / "run_record.json").read_text(encoding="utf-8"))
+    sha = record["code_sha"]
+    assert snap["code_sha"] == sha == snap["gcs_tarball"]["pax_comment"], "code snapshot names another commit"
+    assert snap["github"]["commit_url"].endswith(sha) and sha[:12] in snap["gcs_tarball"]["uri"]
+    return sha
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--final-step", type=int, default=25)
@@ -111,10 +179,13 @@ def main() -> None:
     fresh = build_evidence.eval_summary(v0, vn, metrics["0"], metrics[str(final)], final)
     assert json.loads(json.dumps(fresh)) == ev, "eval_summary.json differs from a fresh recomputation"
 
-    norms = json.loads((HERE / "raiden_norm_checks.json").read_text(encoding="utf-8"))
-    assert all(norms.get(str(s)) == [0, 1, 2] for s in range(1, final + 1)), f"norm checks incomplete: {norms}"
-    rollout = json.loads((HERE / "rollout_and_audit_summary.json").read_text(encoding="utf-8"))
-    assert rollout["totals"]["audit_mask_violations"] == 0, "token-mask audit violations found"
+    raw_files = verify_raw_manifest()
+    audit = verify_mask_audit(final)
+    timing = json.loads((HERE / "step_timing_breakdown.json").read_text(encoding="utf-8"))
+    fresh_timing = build_evidence.timing_breakdown(HERE, metrics, final)
+    assert json.loads(json.dumps(fresh_timing)) == timing, "step_timing_breakdown.json differs from a recomputation"
+    raiden = verify_raiden(final)
+    code_sha = verify_code_snapshot()
 
     print(
         json.dumps(
@@ -122,8 +193,11 @@ def main() -> None:
                 "metrics_steps": len(metrics),
                 "validation": val,
                 "eval_summary": "matches fresh recomputation",
-                "raiden_norm_checks": f"steps 1-{final} x replicas 0,1,2 passed",
-                "rollout_totals": rollout["totals"],
+                "raw_files_matching_manifest": raw_files,
+                "mask_audit_from_raw_sessions": audit,
+                "timing_summary": timing["summary"],
+                "raiden": {**raiden, "norm_checks": f"steps 1-{final} x replicas 0,1,2 passed"},
+                "code_sha": code_sha,
             },
             indent=2,
         )

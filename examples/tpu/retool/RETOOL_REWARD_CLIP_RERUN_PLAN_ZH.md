@@ -1,12 +1,19 @@
 # TPU v7x ReTool 对齐 Askhat 运行与重跑方案（TPU v7x Only）
 
-状态：**rev 12（64 卡 `p3c-retool-25s-02` 已完整跑完 25/25 步训练与 Step 0 / Step 25 `n=30` AIME 评估，全项门禁通过；W&B [`wopup8dq`](https://wandb.ai/google-trellis/verl-torchtpu-grpo-test/runs/wopup8dq)）**（2026-11-04）。
+状态：**rev 13（64 卡 `p3c-retool-25s-02` 已完整跑完 25/25 步训练与 Step 0 / Step 25 `n=30` AIME 评估；本版补齐评审指出的证据缺口：整段掩码审计并从原始会话离线重算、运行代码推到 GitHub、耗时拆分与 checkpoint 状态；W&B [`wopup8dq`](https://wandb.ai/google-trellis/verl-torchtpu-grpo-test/runs/wopup8dq)）**（2026-11-05）。
+
+- **rev 13**（评审意见修正，详见第 8.5.2、8.5.6–8.5.8 节）：
+  1. **掩码审计改为整段审计**：新的 [`rollout_mask_audit.py`](rollout_mask_audit.py) 在整条 response 上配对 `<tool_response>` / `<tool_call>` 块，并要求每段 `mask=0` 恰好是 agent loop 注入的工具轮次；旧脚本逐段查找完整标签，会漏掉跨 mask segment 的块。200 个原始审计会话已归档为 [`results/p3c-retool-25s-02/rollout_audit/*.jsonl.gz`](results/p3c-retool-25s-02/rollout_audit/)（大小与 MD5 和 GCS 对象一致），`verify_evidence.py` 改为从原始会话重算，不再读汇总：`0` 违规。
+  2. **运行代码可复现**：`p3c-retool-25s-01` / `-02` 运行的 `348bbff9` 原先只在本地，现已推到 GitHub tag [`run-code/p3c-retool-25s-01-02`](https://github.com/syangx39/verl-upstream/tree/run-code/p3c-retool-25s-01-02)；GCS 上 launcher 打包的 `src-348bbff9f4d3.tar.gz` 与该 commit 的 `1,350` 个文件逐一一致（[`verify_code_snapshot.py`](results/p3c-retool-25s-02/verify_code_snapshot.py)）。
+  3. **Checkpoint 状态写明**：`-02` 用 `SAVE_FREQ=-1`，整个 run 没有保存任何 checkpoint（包括 Step 25）；checkpoint 改写 GCS 路径后的写入没有被这次 run 实测。
+  4. **耗时复核与拆分**：Steps 2–25 `timing_s/step` 均值 `287.3` s 与 W&B 历史一致；用 TensorBoard 事件的 `wall_time` 拆分端到端墙钟，发现每步约 `46.7` s 花在计时之外的 TensorBoard 写入（`TENSORBOARD_DIR` 在 GCS Fuse 上），且 `timing_s/step` 中平均 `194.7` s 是等 rollout；删去“25 步纯训练墙钟 9,108.2 s”的说法（tqdm 总耗时含 TensorBoard 写入与 Step 25 验证）。
+  5. **Raiden 表述**：Step 0 的逐元素比对（96 rank / 41,760 分片）与 Steps 1–25 的范数检查分开写；后者是范数级检查，不等于每步逐元素一致。
 
 - **rev 12**：
   1. **补入 64 卡 TPU v7x 正式运行 `p3c-retool-25s-02`（W&B [`wopup8dq`](https://wandb.ai/google-trellis/verl-torchtpu-grpo-test/runs/wopup8dq)）25/25 步完整训练与 Step 0 → Step 25 `n=30` 评估归档（第 8.5 节，产物目录 [`results/p3c-retool-25s-02/`](results/p3c-retool-25s-02/)）**：
      - **AIME 2024（`n=30`，900 条样本）**：Step 0 `399/900`（**`44.33%`**）→ Step 25 `492/900`（**`54.67%`**），提升 **`+10.33` pp**（二层配对 bootstrap 95% CI **`[+3.78, +17.22]` pp**；30 题中 18 题上升 / 5 题下降 / 7 题持平；`maj@30` `63.78%` → `71.59%`）；
      - **AIME 2025（`n=30`，900 条样本）**：Step 0 `293/900`（**`32.56%`**）→ Step 25 `378/900`（**`42.00%`**），提升 **`+9.44` pp**（二层配对 bootstrap 95% CI **`[+3.67, +15.56]` pp**；30 题中 19 题上升 / 3 题下降 / 8 题持平；`maj@30` `48.77%` → `61.67%`，`best@30` `69.77%` → `81.21%`）；
-     - **训练与放行门禁全量通过**：训练 reward `critic/score/mean` 5 步均值从 Steps 1–5 的 `-0.108` 升至 Steps 21–25 的 **`+0.516`**；25 步共 `25,600` 条轨迹中 `25,451` 条（`99.42%`）含 `<tool_response>`（共 `84,914` 次工具返回），`-2.0` 截断惩罚 `0` 条；`200 / 200` 掩码审计会话 `0` 违规；`25 / 25` 步 × 3 副本（`75 / 75` 次）Raiden 分布式范数校验全部通过；
+     - **训练与放行门禁**：训练 reward `critic/score/mean` 5 步均值从 Steps 1–5 的 `-0.108` 升至 Steps 21–25 的 **`+0.516`**；25 步共 `25,600` 条轨迹中 `25,451` 条（`99.42%`）含 `<tool_response>`（共 `84,914` 次工具返回），`-2.0` 截断惩罚 `0` 条；200 个审计会话的整段掩码审计 `0` 违规（rev 13 从原始会话重算）；Raiden：Step 0 三副本 96 rank / `41,760` 个分片逐元素比对 `0` 不一致，Steps 1–25 每步 3 个副本（`75 / 75` 次）的分布式范数检查通过（范数级检查）；
      - **跨平台（TPU v7x vs GB200 GPU）与 Askhat v5p 对照**：在同一 SFT 起点（`p2-retool-sft-01/checkpoint/global_step_372`）与同口径 `n=30` 评估下，TPU v7x `p3c-retool-25s-02` 与 GB200 64-GPU `g64-retool-25s-01` 的 Step 25 准确率高度一致（AIME 2024 `54.67%` vs `54.00%`，AIME 2025 `42.00%` vs `41.78%`）。
 
 - **rev 11**：
@@ -858,9 +865,10 @@ bash examples/tpu/gke/run_ray_jobset_v7x_nap.sh \
 
 ### 8.5 `p3c-retool-25s-02`（64 卡 TPU v7x）25/25 步完整运行、Step 0 → Step 25 `n=30` 评估与跨平台对照
 
-- **Run 名称**：`p3c-retool-25s-02`（`CODE_REF=348bbff9f4d303da43b27001a79d5734628d8b43`，`JOBENV_SAVE_FREQ=-1`，`JOBENV_CKPTS_DIR=@RUN_DIR@/checkpoints`）
+- **Run 名称**：`p3c-retool-25s-02`（`CODE_REF=348bbff9f4d303da43b27001a79d5734628d8b43`，GitHub tag [`run-code/p3c-retool-25s-01-02`](https://github.com/syangx39/verl-upstream/tree/run-code/p3c-retool-25s-01-02)，见 8.5.8；`JOBENV_SAVE_FREQ=-1`，`JOBENV_CKPTS_DIR=@RUN_DIR@/checkpoints`）
 - **W&B 链接**：[`https://wandb.ai/google-trellis/verl-torchtpu-grpo-test/runs/wopup8dq`](https://wandb.ai/google-trellis/verl-torchtpu-grpo-test/runs/wopup8dq)
-- **归档目录与离线校验**：[`results/p3c-retool-25s-02/`](results/p3c-retool-25s-02/)（运行 `python3 examples/tpu/retool/results/p3c-retool-25s-02/verify_evidence.py` 可离线复算全部 3,600 条验证样本的 `retool_tpu.compute_score`、配对 bootstrap 区间、25 步 Raiden 范数校验与 200 条掩码审计；运行 `python3 examples/tpu/retool/results/p3c-retool-25s-02/report_tables.py --check examples/tpu/retool/RETOOL_REWARD_CLIP_RERUN_PLAN_ZH.md` 校验下表与原始归档一致）。
+- **Checkpoint**：`SAVE_FREQ=-1`，整个 run 没有保存任何 checkpoint（包括 Step 25），Step 25 的权重没有保留；`CKPTS_DIR` 指向 GCS 运行目录，但这次 run 没有实际写入，所以 checkpoint 写 GCS 的耗时与 resume 都没有被实测（见 8.5.8）。
+- **归档目录与离线校验**：[`results/p3c-retool-25s-02/`](results/p3c-retool-25s-02/)（运行 `python3 examples/tpu/retool/results/p3c-retool-25s-02/verify_evidence.py` 可离线复算全部 3,600 条验证样本的 `retool_tpu.compute_score`、配对 bootstrap 区间、原始审计会话与 TensorBoard 文件的 MD5 / SHA-256、从 200 个原始会话重算的整段掩码审计、每步墙钟拆分、Step 0 Raiden 逐元素归档与 25 步范数检查；运行 `python3 examples/tpu/retool/results/p3c-retool-25s-02/report_tables.py --check examples/tpu/retool/RETOOL_REWARD_CLIP_RERUN_PLAN_ZH.md` 校验下表与原始归档一致）。
 
 #### 8.5.1 Step 0 → Step 25 AIME 2024 / 2025（`n=30`）评估结果
 
@@ -871,14 +879,15 @@ bash examples/tpu/gke/run_ray_jobset_v7x_nap.sh \
 | AIME 2025 | `293`（`32.56%`） | `378`（`42.00%`） | `+9.44` pp | `[+3.67, +15.56]` pp | 19 / 3 / 8 | `48.77%` → `61.67%` | `69.77%` → `81.21%` |
 <!-- END AUTO-GENERATED p3c-retool-25s-02/eval -->
 
-#### 8.5.2 端到端耗时、工具调用率、掩码审计与 Raiden 范数检查汇总
+#### 8.5.2 耗时、工具调用率、掩码审计与 Raiden 检查汇总
 
 <!-- BEGIN AUTO-GENERATED p3c-retool-25s-02/wall (report_tables.py) -->
-- tqdm 记录的 `25/25` 总耗时 `2:59:32`（`10,772` s，含 Step 25 `n=30` 验证 `timing_s/testing = 1,663.8` s，不含 Step 0 验证）；扣除 Step 25 验证后的 25 步纯训练墙钟耗时为 `9,108.2` s（平均 `364.3` s/步）。
-- Steps 2–25 的 `timing_s/step` 均值 `287.3` s（范围 `70.0`–`601.3` s）。V1 异步模式下偶数步承担生成、奇数步的 `gen` 接近 0，所以要看两步平均或 tqdm 总耗时。
+- Steps 2–25 的 `timing_s/step` 均值 `287.3` s（范围 `70.0`–`601.3` s；不含 Step 25 时 Steps 2–24 为 `291.5` s）。其中 `timing_s/gen`（在 `step` 计时内等 rollout 样本）Steps 2–24 均值 `194.7` s：奇数步均值 `0.29` s，偶数步均值 `372.9` s，即 trainer 每两步要等 rollout 一次。
+- 端到端墙钟（相邻两步 TensorBoard 记录起点之差，与 W&B `_timestamp` 一致）Steps 2–24 均值 `341.7` s = `timing_s/step` `291.5` s + 上一步 TensorBoard 记录 `46.7` s（约 `114` 个 scalar，每个约 `0.41` s）+ 其余 `3.4` s（driver log 中同步结束到 `logger.log` 为 `2.9` s）。
+- Step 25 墙钟 `1,905.6` s = `timing_s/step` `190.3` s + Step 25 `n=30` 验证 `1,663.8` s + 上一步 TensorBoard 记录 `48.3` s + 其余 `3.3` s。tqdm 的 `25/25` 总耗时 `2:59:32`（`10,772` s）在每步 TensorBoard 记录之后才更新，所以包含 Step 25 验证和全部 25 步的 TensorBoard 记录，不是纯训练时间。
 - 训练轨迹 `25,600` 条，其中含 `<tool_response>` 的 `25,451` 条（`99.42%`），工具返回共 `84,914` 次，`score <= -1.99` 的轨迹 `0` 条。
-- 掩码审计 `200` 个会话，违规 `0` 个（`<tool_call>` 段 `723` 个，`<tool_response>` 段 `721` 个）。
-- Raiden 训练后分布式范数检查：`25` / `25` 步三个副本全部通过。
+- 整段掩码审计（[`rollout_mask_audit.py`](rollout_mask_audit.py)，从归档的原始 [`rollout_audit/`](results/p3c-retool-25s-02/rollout_audit/) 重算）：`200` 个会话违规 `0` 个；`721` 个 `<tool_response>` 块共 `24,014` 个 token，计入 loss 的 `0` 个；`721` 段 `mask=0` 全部恰好是注入的工具轮次（不符的 `0` 段）；`723` 个完整 `<tool_call>` 块不计入 loss 的 token `0` 个。
+- Raiden：Step 0 三副本 `96` 个 rank、`41,760` 个张量分片逐元素比对，不一致 `0`；Steps 1–25 每步同步后的分布式范数检查 `25` / `25` 步三个副本全部通过（自动判定只看 `numel` 和 `L1`，是范数级检查，不等于逐元素一致）。
 <!-- END AUTO-GENERATED p3c-retool-25s-02/wall -->
 
 #### 8.5.3 前 5 步 vs 后 5 步训练窗口均值
@@ -906,7 +915,7 @@ bash examples/tpu/gke/run_ray_jobset_v7x_nap.sh \
 <!-- END AUTO-GENERATED p3c-retool-25s-02/compare -->
 
 > **对比说明与证据边界**：
-> 1. **我们 TPU v7x `p3c-retool-25s-02` vs 我们 GB200 `g64-retool-25s-01`（同 SFT 起点、同 `n=30` 评估）**：两条线使用同一个 SFT checkpoint（`p2-retool-sft-01/checkpoint/global_step_372/huggingface`）、相同的 16K + thinking + shaped reward + `MAX_TURNS=16` + `lr=2e-6` + `train_batch_size=64` + `rollout.n=16` 配置。Step 0 基线一致（AIME 2024 `44.33%` vs `44.22%`；AIME 2025 `32.56%` vs `35.00%`），Step 25 评估也高度一致（AIME 2024 **`54.67%` vs `54.00%`**，仅差 `+0.67` pp；AIME 2025 **`42.00%` vs `41.78%`**，仅差 `+0.22` pp），训练末段 Steps 21–25 的 `critic/score/mean` 分别为 `+0.516`（TPU）与 `+0.432`（GPU）。
+> 1. **我们 TPU v7x `p3c-retool-25s-02` vs 我们 GB200 `g64-retool-25s-01`（同 SFT 起点、同 `n=30` 评估）**：两条线使用同一个 SFT checkpoint（`p2-retool-sft-01/checkpoint/global_step_372/huggingface`）、相同的 16K + thinking + shaped reward + `MAX_TURNS=16` + `lr=2e-6` + `train_batch_size=64` + `rollout.n=16` 配置。Step 0 基线接近（AIME 2024 `44.33%` vs `44.22%`；AIME 2025 `32.56%` vs `35.00%`），Step 25 也接近（AIME 2024 **`54.67%` vs `54.00%`**，差 `+0.67` pp；AIME 2025 **`42.00%` vs `41.78%`**，差 `+0.22` pp），训练末段 Steps 21–25 的 `critic/score/mean` 分别为 `+0.516`（TPU）与 `+0.432`（GPU）。这是积极的初步 parity 信号，但每边只有一次正式训练 run，还不能证明两边的训练分布或收敛行为一致。
 > 2. **与 Askhat TPU v5p 四条线（[`results/askhat-v5p/`](results/askhat-v5p/)，PR #19）的对照边界**：Askhat 在 Steps 21–25 的训练 reward 均值为 `+0.479`–`+0.483`，我们 TPU v7x 为 `+0.516`（略高 `+0.03`）；在 Step 25 的 AIME 评估上，我们 `n=30` 的 `54.67% / 42.00%` 接近 Askhat `n=8` 的范围（AIME 2024 `56.25%`–`60.00%`，AIME 2025 `38.75%`–`46.67%`；其中 AIME 2025 高于 Askhat `cp2` 的 `38.75%`）。注意两者存在两点不可直接归因的差异：(a) Askhat 评估每题仅采样 `n=8`（共 240 个样本，单次采样噪声比 `n=30` 的 900 个样本更大）；(b) Askhat 使用他自己训练的 `multiturn-sft-qwen3-30b-a3b-v5p`（W&B `myaf5pal`），且这四条 RL 线均设了 `val_before_train=False`，因此没有同 run 的 Step 0 评估。
 
 #### 8.5.5 `p3c-retool-25s-02` 逐步训练与门禁明细（Steps 1–25）
@@ -940,3 +949,75 @@ bash examples/tpu/gke/run_ray_jobset_v7x_nap.sh \
 | 24 | `+0.4881` | `3,111.0` | `0.10%` | `7.97` | `0.0877` | `601.3` | `503.0` | `81.8` | `15.5` | 1014 / 1024 | 0 / 8 | 3 / 3 |
 | 25 | `+0.5525` | `2,822.3` | `0.29%` | `8.95` | `0.0926` | `190.3` | `56.6` | `117.8` | `14.9` | 1014 / 1024 | 0 / 8 | 3 / 3 |
 <!-- END AUTO-GENERATED p3c-retool-25s-02/train -->
+
+#### 8.5.6 每步墙钟拆分与 64× GB200 耗时对照
+
+`timing_s/step` 只覆盖 `RayPPOTrainer.fit` 里 `with marked_timer("step")` 的部分：从 replay buffer 取样（`timing_s/gen`，即等 rollout）、`old_log_prob`、`adv`、`update_actor` 和 `on_step_end` 里的 `update_weights`。验证（`timing_s/testing`）、`_compute_metrics`、rollout / 审计 dump 的准备（TransferQueue 取数与 decode，写文件在后台线程）、`tq.kv_clear` 和 `logger.log` 都在计时之外（运行代码 [`trainer_base.py` L491–L556](https://github.com/syangx39/verl-upstream/blob/348bbff9f4d303da43b27001a79d5734628d8b43/verl/trainer/ppo/v1/trainer_base.py#L491-L556)）。`logger.log` 先写 W&B，再对每个指标调用一次 TensorBoard `add_scalar`，最后打印 console 行。TensorBoard 为每次 `add_scalar` 记下 `wall_time`，所以归档的事件文件（[`results/p3c-retool-25s-02/tensorboard/`](results/p3c-retool-25s-02/tensorboard/)）能独立给出每步 `logger.log` 的起点和 TensorBoard 写入时长；每步第一个 scalar 的时间与 W&B `_timestamp` 相差不超过 `0.02` s（W&B API 核对）。下表由 [`step_timing_breakdown.py`](step_timing_breakdown.py) 生成。
+
+<!-- BEGIN AUTO-GENERATED p3c-retool-25s-02/timing (report_tables.py) -->
+| Step | 墙钟（TensorBoard 记录起点间隔） | `timing_s/step` | 其中 `gen` | 其中 `update_actor` | 其中 `update_weights` | `timing_s/testing` | 上一步 TensorBoard 记录（scalar 数） | 计时外其余 | 同步结束 → `logger.log` |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | `957.4` | `833.6` | `628.1` | `183.7` | `20.6` | `0.0` | `120.9`（259） | `2.9` | `1.6` |
+| 2 | `228.0` | `181.8` | `0.0` | `165.9` | `14.7` | `0.0` | `43.2`（111） | `3.0` | `2.8` |
+| 3 | `155.3` | `109.2` | `0.0` | `94.0` | `13.4` | `0.0` | `42.6`（111） | `3.5` | `3.3` |
+| 4 | `427.3` | `377.1` | `261.6` | `100.0` | `14.5` | `0.0` | `47.3`（111） | `3.0` | `2.7` |
+| 5 | `122.5` | `76.5` | `0.0` | `60.6` | `15.0` | `0.0` | `43.8`（111） | `2.2` | `1.9` |
+| 6 | `455.2` | `410.4` | `326.3` | `68.0` | `15.1` | `0.0` | `42.0`（111） | `2.8` | `2.5` |
+| 7 | `128.8` | `82.4` | `0.3` | `65.7` | `15.3` | `0.0` | `43.7`（115） | `2.7` | `2.4` |
+| 8 | `513.5` | `466.5` | `386.4` | `64.0` | `15.2` | `0.0` | `44.5`（115） | `2.5` | `2.2` |
+| 9 | `153.2` | `99.8` | `0.2` | `83.2` | `15.4` | `0.0` | `50.6`（115） | `2.8` | `2.5` |
+| 10 | `525.8` | `480.6` | `375.2` | `90.2` | `14.3` | `0.0` | `41.4`（115） | `3.7` | `3.5` |
+| 11 | `117.2` | `70.0` | `0.2` | `55.2` | `13.6` | `0.0` | `43.8`（115） | `3.3` | `3.1` |
+| 12 | `500.3` | `444.8` | `350.1` | `78.8` | `15.0` | `0.0` | `52.8`（115） | `2.7` | `2.4` |
+| 13 | `134.6` | `80.5` | `0.2` | `64.2` | `15.1` | `0.0` | `51.4`（115） | `2.7` | `2.4` |
+| 14 | `572.9` | `524.7` | `438.7` | `69.2` | `15.9` | `0.0` | `45.5`（115） | `2.7` | `2.5` |
+| 15 | `126.2` | `78.6` | `0.2` | `62.0` | `15.4` | `0.0` | `44.8`（115） | `2.9` | `2.5` |
+| 16 | `614.7` | `562.1` | `465.0` | `80.7` | `15.4` | `0.0` | `49.4`（115） | `3.2` | `2.8` |
+| 17 | `150.7` | `95.7` | `0.7` | `78.2` | `15.8` | `0.0` | `51.7`（115） | `3.3` | `3.0` |
+| 18 | `608.5` | `555.8` | `454.8` | `85.0` | `14.1` | `0.0` | `47.9`（115） | `4.8` | `3.5` |
+| 19 | `137.0` | `90.9` | `0.2` | `74.1` | `15.6` | `0.0` | `43.0`（115） | `3.1` | `2.8` |
+| 20 | `611.4` | `563.0` | `461.4` | `85.2` | `15.4` | `0.0` | `45.2`（115） | `3.2` | `2.9` |
+| 21 | `151.1` | `91.2` | `0.2` | `74.5` | `15.5` | `0.0` | `55.0`（115） | `5.0` | `2.8` |
+| 22 | `623.0` | `568.0` | `452.8` | `93.2` | `21.0` | `0.0` | `46.9`（115） | `8.1` | `6.9` |
+| 23 | `149.5` | `94.5` | `0.7` | `77.2` | `15.6` | `0.0` | `51.5`（115） | `3.6` | `2.8` |
+| 24 | `651.2` | `601.3` | `503.0` | `81.8` | `15.5` | `0.0` | `46.6`（115） | `3.3` | `3.0` |
+| 25 | `1905.6` | `190.3` | `56.6` | `117.8` | `14.9` | `1663.8` | `48.3`（115） | `3.3` | `1666.8` |
+| Steps 2–24 均值（23 步） | `341.7` | `291.5` | `194.7` | `80.5` | `15.3` | `0.0` | `46.7`（114） | `3.4` | `2.9` |
+<!-- END AUTO-GENERATED p3c-retool-25s-02/timing -->
+
+- “上一步 TensorBoard 记录”是第 N−1 步全部 scalar 的写入时长；“计时外其余” = 墙钟 − `timing_s/step` − `timing_s/testing` − 上一步 TensorBoard 记录。driver log 中 Raiden 同步结束（`[RAIDEN TELEMETRY | Orchestrator] Step N Completed`）到 `logger.log` 的时间与“计时外其余”吻合（Steps 2–24 均值 `2.9` s vs `3.4` s），所以墙钟与 `timing_s/step` 的差额几乎全部是 TensorBoard 写入。Step 1 含预热与 XLA 编译；Step 25 的“同步结束 → `logger.log`”包含 `n=30` 验证。
+- 每个 scalar 约 `0.41` s，远高于写本地文件的开销；GPU 运行同样约 `0.41` s，与平台无关。推测原因（未单独实验）：镜像没有 TensorFlow 时，TensorBoard 用 `tensorboard.compat.tensorflow_stub` 的 `GFile`，对本地路径每写一条记录就 `open(..., "ab")`、写入、关闭一次；`TENSORBOARD_DIR` 在 GCS Fuse（`/data/...`）上，每次关闭都要把整个事件文件重新上传。验证办法：把 `TENSORBOARD_DIR` 改到本地盘（结束后再拷贝）或从 `LOGGER_LIST` 去掉 `tensorboard`，跑 3 步对比。
+- rollout / 审计 JSONL 写 GCS 由后台线程完成，不在主循环的关键路径上。
+
+<!-- BEGIN AUTO-GENERATED p3c-retool-25s-02/perf (report_tables.py) -->
+| 指标（秒/步；除首行外为 Steps 2–24 均值） | GPU `g64-retool-25s-01` | TPU `p3c-retool-25s-02` | TPU / GPU |
+| --- | --- | --- | --- |
+| `timing_s/step`，Steps 2–25 均值 | `30.78` | `287.32` | `9.3×` |
+| `timing_s/step` | `30.66` | `291.54` | `9.5×` |
+| └ `gen`（`step` 计时内等 rollout） | `0.04` | `194.72` | – |
+| └ `update_actor` | `24.45` | `80.46` | `3.3×` |
+| └ `update_weights` | `5.47` | `15.29` | `2.8×` |
+| 端到端墙钟 | `73.17` | `341.66` | `4.7×` |
+| └ 计时外：上一步 TensorBoard 记录 | `39.96` | `46.72` | – |
+| └ 计时外：其余（指标、dump 准备、`kv_clear`） | `2.56` | `3.40` | – |
+| 每步 token 数（`perf/total_num_tokens`） | `3.01` M | `2.94` M | – |
+| `timing_per_token_ms/update_actor` | `0.0081` | `0.0276` | `3.4×` |
+<!-- END AUTO-GENERATED p3c-retool-25s-02/perf -->
+
+> **读法**：
+> 1. 两个 `timing_s/step` 均值本身准确：Steps 2–25 GPU `30.78` s、TPU `287.32` s，与各自的 `head.log` / metrics JSON 以及 W&B 历史三处一致。但含义不同：TPU 的 `timing_s/step` 里平均 `194.7` s 是等 rollout（偶数步约 `373` s，奇数步约 `0.3` s），GPU 每步只有 `0.04` s。所以 `9.3×` 主要反映 TPU 的 rollout 跟不上 trainer，不是 trainer 慢 9 倍。
+> 2. 更可比的分项：`update_actor` `24.5` s vs `80.5` s（`3.3×`；两边每步 token 数相近，按 token 计 `3.4×`），`update_weights` `5.5` s vs `15.3` s（`2.8×`），端到端墙钟 `73.2` s vs `341.7` s（`4.7×`）。
+> 3. 两边每步都有约 `40`–`47` s 花在计时外的 TensorBoard 写入，对 GPU 来说比整个 `step` 还长。GPU 的 rollout 因此多出约 40 s 余量：`gen ≈ 0` 只说明 rollout 至少跟得上 73 s 一步，不能说明去掉这部分开销后仍跟得上。
+> 4. 每边只有一次运行，rollout 切分也不同（TPU 3 个 `TP=32, EP=32` 副本，GPU 12 个 `TP=4` 副本）。这些差距是值得继续调查的初步现象，不能单凭它们归因硬件性能。
+
+#### 8.5.7 掩码审计方法与范围
+
+- **方法**（[`rollout_mask_audit.py`](rollout_mask_audit.py)）：对每个审计会话，(1) 检查 `response_ids` 与 `response_mask` 等长，`segments` 恰好是 mask 的最大连续段；(2) 在整条 response 上（不按 segment）配对 `<tool_response>` … `</tool_response>`，块内含标签必须全部 `mask=0`，配对 `<tool_call>` … `</tool_call>`，必须全部 `mask=1`，`<|im_start|>` 不得计入 loss；(3) 每段 `mask=0` 必须恰好是注入的工具轮次 `\n<|im_start|>user\n<tool_response>…</tool_response><|im_end|>\n<|im_start|>assistant\n`，因此模型生成的 token 都在 loss 里；(4) 在拼接后的解码文本上按字符再做一遍同样的块检查，并核对每个标签在文本中的次数与其 token id 的次数一致（同时验证了 Qwen3 special token id 表）。
+- **旧检查的缺口**：旧脚本只在每个 segment 的文本里找完整的 `<tool_response>`。如果一个工具返回块从 `mask=0` 段开始、内容和 `</tool_response>` 落进 `mask=1` 段，`mask=1` 段里没有开标签，旧检查不会报警。[`test_retool_evidence_tools_on_cpu.py`](../../../tests/special_tpu/test_retool_evidence_tools_on_cpu.py) 构造了这类会话：旧检查漏报，新检查报出。
+- **结果**：从归档的 200 个原始会话重算，`0` 违规（见 8.5.2）。`p3c-retool-25s-01` Steps 1–9 的 72 个会话（GCS 原始文件，未归档）用新检查重跑，同样 `0` 违规。
+- **范围**：每步只审计 8 个会话，25 步共 200 个，占 `25,600` 条训练轨迹的 `0.78%`；其余轨迹只有 `rollout/*.jsonl` 的文本级汇总（工具调用次数、`-2.0` 计数），没有 token 级 mask。
+
+#### 8.5.8 可复现性：运行代码与 checkpoint
+
+- **运行代码**：`run_record.json` 记录的 `348bbff9`（`p3c-retool-25s-01` 与 `-02` 相同）此前只在本地，现已推到 GitHub tag [`run-code/p3c-retool-25s-01-02`](https://github.com/syangx39/verl-upstream/tree/run-code/p3c-retool-25s-01-02)（[commit](https://github.com/syangx39/verl-upstream/commit/348bbff9f4d303da43b27001a79d5734628d8b43)，父提交 `c4726400` 是合入 PR #15 后的 `tpu-main`）。pods 实际运行的是 launcher 用 `git archive` 上传的 `gs://ubench-logs/xiaotongyang/retool-v7x/runs/p3c-retool-25s-02/src-348bbff9f4d3.tar.gz`（sha256 `950dbf26…7701`）；[`verify_code_snapshot.py`](results/p3c-retool-25s-02/verify_code_snapshot.py) 逐个比对 tarball 内 `1,350` 个文件的 git blob hash 与 `git ls-tree -r 348bbff9`，全部一致，记录见 [`env/code_snapshot.json`](results/p3c-retool-25s-02/env/code_snapshot.json)。此后本分支的代码改动只有 `run_qwen3_30b_a3b_dapo_torchtitan.sh` 在未设 `CKPTS_DIR` 时默认写 GCS 运行目录（这次 run 显式设置了 `CKPTS_DIR`）。
+- **Checkpoint**：`-02` 用 `SAVE_FREQ=-1`、`resume_mode=disable`，整个 run 没有调用 `save_checkpoint`，Step 25 的权重没有保存。`p3c-retool-25s-01` 在 Step 10 写 `/tmp` checkpoint 时被 ephemeral-storage 驱逐（见 8.4）；之后默认改写 GCS 运行目录，但还没有任何 run 实际写过，所以写 GCS 的耗时、旧 checkpoint 轮转与 resume 都还没有实测（机制与体积估算见 PR #20）。GPU 正式 run `g64-retool-25s-01` 同样 `save_freq=-1`，也没有保存最终 checkpoint。

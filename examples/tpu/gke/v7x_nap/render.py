@@ -171,11 +171,68 @@ def check_run_name(name: str) -> None:
         )
 
 
+def parse_exclude_nodepools(values: Mapping[str, str]) -> list[str]:
+    """Optional comma-separated list of GKE node pool names to exclude via ``nodeAffinity`` ``NotIn``."""
+    raw = str(values.get("EXCLUDE_NODEPOOLS", "")).strip()
+    if not raw:
+        return []
+    pools = [p.strip() for p in raw.split(",") if p.strip()]
+    for p in pools:
+        if len(p) > 63 or not DNS_LABEL.match(p):
+            raise ValueError(f"EXCLUDE_NODEPOOLS entry {p!r} is not a valid DNS label")
+    return pools
+
+
+def parse_slice_nodepools(values: Mapping[str, str]) -> list[str]:
+    """Optional comma-separated list of GKE node pool names pinning each TPU slice 1-to-1 via ``nodeSelector``."""
+    raw = str(values.get("SLICE_NODEPOOLS", "")).strip()
+    if not raw:
+        return []
+    pools = [p.strip() for p in raw.split(",") if p.strip()]
+    for p in pools:
+        if len(p) > 63 or not DNS_LABEL.match(p):
+            raise ValueError(f"SLICE_NODEPOOLS entry {p!r} is not a valid DNS label")
+    expected = len(plan_slices(*_slice_counts(values)))
+    if len(pools) != expected:
+        raise ValueError(f"SLICE_NODEPOOLS has {len(pools)} entries, expected {expected} slices")
+    if len(set(pools)) != len(pools):
+        raise ValueError("SLICE_NODEPOOLS must specify a distinct nodepool for each slice")
+    overlap = sorted(set(pools) & set(parse_exclude_nodepools(values)))
+    if overlap:
+        raise ValueError(f"SLICE_NODEPOOLS and EXCLUDE_NODEPOOLS overlap: {', '.join(overlap)}")
+    return pools
+
+
+def slice_extra_affinity(values: Mapping[str, str]) -> str:
+    """Optional ``affinity.nodeAffinity`` snippet excluding specific GKE node pools."""
+    pools = parse_exclude_nodepools(values)
+    if not pools:
+        return ""
+    items = "\n".join(f'                              - "{p}"' for p in pools)
+    return (
+        "              affinity:\n"
+        "                nodeAffinity:\n"
+        "                  requiredDuringSchedulingIgnoredDuringExecution:\n"
+        "                    nodeSelectorTerms:\n"
+        "                      - matchExpressions:\n"
+        "                          - key: cloud.google.com/gke-nodepool\n"
+        "                            operator: NotIn\n"
+        "                            values:\n"
+        f"{items}"
+    )
+
+
 def _slice_values(values: Mapping[str, str], sl: SlicePlan, topology: str) -> dict[str, str]:
     policy = placement_policy(topology)
     multi_host = bool(policy)
     pod_annotation = "                alpha.jobset.sigs.k8s.io/exclusive-topology: cloud.google.com/gke-nodepool"
-    selector = f'                cloud.google.com/placement-policy-name: "{policy}"'
+    selector_lines = []
+    if multi_host:
+        selector_lines.append(f'                cloud.google.com/placement-policy-name: "{policy}"')
+    slice_pools = parse_slice_nodepools(values)
+    if slice_pools:
+        selector_lines.append(f'                cloud.google.com/gke-nodepool: "{slice_pools[sl.index]}"')
+    selector = "\n".join(selector_lines)
     return {
         **values,
         "SLICE_JOB": sl.job,
@@ -185,7 +242,8 @@ def _slice_values(values: Mapping[str, str], sl: SlicePlan, topology: str) -> di
         "HOSTS_PER_SLICE": str(hosts_per_slice(topology)),
         "CHIPS_PER_HOST": str(CHIPS_PER_HOST),
         "SLICE_EXTRA_POD_ANNOTATIONS": pod_annotation if multi_host else "",
-        "SLICE_EXTRA_NODE_SELECTOR": selector if multi_host else "",
+        "SLICE_EXTRA_NODE_SELECTOR": selector,
+        "SLICE_EXTRA_AFFINITY": slice_extra_affinity(values),
     }
 
 

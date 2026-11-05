@@ -190,6 +190,63 @@ def test_manifest_wandb_secret_ref_injection():
     }
 
 
+def test_exclude_nodepools_affinity_in_manifest_and_prewarm():
+    values = _values(EXCLUDE_NODEPOOLS="nap-tpu7x-stand-4t-pool1, nap-tpu7x-stand-4t-pool2")
+    text = render.render_manifest(values)
+    assert render.check_manifest(text, values) == []
+    (jobset,) = [d for d in yaml.safe_load_all(text) if d]
+    want_affinity = {
+        "nodeAffinity": {
+            "requiredDuringSchedulingIgnoredDuringExecution": {
+                "nodeSelectorTerms": [
+                    {
+                        "matchExpressions": [
+                            {
+                                "key": "cloud.google.com/gke-nodepool",
+                                "operator": "NotIn",
+                                "values": ["nap-tpu7x-stand-4t-pool1", "nap-tpu7x-stand-4t-pool2"],
+                            }
+                        ]
+                    }
+                ]
+            }
+        }
+    }
+    for rj in jobset["spec"]["replicatedJobs"][1:]:
+        assert rj["template"]["spec"]["template"]["spec"]["affinity"] == want_affinity
+    for _, doc_text in render.render_prewarm_docs(values):
+        (doc,) = [d for d in yaml.safe_load_all(doc_text) if d]
+        assert doc["spec"]["replicatedJobs"][0]["template"]["spec"]["template"]["spec"]["affinity"] == want_affinity
+    with pytest.raises(ValueError, match="EXCLUDE_NODEPOOLS"):
+        render.render_manifest(_values(EXCLUDE_NODEPOOLS="Bad_Pool_Name"))
+
+
+@pytest.mark.parametrize("render_job", [render.render_manifest, render.render_prewarm_docs])
+@pytest.mark.parametrize(
+    ("pins", "excluded", "message"),
+    [
+        ("pool-a,pool-a", "", "distinct nodepool"),
+        ("pool-a,pool-b", "pool-c, pool-b", "SLICE_NODEPOOLS and EXCLUDE_NODEPOOLS overlap: pool-b"),
+    ],
+)
+def test_slice_nodepools_reject_conflicting_configuration(render_job, pins, excluded, message):
+    with pytest.raises(ValueError, match=message):
+        render_job(_values(SLICE_NODEPOOLS=pins, EXCLUDE_NODEPOOLS=excluded))
+
+
+def test_slice_nodepools_pin_each_slice_in_manifest_and_prewarm():
+    values = _values(SLICE_NODEPOOLS="pool-a, pool-b", EXCLUDE_NODEPOOLS="pool-c")
+    (jobset,) = [d for d in yaml.safe_load_all(render.render_manifest(values)) if d]
+    jobs = jobset["spec"]["replicatedJobs"][1:]
+    warm = [yaml.safe_load(doc) for _, doc in render.render_prewarm_docs(values)]
+    for idx, pool in enumerate(("pool-a", "pool-b")):
+        for job in (jobs[idx], warm[idx]["spec"]["replicatedJobs"][0]):
+            spec = job["template"]["spec"]["template"]["spec"]
+            assert spec["nodeSelector"]["cloud.google.com/gke-nodepool"] == pool
+            terms = spec["affinity"]["nodeAffinity"]["requiredDuringSchedulingIgnoredDuringExecution"]
+            assert terms["nodeSelectorTerms"][0]["matchExpressions"][0]["values"] == ["pool-c"]
+
+
 def test_check_manifest_reports_violations():
     values = _values()
     (jobset,) = [d for d in yaml.safe_load_all(render.render_manifest(values)) if d]
@@ -970,3 +1027,42 @@ def test_head_without_a_slot_never_starts_ray(tmp_path, monkeypatch):
     assert head.Supervisor().run() == 3
     verdict = json.loads((tmp_path / "attempts" / "abcdef12" / "verdict.json").read_text())
     assert verdict["status"] == "ATTEMPTS_EXHAUSTED"
+
+
+def test_p3c_retool_25s_02_evidence_and_report_tables():
+    repo_root = Path(__file__).resolve().parents[2]
+    ev_dir = repo_root / "examples" / "tpu" / "retool" / "results" / "p3c-retool-25s-02"
+    doc = repo_root / "examples" / "tpu" / "retool" / "RETOOL_REWARD_CLIP_RERUN_PLAN_ZH.md"
+    subprocess.run([sys.executable, str(ev_dir / "verify_evidence.py")], check=True)
+    subprocess.run([sys.executable, str(ev_dir / "report_tables.py"), "--check", str(doc)], check=True)
+
+
+def test_p3c_retool_25s_02_code_snapshot_check_detects_a_changed_file(tmp_path):
+    repo_root = Path(__file__).resolve().parents[2]
+    ev_dir = repo_root / "examples" / "tpu" / "retool" / "results" / "p3c-retool-25s-02"
+    spec = importlib.util.spec_from_file_location("verify_code_snapshot", ev_dir / "verify_code_snapshot.py")
+    assert spec is not None and spec.loader is not None
+    snap = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(snap)
+
+    repo = tmp_path / "repo"
+    (repo / "pkg").mkdir(parents=True)
+    (repo / "pkg" / "a.py").write_text("x = 1\n")
+    (repo / "run.sh").write_text("echo run\n")
+    git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@example.com"]
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run([*git, "add", "-A"], check=True)
+    subprocess.run([*git, "commit", "-q", "-m", "c"], check=True)
+    sha = subprocess.run([*git, "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+    tarball = tmp_path / "src.tar.gz"
+    subprocess.run([*git, "archive", "--format=tar.gz", "-o", str(tarball), sha], check=True)
+
+    comment, tar = snap.tarball_blobs(tarball)
+    assert comment == sha and tar == snap.tree_blobs(repo, sha) and len(tar) == 2
+    (repo / "pkg" / "a.py").write_text("x = 2\n")
+    subprocess.run([*git, "commit", "-q", "-am", "c2"], check=True)
+    assert tar != snap.tree_blobs(repo, "HEAD")
+
+    archived = json.loads((ev_dir / "env" / "code_snapshot.json").read_text(encoding="utf-8"))
+    record = json.loads((ev_dir / "env" / "run_record.json").read_text(encoding="utf-8"))
+    assert archived["code_sha"] == record["code_sha"] == archived["gcs_tarball"]["pax_comment"]

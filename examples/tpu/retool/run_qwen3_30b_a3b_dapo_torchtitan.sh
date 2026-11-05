@@ -98,7 +98,15 @@ retool_py_path="pkg://examples.tpu.retool.retool_tpu"
 export WANDB_ENTITY="${WANDB_ENTITY:-google-trellis}"
 project_name="${PROJECT_NAME:-verl-torchtpu-grpo-test}"
 experiment_name="${EXPERIMENT_NAME:-qwen3-30b-a3b_retool_dapo_tpu}"
-default_local_dir="${CKPTS_DIR:-/tmp/checkpoint/${experiment_name}}"
+if [[ -n "${CKPTS_DIR:-}" ]]; then
+    default_local_dir="${CKPTS_DIR}"
+elif [[ -n "${VERL_NAP_RUN_DIR:-}" ]]; then
+    default_local_dir="${VERL_NAP_RUN_DIR}/checkpoints"
+elif [[ -n "${RUN_DIR:-}" ]]; then
+    default_local_dir="${RUN_DIR}/checkpoints"
+else
+    default_local_dir="/tmp/checkpoint/${experiment_name}"
+fi
 
 # ================= algorithm =================
 adv_estimator=grpo

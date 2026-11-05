@@ -1,0 +1,107 @@
+{
+  "gpu_g64": {
+    "run": "g64-retool-25s-01",
+    "source": "PR #17 @ dfdaea2c: examples/tpu/retool/gb200/logs/g64-retool-25s-01/g64_25s_01_metrics.json",
+    "step0": {
+      "aime_2024": {
+        "mean": 0.44222222222222224
+      },
+      "aime_2025": {
+        "mean": 0.35
+      }
+    },
+    "step25": {
+      "aime_2024": {
+        "mean": 0.5399999999999999
+      },
+      "aime_2025": {
+        "mean": 0.41777777777777775
+      }
+    },
+    "train_score_mean_steps_1_5": -0.202383,
+    "train_score_mean_steps_21_25": 0.431582,
+    "timing": {
+      "source": "PR #17: examples/tpu/retool/step_timing_breakdown.py on examples/tpu/retool/gb200/logs/g64-retool-25s-01/{g64_25s_01_metrics.json, tensorboard/events.out.tfevents.1793824080.g64-retool-25s-01-worker-7.1081.0, head.log ('update_weights done' lines)}",
+      "steps_2_24": {
+        "steps": [
+          2,
+          24
+        ],
+        "n": 23,
+        "mean_wall_s": 73.171,
+        "mean_timing_s_step": 30.655,
+        "mean_timing_s_gen": 0.038,
+        "mean_timing_s_update_actor": 24.45,
+        "mean_timing_s_update_weights": 5.474,
+        "mean_timing_s_testing": 0.0,
+        "mean_outside_timers_s": 42.516,
+        "mean_tb_span_prev_step_s": 39.956,
+        "mean_tb_scalars_prev_step": 98,
+        "mean_residual_s": 2.559,
+        "mean_post_sync_to_log_s": 2.566,
+        "min_timing_s_step": 25.361,
+        "max_timing_s_step": 35.036
+      },
+      "timing_s_step_mean_steps_2_25": 30.783,
+      "mean_perf_total_num_tokens_steps_2_24": 3010284.0,
+      "mean_timing_per_token_ms_update_actor_steps_2_24": 0.008112
+    }
+  },
+  "askhat_v5p": {
+    "source": "examples/tpu/retool/results/askhat-v5p/askhat_v5p_runs.json (PR #19)",
+    "lines": {
+      "cp2": {
+        "step25_run": "ci0k54pl",
+        "step25": {
+          "aime_2024": {
+            "mean": 0.583333
+          },
+          "aime_2025": {
+            "mean": 0.3875
+          }
+        },
+        "train_score_mean_steps_1_5": -0.364023,
+        "train_score_mean_steps_21_25": 0.478633
+      },
+      "cp1-opt": {
+        "step25_run": "rq1p980n",
+        "step25": {
+          "aime_2024": {
+            "mean": 0.566667
+          },
+          "aime_2025": {
+            "mean": 0.4625
+          }
+        },
+        "train_score_mean_steps_1_5": -0.304062,
+        "train_score_mean_steps_21_25": 0.483496
+      },
+      "cp1-pr115": {
+        "step25_run": "yrcsp4z6",
+        "step25": {
+          "aime_2024": {
+            "mean": 0.6
+          },
+          "aime_2025": {
+            "mean": 0.466667
+          }
+        },
+        "train_score_mean_steps_1_5": -0.305547,
+        "train_score_mean_steps_21_25": 0.48252
+      },
+      "cp1-pr115-async": {
+        "step25_run": "zyrnkte8",
+        "step25": {
+          "aime_2024": {
+            "mean": 0.5625
+          },
+          "aime_2025": {
+            "mean": 0.4625
+          }
+        },
+        "train_score_mean_steps_1_5": -0.274824,
+        "train_score_mean_steps_21_25": 0.479766
+      }
+    }
+  }
+}

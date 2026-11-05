@@ -18,21 +18,24 @@ Every number in the generated tables is read from files under ``logs/<run>/`` (o
 nothing is typed by hand:
 
 * per-step training / timing / rollout-correction metrics: the ``TaskRunnerV1`` ``step:N - key:value - ...`` lines
-  in ``head.log`` (cross-checked against the run's metrics JSON); wall-clock per step comes from the
-  ``Training Progress`` (tqdm) elapsed times printed in the same log;
-* per-step tool-call, ``score <= -2.0`` and token-mask audit counts: ``rollout_and_audit_summary.json``
-  (built by ``build_g64_run_evidence.py``);
+  in ``head.log`` (cross-checked against the run's metrics JSON);
+* per-step wall clock and its split (``step`` timer, validation, TensorBoard logging, the rest):
+  ``step_timing_breakdown.json``, i.e. ``examples/tpu/retool/step_timing_breakdown.py`` on the archived TensorBoard
+  event file (the ``Training Progress`` bar is not used: it updates only after each step's TensorBoard logging);
+* per-step tool-call, ``score <= -2.0`` and whole-session token-mask audit counts: ``rollout_and_audit_summary.json``
+  (built by ``build_g64_run_evidence.py`` from the raw sessions archived in ``rollout_audit/``);
 * Step 0 / final-step AIME accuracy, per-question deltas and the paired bootstrap interval:
   ``validation_step{0,N}_samples.jsonl``;
 * Askhat references: ``examples/tpu/retool/results/askhat-wandb-audit/askhat_runs_summary.json``.
 
 The markdown blocks in ``gb200/README.md`` and ``gb200/exp/REPRO_RESULTS_GB200_ZH.md`` between the
-``AUTO-GENERATED <run>/<table>`` markers are pasted verbatim from ``--print-markdown`` output and checked by
+``AUTO-GENERATED <run>/<table>`` markers are the verbatim generator output (``--write-docs``) and are checked by
 ``test_launcher_and_sandbox.py``.
 
 Usage::
 
     python3 examples/tpu/retool/gb200/logs/gen_g64_report_tables.py --run g64-retool-25s-01 --print-markdown
+    python3 examples/tpu/retool/gb200/logs/gen_g64_report_tables.py --write-docs  # refresh the blocks in place
 """
 
 import argparse
@@ -54,7 +57,6 @@ RUNS = {
 STEP_LINE_RE = re.compile(r"\bstep:(\d+) - ")
 NP_SCALAR_RE = re.compile(r"^np\.\w+\((.*)\)$")
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
-TQDM_RE = re.compile(r"Training Progress:\s+\d+%\|[^|]*\|\s*(\d+)/(\d+) \[(\d+(?::\d+){1,2})<")
 CONFIG_LINE_RE = re.compile(r"\(TaskRunnerV1 pid=\d+[^)]*\) (.*)$")
 BOOTSTRAP_REPS = 10_000
 BOOTSTRAP_SEED = 0
@@ -88,17 +90,6 @@ def parse_head_log_steps(path: Path) -> dict[int, dict]:
                     continue
             steps[int(m.group(1))] = {"line": lineno, "metrics": metrics}
     return steps
-
-
-def parse_tqdm_elapsed(path: Path) -> dict[int, int]:
-    """Return {completed steps: elapsed seconds} from the ``Training Progress`` bar (last value per count)."""
-    elapsed: dict[int, int] = {}
-    for n, _total, stamp in TQDM_RE.findall(path.read_text(encoding="utf-8", errors="replace")):
-        secs = 0
-        for part in stamp.split(":"):
-            secs = secs * 60 + int(part)
-        elapsed[int(n)] = secs
-    return elapsed
 
 
 def resolved_config(path: Path) -> list[str]:
@@ -216,22 +207,21 @@ def _pp(x: float) -> str:
     return f"{100.0 * x:+.2f} pp"
 
 
-def training_table(run: str, steps: dict[int, dict], rollout_summary: dict, tqdm: dict[int, int]) -> str:
+def training_table(run: str, steps: dict[int, dict], rollout_summary: dict) -> str:
     final = RUNS[run]["final_step"]
     header = (
-        "| Step (`head.log` line) | `timing_s/step` | wall-clock Δ (tqdm) | `timing_s/gen` | `timing_s/update_actor` | "
+        "| Step (`head.log` line) | `timing_s/step` | `timing_s/gen` | `timing_s/update_actor` | "
         "`timing_s/update_weights` | `perf/throughput` (tok/s/GPU) | `critic/score/mean` | `actor/pg_loss` | "
         "`actor/grad_norm` | `response_length/mean` (`max`) | `response_length/clip_ratio` | "
         "`num_turns/mean` (`max`) | trajectories with `<tool_response>` (calls) | `score <= -2.0` | "
         "audit mask violations |"
     )
-    rows = [header, "|" + " --- |" * 16]
+    rows = [header, "|" + " --- |" * 15]
     for s in range(1, final + 1):
         m = steps[s]["metrics"]
         r = rollout_summary["steps"][str(s)]
-        wall = tqdm[s] - tqdm.get(s - 1, 0)
         rows.append(
-            f"| {s} (L{steps[s]['line']}) | `{m['timing_s/step']:.2f}s` | `{wall}s` | `{m['timing_s/gen']:.2f}s` | "
+            f"| {s} (L{steps[s]['line']}) | `{m['timing_s/step']:.2f}s` | `{m['timing_s/gen']:.2f}s` | "
             f"`{m['timing_s/update_actor']:.2f}s` | `{m['timing_s/update_weights']:.2f}s` | "
             f"`{m['perf/throughput']:.1f}` | `{m['critic/score/mean']:+.4f}` | `{m['actor/pg_loss']:+.4f}` | "
             f"`{m['actor/grad_norm']:.4f}` | `{m['response_length/mean']:,.1f}` (`{m['response_length/max']:,.0f}`) | "
@@ -242,7 +232,6 @@ def training_table(run: str, steps: dict[int, dict], rollout_summary: dict, tqdm
     window = list(range(2, final + 1))
     w = [steps[s]["metrics"] for s in window]
     t = rollout_summary["totals"]
-    walls = [tqdm[s] - tqdm.get(s - 1, 0) for s in window]
 
     def mean(key: str) -> float:
         return sum(x[key] for x in w) / len(w)
@@ -250,7 +239,7 @@ def training_table(run: str, steps: dict[int, dict], rollout_summary: dict, tqdm
     rows.append(
         f"| Steps 2–{final} mean ({len(window)} steps) | `{mean('timing_s/step'):.2f}s` "
         f"(`{min(x['timing_s/step'] for x in w):.2f}s`–`{max(x['timing_s/step'] for x in w):.2f}s`) | "
-        f"`{sum(walls) / len(walls):.1f}s` | `{mean('timing_s/gen'):.3f}s` | `{mean('timing_s/update_actor'):.2f}s` | "
+        f"`{mean('timing_s/gen'):.3f}s` | `{mean('timing_s/update_actor'):.2f}s` | "
         f"`{mean('timing_s/update_weights'):.2f}s` | `{mean('perf/throughput'):.1f}` | – | – | – | – | – | – | "
         f"total `{t['trajectories_with_tool_response']} / {t['total_trajectories']}` "
         f"(`{t['total_tool_responses']:,}`) | total `{t['total_clip_neg2_count']}` | "
@@ -346,12 +335,39 @@ def askhat_table(run: str, steps: dict[int, dict], ev: dict[str, dict]) -> str:
     return "\n".join(rows)
 
 
-def derived_summary(run: str, steps: dict[int, dict], tqdm: dict[int, int]) -> dict:
-    """Scalar facts quoted in the report prose, all derived from the head.log step lines and tqdm."""
+def timing_table(run: str, timing: dict) -> str:
+    """Per-step wall clock split from ``step_timing_breakdown.json`` (TensorBoard event wall times)."""
+    rows = [
+        "| Step | wall clock (Δ of TensorBoard log starts) | `timing_s/step` | of which `gen` | of which "
+        "`update_actor` | of which `update_weights` | `timing_s/testing` | TensorBoard logging of the previous step "
+        "(scalars) | rest outside the timers | weight sync done → `logger.log` |",
+        "|" + " --- |" * 10,
+    ]
+    for r in timing["rows"]:
+        rows.append(
+            f"| {r['step']} | `{r['wall_s']:.2f}s` | `{r['timing_s_step']:.2f}s` | `{r['timing_s_gen']:.2f}s` | "
+            f"`{r['timing_s_update_actor']:.2f}s` | `{r['timing_s_update_weights']:.2f}s` | "
+            f"`{r['timing_s_testing']:.2f}s` | `{r['tb_span_prev_step_s']:.2f}s` ({r['tb_scalars_prev_step']}) | "
+            f"`{r['residual_s']:.2f}s` | `{r['post_sync_to_log_s']:.2f}s` |"
+        )
+    t = timing["summary"]
+    rows.append(
+        f"| Steps {t['steps'][0]}–{t['steps'][1]} mean ({t['n']} steps) | `{t['mean_wall_s']:.2f}s` | "
+        f"`{t['mean_timing_s_step']:.2f}s` | `{t['mean_timing_s_gen']:.3f}s` | "
+        f"`{t['mean_timing_s_update_actor']:.2f}s` | "
+        f"`{t['mean_timing_s_update_weights']:.2f}s` | `{t['mean_timing_s_testing']:.2f}s` | "
+        f"`{t['mean_tb_span_prev_step_s']:.2f}s` ({t['mean_tb_scalars_prev_step']:.0f}) | "
+        f"`{t['mean_residual_s']:.2f}s` | `{t['mean_post_sync_to_log_s']:.2f}s` |"
+    )
+    return "\n".join(rows)
+
+
+def derived_summary(run: str, steps: dict[int, dict], timing: dict) -> dict:
+    """Scalar facts quoted in the report prose, derived from the head.log step lines and the timing breakdown."""
     final = RUNS[run]["final_step"]
     train = [steps[s]["metrics"] for s in range(1, final + 1)]
     window = [steps[s]["metrics"] for s in range(2, final + 1)]
-    walls = [tqdm[s] - tqdm.get(s - 1, 0) for s in range(2, final + 1)]
+    t, last = timing["summary"], timing["rows"][-1]
 
     def mean(rows: list[dict], key: str) -> float:
         return sum(r[key] for r in rows) / len(rows)
@@ -364,8 +380,15 @@ def derived_summary(run: str, steps: dict[int, dict], tqdm: dict[int, int]) -> d
             "min": round(min(r["timing_s/step"] for r in window), 2),
             "max": round(max(r["timing_s/step"] for r in window), 2),
         },
-        "tqdm_elapsed_s_at_final": tqdm[final],
-        "tqdm_wall_s_per_step_steps_2_to_final": round(sum(walls) / len(walls), 1),
+        f"wall_s_per_step_steps_2_to_{final - 1}": round(t["mean_wall_s"], 2),
+        f"timing_s_step_steps_2_to_{final - 1}": round(t["mean_timing_s_step"], 2),
+        f"tb_logging_s_per_step_steps_2_to_{final - 1}": round(t["mean_tb_span_prev_step_s"], 2),
+        f"tb_logging_s_per_scalar_steps_2_to_{final - 1}": round(
+            t["mean_tb_span_prev_step_s"] / (t["mean_tb_scalars_prev_step"] - 1), 3
+        ),
+        f"rest_outside_timers_s_steps_2_to_{final - 1}": round(t["mean_residual_s"], 2),
+        f"weight_sync_done_to_log_s_steps_2_to_{final - 1}": round(t["mean_post_sync_to_log_s"], 2),
+        f"step{final}_wall_s": round(last["wall_s"], 2),
         "timing_s_gen_mean_steps_2_to_final": round(mean(window, "timing_s/gen"), 3),
         "timing_s_update_actor_mean_steps_2_to_final": round(mean(window, "timing_s/update_actor"), 2),
         "timing_s_update_weights_mean_steps_2_to_final": round(mean(window, "timing_s/update_weights"), 2),
@@ -394,32 +417,59 @@ def build_all(run: str) -> dict:
     spec = RUNS[run]
     ev_dir = LOGS_DIR / run
     steps = parse_head_log_steps(ev_dir / "head.log")
-    tqdm = parse_tqdm_elapsed(ev_dir / "head.log")
+    timing = json.loads((ev_dir / "step_timing_breakdown.json").read_text(encoding="utf-8"))
     metrics_json = json.loads((ev_dir / spec["metrics"]).read_text(encoding="utf-8"))
     compared = check_head_log_against_metrics_json(steps, metrics_json)
     rollout_summary = json.loads((ev_dir / "rollout_and_audit_summary.json").read_text(encoding="utf-8"))
     ev = eval_summary(run, steps)
     out = {
         "head_log_vs_metrics_json_values_compared": compared,
-        "training_table": training_table(run, steps, rollout_summary, tqdm),
+        "training_table": training_table(run, steps, rollout_summary),
+        "timing_table": timing_table(run, timing),
         "rollout_corr_table": rollout_corr_table(run, steps),
         "eval_table": eval_table(run, ev),
         "eval_summary": ev,
-        "derived_summary": derived_summary(run, steps, tqdm),
+        "derived_summary": derived_summary(run, steps, timing),
     }
     if spec["final_step"] >= 25:
         out["askhat_table"] = askhat_table(run, steps, ev)
     return out
 
 
-TABLES = ("training_table", "rollout_corr_table", "eval_table", "askhat_table")
+TABLES = ("training_table", "timing_table", "rollout_corr_table", "eval_table", "askhat_table")
+
+
+DOCS = (LOGS_DIR.parent / "README.md", LOGS_DIR.parent / "exp" / "REPRO_RESULTS_GB200_ZH.md")
+
+
+def write_docs() -> None:
+    """Refresh every ``AUTO-GENERATED <run>/<table>`` block of the two reports in place (markers must exist)."""
+    outs = {run: build_all(run) for run in RUNS}
+    for doc in DOCS:
+        text = doc.read_text(encoding="utf-8")
+        for run, out in outs.items():
+            for name in TABLES:
+                if name not in out:
+                    continue
+                begin = f"<!-- BEGIN AUTO-GENERATED {run}/{name} (gen_g64_report_tables.py) -->"
+                end = f"<!-- END AUTO-GENERATED {run}/{name} -->"
+                i, j = text.find(begin), text.find(end)
+                assert i >= 0 and j > i, f"{doc.name}: markers of {run}/{name} not found"
+                text = text[:i] + f"{begin}\n{out[name]}\n" + text[j:]
+        doc.write_text(text, encoding="utf-8")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--run", choices=sorted(RUNS), required=True)
+    parser.add_argument("--run", choices=sorted(RUNS))
     parser.add_argument("--print-markdown", action="store_true", help="print the markdown tables of the run")
+    parser.add_argument("--write-docs", action="store_true", help="refresh the AUTO-GENERATED blocks in both reports")
     args = parser.parse_args()
+    if args.write_docs:
+        write_docs()
+        return
+    if not args.run:
+        parser.error("--run is required unless --write-docs is given")
     out = build_all(args.run)
     if args.print_markdown:
         for name in TABLES:

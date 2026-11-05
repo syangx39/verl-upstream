@@ -875,41 +875,82 @@ class TestG64ReportTables(unittest.TestCase):
                     )
             self.assertEqual(summary["training_rollouts"]["per_sample_rescoring"].split(" ")[0], "not")
 
-    def test_mask_audit_flags_tool_response_in_loss_tokens(self):
+    def _build_ev(self):
         import importlib.util
 
         spec = importlib.util.spec_from_file_location("build_ev", self.LOGS_DIR / "build_g64_run_evidence.py")
         build_ev = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(build_ev)
+        return build_ev
 
-        def session(mask, segments):
-            return {
-                "response_ids": list(range(len(mask))),
-                "response_mask": mask,
-                "mask_length_matches": True,
-                "missing_fields": [],
-                "error": None,
-                "segments": segments,
-            }
+    def test_mask_audit_flags_a_tool_response_straddling_segments(self):
+        a = self._build_ev().mask_audit
+        text = {a.IM_START: "<|im_start|>", a.IM_END: "<|im_end|>", a.NEWLINE: "\n", a.USER: "user"}
+        text |= {a.ASSISTANT: "assistant", a.TOOL_CALL_OPEN: "<tool_call>", a.TOOL_CALL_CLOSE: "</tool_call>"}
+        text |= {a.TOOL_RESPONSE_OPEN: "<tool_response>", a.TOOL_RESPONSE_CLOSE: "</tool_response>"}
+        model = [1, a.TOOL_CALL_OPEN, 2, a.TOOL_CALL_CLOSE, a.IM_END]
+        turn = [a.NEWLINE, a.IM_START, a.USER, a.NEWLINE, a.TOOL_RESPONSE_OPEN, 5, 6, a.TOOL_RESPONSE_CLOSE]
+        turn += [a.IM_END, a.NEWLINE, a.IM_START, a.ASSISTANT, a.NEWLINE]
+        for leak_from, expect_violation in ((len(turn), False), (6, True)):
+            ids = model + turn + [7, a.IM_END]
+            mask = [1] * len(model) + [0 if i < leak_from else 1 for i in range(len(turn))] + [1, 1]
+            segs = [
+                {"mask": m, "start": i, "end": j, "text": "".join(text.get(t, "w") for t in ids[i:j])}
+                for m, i, j in a._runs(mask)
+            ]
+            rec = {"response_ids": ids, "response_mask": mask, "segments": segs, "mask_length_matches": True}
+            res = a.audit_session(rec)
+            self.assertEqual(bool(res["violations"]), expect_violation, res)
+            self.assertFalse(a.per_segment_check(rec), "the earlier per-segment check misses both cases")
 
-        good = session(
-            [1, 1, 0, 0, 1],
-            [
-                {"mask": 1, "start": 0, "end": 2, "text": "think <tool_call>run</tool_call>"},
-                {"mask": 0, "start": 2, "end": 4, "text": "<tool_response>4</tool_response>"},
-                {"mask": 1, "start": 4, "end": 5, "text": "\\boxed{4}"},
-            ],
-        )
-        leaked = session([1, 1], [{"mask": 1, "start": 0, "end": 2, "text": "<tool_response>4</tool_response>"}])
-        inconsistent = session([1, 0], [{"mask": 1, "start": 0, "end": 2, "text": "answer"}])
-        with tempfile.TemporaryDirectory() as td:
-            path = Path(td) / "1.jsonl"
-            path.write_text("\n".join(json.dumps(s) for s in (good, leaked, inconsistent)) + "\n", encoding="utf-8")
-            res = build_ev.audit_sessions(path)
-        self.assertEqual(res["audit_sessions"], 3)
-        self.assertEqual(res["audit_mask_violations"], 2)
-        self.assertEqual(res["audit_tool_call_segments"], 1)
-        self.assertEqual(res["audit_tool_response_segments"], 1)
+    def test_mask_audit_recomputed_from_archived_raw_sessions(self):
+        import base64
+        import gzip
+        import hashlib
+
+        build_ev = self._build_ev()
+        for run, final in (("g64-retool-smoke-04", 5), ("g64-retool-25s-01", 25)):
+            ev_dir = self.LOGS_DIR / run
+            manifest = json.loads((ev_dir / "raw_manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(len(manifest["files"]), final + 1)
+            for f in manifest["files"]:
+                data = (ev_dir / f["path"]).read_bytes()
+                data = gzip.decompress(data) if f["path"].endswith(".gz") else data
+                self.assertEqual(hashlib.sha256(data).hexdigest(), f["sha256"], f["path"])
+                self.assertEqual(base64.b64encode(hashlib.md5(data).digest()).decode(), f["md5_base64"], f["path"])
+            summary = json.loads((ev_dir / "rollout_and_audit_summary.json").read_text(encoding="utf-8"))
+            for s, audit in build_ev.audit_steps(ev_dir / "rollout_audit", final, ".jsonl.gz").items():
+                self.assertEqual({k: summary["steps"][s][k] for k in audit}, audit, f"{run} step {s}")
+            t = summary["totals"]
+            self.assertEqual(t["total_audit_sessions"], 8 * final)
+            for key in (
+                "audit_mask_violations",
+                "audit_tool_response_tokens_in_loss",
+                "audit_tool_call_tokens_not_in_loss",
+                "audit_mask0_runs_not_tool_turn",
+                "audit_im_start_in_loss",
+            ):
+                self.assertEqual(t[key], 0, f"{run}: {key}")
+        # Two sessions of the 25-step run have malformed tool-call tags written by the model, all in the loss.
+        self.assertEqual(t["audit_sessions_malformed_tool_call_tags"], 2)
+        self.assertEqual((t["audit_tool_response_blocks"], t["audit_mask0_runs"]), (706, 706))
+
+    def test_timing_breakdown_recomputed_from_tensorboard_events(self):
+        build_ev = self._build_ev()
+        for run, spec in self.gen.RUNS.items():
+            ev_dir = self.LOGS_DIR / run
+            metrics = json.loads((ev_dir / spec["metrics"]).read_text(encoding="utf-8"))
+            archived = json.loads((ev_dir / "step_timing_breakdown.json").read_text(encoding="utf-8"))
+            fresh = build_ev.timing_breakdown(ev_dir, metrics, spec["final_step"])
+            self.assertEqual(json.loads(json.dumps(fresh)), archived, run)
+            self.assertEqual(archived["log_utc_offset_hours"], 0.0)
+        s = archived["summary"]
+        self.assertEqual((s["steps"], s["n"]), ([2, 24], 23))
+        self.assertAlmostEqual(s["mean_wall_s"], 73.171, places=3)
+        self.assertAlmostEqual(s["mean_tb_span_prev_step_s"], 39.956, places=3)
+        self.assertLess(abs(s["mean_residual_s"] - s["mean_post_sync_to_log_s"]), 0.1)
+        step25 = archived["rows"][-1]
+        self.assertAlmostEqual(step25["timing_s_testing"], 126.531, places=3)
 
 
 class TestV1ValidateDumpNumTurns(unittest.TestCase):

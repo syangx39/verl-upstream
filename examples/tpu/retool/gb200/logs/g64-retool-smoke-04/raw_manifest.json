@@ -1,0 +1,52 @@
+{
+ "note": "md5_base64 equals the GCS object md5Hash (checked with `gcloud storage ls --json` when archived); sha256 is of the uncompressed file",
+ "files": [
+  {
+   "path": "rollout_audit/1.jsonl.gz",
+   "gzip_of": "rollout_audit/1.jsonl",
+   "gcs_uri": "gs://ubench-logs/xiaotongyang/retool-gb200/runs/g64-retool-smoke-04/rollout_audit/1.jsonl",
+   "bytes": 215943,
+   "md5_base64": "G8MDu+Y7j9g4VINOJqE1wA==",
+   "sha256": "4c7d030f64496910d2bc0e492989dd31897492c7c17529bfb15547911931f6e1"
+  },
+  {
+   "path": "rollout_audit/2.jsonl.gz",
+   "gzip_of": "rollout_audit/2.jsonl",
+   "gcs_uri": "gs://ubench-logs/xiaotongyang/retool-gb200/runs/g64-retool-smoke-04/rollout_audit/2.jsonl",
+   "bytes": 398432,
+   "md5_base64": "RlCP138HPhQAa2zpKr/enw==",
+   "sha256": "9a7c66333c77b2a2a7029dd69d52dae3e5b5ae4f7d8d75b9c456e387667299c4"
+  },
+  {
+   "path": "rollout_audit/3.jsonl.gz",
+   "gzip_of": "rollout_audit/3.jsonl",
+   "gcs_uri": "gs://ubench-logs/xiaotongyang/retool-gb200/runs/g64-retool-smoke-04/rollout_audit/3.jsonl",
+   "bytes": 558324,
+   "md5_base64": "kYTQ4tAY6S6OVaWz3cb+Yg==",
+   "sha256": "5775d33c508951be69523ee14b17af557de53fbed559b95f0b622499f541dd70"
+  },
+  {
+   "path": "rollout_audit/4.jsonl.gz",
+   "gzip_of": "rollout_audit/4.jsonl",
+   "gcs_uri": "gs://ubench-logs/xiaotongyang/retool-gb200/runs/g64-retool-smoke-04/rollout_audit/4.jsonl",
+   "bytes": 294058,
+   "md5_base64": "KIx1CqMMJjZGcejTl8FqWg==",
+   "sha256": "7c4a6a6c1e4d48c9d1fc5084e3606362bd477b339d35d54d4c8aebf10c708054"
+  },
+  {
+   "path": "rollout_audit/5.jsonl.gz",
+   "gzip_of": "rollout_audit/5.jsonl",
+   "gcs_uri": "gs://ubench-logs/xiaotongyang/retool-gb200/runs/g64-retool-smoke-04/rollout_audit/5.jsonl",
+   "bytes": 263911,
+   "md5_base64": "3E+WTjI5EqkFFM3kqJxKkA==",
+   "sha256": "dc318a24b16382a765f978ef33d5105a2dad820e57ce5b56f581f40edd10c200"
+  },
+  {
+   "path": "tensorboard/events.out.tfevents.1793812428.g64-retool-smoke-04-worker-12.1050.0",
+   "gcs_uri": "gs://ubench-logs/xiaotongyang/retool-gb200/runs/g64-retool-smoke-04/tensorboard/events.out.tfevents.1793812428.g64-retool-smoke-04-worker-12.1050.0",
+   "bytes": 70149,
+   "md5_base64": "9mdCEwWPE+uHL8pabOyXVg==",
+   "sha256": "3783033dfe448863529962253f10ea82ef33a02217b5f3e4ccbcb4663efc0628"
+  }
+ ]
+}

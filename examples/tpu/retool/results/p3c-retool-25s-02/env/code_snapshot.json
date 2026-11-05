@@ -19,6 +19,7 @@
   },
   "check": "verify_code_snapshot.py: all 1350 regular files of the tarball have the git blob hash of git ls-tree -r 348bbff9",
   "run_path_code_changes_since_run_on_this_branch": [
-    "examples/tpu/retool/run_qwen3_30b_a3b_dapo_torchtitan.sh: default_local_dir falls back to ${VERL_NAP_RUN_DIR}/checkpoints when CKPTS_DIR is unset (the run set CKPTS_DIR explicitly, see env/job_spec.json)"
+    "examples/tpu/retool/run_qwen3_30b_a3b_dapo_torchtitan.sh: default_local_dir falls back to ${VERL_NAP_RUN_DIR}/checkpoints when CKPTS_DIR is unset (the run set CKPTS_DIR explicitly, see env/job_spec.json)",
+    "examples/tpu/gke/v7x_nap/render.py: reject duplicate slice nodepools or overlap with EXCLUDE_NODEPOOLS before submission"
   ]
 }

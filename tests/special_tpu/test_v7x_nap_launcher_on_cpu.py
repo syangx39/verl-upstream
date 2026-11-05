@@ -221,6 +221,32 @@ def test_exclude_nodepools_affinity_in_manifest_and_prewarm():
         render.render_manifest(_values(EXCLUDE_NODEPOOLS="Bad_Pool_Name"))
 
 
+@pytest.mark.parametrize("render_job", [render.render_manifest, render.render_prewarm_docs])
+@pytest.mark.parametrize(
+    ("pins", "excluded", "message"),
+    [
+        ("pool-a,pool-a", "", "distinct nodepool"),
+        ("pool-a,pool-b", "pool-c, pool-b", "SLICE_NODEPOOLS and EXCLUDE_NODEPOOLS overlap: pool-b"),
+    ],
+)
+def test_slice_nodepools_reject_conflicting_configuration(render_job, pins, excluded, message):
+    with pytest.raises(ValueError, match=message):
+        render_job(_values(SLICE_NODEPOOLS=pins, EXCLUDE_NODEPOOLS=excluded))
+
+
+def test_slice_nodepools_pin_each_slice_in_manifest_and_prewarm():
+    values = _values(SLICE_NODEPOOLS="pool-a, pool-b", EXCLUDE_NODEPOOLS="pool-c")
+    (jobset,) = [d for d in yaml.safe_load_all(render.render_manifest(values)) if d]
+    jobs = jobset["spec"]["replicatedJobs"][1:]
+    warm = [yaml.safe_load(doc) for _, doc in render.render_prewarm_docs(values)]
+    for idx, pool in enumerate(("pool-a", "pool-b")):
+        for job in (jobs[idx], warm[idx]["spec"]["replicatedJobs"][0]):
+            spec = job["template"]["spec"]["template"]["spec"]
+            assert spec["nodeSelector"]["cloud.google.com/gke-nodepool"] == pool
+            terms = spec["affinity"]["nodeAffinity"]["requiredDuringSchedulingIgnoredDuringExecution"]
+            assert terms["nodeSelectorTerms"][0]["matchExpressions"][0]["values"] == ["pool-c"]
+
+
 def test_check_manifest_reports_violations():
     values = _values()
     (jobset,) = [d for d in yaml.safe_load_all(render.render_manifest(values)) if d]

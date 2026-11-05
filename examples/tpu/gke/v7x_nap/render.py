@@ -195,6 +195,11 @@ def parse_slice_nodepools(values: Mapping[str, str]) -> list[str]:
     expected = len(plan_slices(*_slice_counts(values)))
     if len(pools) != expected:
         raise ValueError(f"SLICE_NODEPOOLS has {len(pools)} entries, expected {expected} slices")
+    if len(set(pools)) != len(pools):
+        raise ValueError("SLICE_NODEPOOLS must specify a distinct nodepool for each slice")
+    overlap = sorted(set(pools) & set(parse_exclude_nodepools(values)))
+    if overlap:
+        raise ValueError(f"SLICE_NODEPOOLS and EXCLUDE_NODEPOOLS overlap: {', '.join(overlap)}")
     return pools
 
 

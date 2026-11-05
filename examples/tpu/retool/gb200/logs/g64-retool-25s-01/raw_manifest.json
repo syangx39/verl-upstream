@@ -1,0 +1,212 @@
+{
+ "note": "md5_base64 equals the GCS object md5Hash (checked with `gcloud storage ls --json` when archived); sha256 is of the uncompressed file",
+ "files": [
+  {
+   "path": "rollout_audit/1.jsonl.gz",
+   "gzip_of": "rollout_audit/1.jsonl",
+   "gcs_uri": "gs://ubench-logs/xiaotongyang/retool-gb200/runs/g64-retool-25s-01/rollout_audit/1.jsonl",
+   "bytes": 269088,
+   "md5_base64": "2mb2ZF2sx/mT6Kgo/+uLqw==",
+   "sha256": "ca6fbf317c9179a8156015d7e849c5a0590f12a399ca0d87715c13bec18b0d6c"
+  },
+  {
+   "path": "rollout_audit/2.jsonl.gz",
+   "gzip_of": "rollout_audit/2.jsonl",
+   "gcs_uri": "gs://ubench-logs/xiaotongyang/retool-gb200/runs/g64-retool-25s-01/rollout_audit/2.jsonl",
+   "bytes": 330895,
+   "md5_base64": "cSTl02W6qCe4QTpTbSo+Ag==",
+   "sha256": "0142590b18d25f18363997b6883947bdafa579ddfba0c644c005f125e306dd43"
+  },
+  {
+   "path": "rollout_audit/3.jsonl.gz",
+   "gzip_of": "rollout_audit/3.jsonl",
+   "gcs_uri": "gs://ubench-logs/xiaotongyang/retool-gb200/runs/g64-retool-25s-01/rollout_audit/3.jsonl",
+   "bytes": 415128,
+   "md5_base64": "5cPuyOkWhkavxqsV8vbDEQ==",
+   "sha256": "958408f00f7092ab339aa2cab839644774d7affd95174a5d510663b82cfd0ff8"
+  },
+  {
+   "path": "rollout_audit/4.jsonl.gz",
+   "gzip_of": "rollout_audit/4.jsonl",
+   "gcs_uri": "gs://ubench-logs/xiaotongyang/retool-gb200/runs/g64-retool-25s-01/rollout_audit/4.jsonl",
+   "bytes": 573114,
+   "md5_base64": "yYyLyCMbNBM7gSDCLRyc/g==",
+   "sha256": "00fb15abd57d05c291873eb0db2edeaa5c4e6b3d19870462d2fa9073801076c6"
+  },
+  {
+   "path": "rollout_audit/5.jsonl.gz",
+   "gzip_of": "rollout_audit/5.jsonl",
+   "gcs_uri": "gs://ubench-logs/xiaotongyang/retool-gb200/runs/g64-retool-25s-01/rollout_audit/5.jsonl",
+   "bytes": 350342,
+   "md5_base64": "oz33yX8ssXFjtoavDG1xUA==",
+   "sha256": "b3a363d13403f54abc9f3e3e4f0e8bc046d958f7d067091f57d9d334349656d9"
+  },
+  {
+   "path": "rollout_audit/6.jsonl.gz",
+   "gzip_of": "rollout_audit/6.jsonl",
+   "gcs_uri": "gs://ubench-logs/xiaotongyang/retool-gb200/runs/g64-retool-25s-01/rollout_audit/6.jsonl",
+   "bytes": 363477,
+   "md5_base64": "5aKgLPsSxjcObfAqX0O7LQ==",
+   "sha256": "bbb4980c018aa536c1d7fc7e090041a8bdd6a03c787a5161e94521ccbab384e4"
+  },
+  {
+   "path": "rollout_audit/7.jsonl.gz",
+   "gzip_of": "rollout_audit/7.jsonl",
+   "gcs_uri": "gs://ubench-logs/xiaotongyang/retool-gb200/runs/g64-retool-25s-01/rollout_audit/7.jsonl",
+   "bytes": 451109,
+   "md5_base64": "aej767PgD0rR/tovgfuj4g==",
+   "sha256": "5394d59980c9842e8bd83baa276b5e8f820a11117d50dbe68638f27b57d406a3"
+  },
+  {
+   "path": "rollout_audit/8.jsonl.gz",
+   "gzip_of": "rollout_audit/8.jsonl",
+   "gcs_uri": "gs://ubench-logs/xiaotongyang/retool-gb200/runs/g64-retool-25s-01/rollout_audit/8.jsonl",
+   "bytes": 345108,
+   "md5_base64": "CaaavHVKcNvbukicAZcImw==",
+   "sha256": "5a00b6e56e5ab214ede10b31f4b371fca76c5bf6055be4b5d8308fe82930733b"
+  },
+  {
+   "path": "rollout_audit/9.jsonl.gz",
+   "gzip_of": "rollout_audit/9.jsonl",
+   "gcs_uri": "gs://ubench-logs/xiaotongyang/retool-gb200/runs/g64-retool-25s-01/rollout_audit/9.jsonl",
+   "bytes": 586395,
+   "md5_base64": "eYZe6FkEy/nPA8b6RaYkaA==",
+   "sha256": "c15bc030d64242a3cf0f5cdf26e3fca77423b1e891cf338a7c29551ee4c37760"
+  },
+  {
+   "path": "rollout_audit/10.jsonl.gz",
+   "gzip_of": "rollout_audit/10.jsonl",
+   "gcs_uri": "gs://ubench-logs/xiaotongyang/retool-gb200/runs/g64-retool-25s-01/rollout_audit/10.jsonl",
+   "bytes": 340864,
+   "md5_base64": "lyjUs4qtevmtDdaaUC9bfw==",
+   "sha256": "d1fcf56b0fac5744f6940c2bca90a61cdeb464ad03590cd15388f8b1526402bb"
+  },
+  {
+   "path": "rollout_audit/11.jsonl.gz",
+   "gzip_of": "rollout_audit/11.jsonl",
+   "gcs_uri": "gs://ubench-logs/xiaotongyang/retool-gb200/runs/g64-retool-25s-01/rollout_audit/11.jsonl",
+   "bytes": 195964,
+   "md5_base64": "aW+mNSX+8j7jNOOt8y8OFg==",
+   "sha256": "301eeab97484db770cbc8f36465bf15a3e9dab7c40bb696a0a01764601613118"
+  },
+  {
+   "path": "rollout_audit/12.jsonl.gz",
+   "gzip_of": "rollout_audit/12.jsonl",
+   "gcs_uri": "gs://ubench-logs/xiaotongyang/retool-gb200/runs/g64-retool-25s-01/rollout_audit/12.jsonl",
+   "bytes": 388126,
+   "md5_base64": "OZ8ZectrZHULg5MUr7uFRg==",
+   "sha256": "61aafd0614ff8b0d7944d259eb32b8002c83f9642e42d3426cdab2e0c179d624"
+  },
+  {
+   "path": "rollout_audit/13.jsonl.gz",
+   "gzip_of": "rollout_audit/13.jsonl",
+   "gcs_uri": "gs://ubench-logs/xiaotongyang/retool-gb200/runs/g64-retool-25s-01/rollout_audit/13.jsonl",
+   "bytes": 293135,
+   "md5_base64": "nxq3SWk19m3j78FvZHJ8Xg==",
+   "sha256": "bd157a30b900934c4e394899f95317517f4731805df10c8e09202cf298abc1f5"
+  },
+  {
+   "path": "rollout_audit/14.jsonl.gz",
+   "gzip_of": "rollout_audit/14.jsonl",
+   "gcs_uri": "gs://ubench-logs/xiaotongyang/retool-gb200/runs/g64-retool-25s-01/rollout_audit/14.jsonl",
+   "bytes": 323789,
+   "md5_base64": "+3gdGhhgJI8WaevG9xQXzA==",
+   "sha256": "662456318c978ecbdab321ad1ba39f438894e127a289a2dc158cd4443e046848"
+  },
+  {
+   "path": "rollout_audit/15.jsonl.gz",
+   "gzip_of": "rollout_audit/15.jsonl",
+   "gcs_uri": "gs://ubench-logs/xiaotongyang/retool-gb200/runs/g64-retool-25s-01/rollout_audit/15.jsonl",
+   "bytes": 245010,
+   "md5_base64": "G1dEC76CxpY+8mhnZ63blA==",
+   "sha256": "8e87e9e1dae303a906f0e75b77f32f9e8a1bc5f22ad21c3b068f7d8c07ace27c"
+  },
+  {
+   "path": "rollout_audit/16.jsonl.gz",
+   "gzip_of": "rollout_audit/16.jsonl",
+   "gcs_uri": "gs://ubench-logs/xiaotongyang/retool-gb200/runs/g64-retool-25s-01/rollout_audit/16.jsonl",
+   "bytes": 342196,
+   "md5_base64": "lukKKMtgESOjfdLMeTb6sQ==",
+   "sha256": "510a03776c62029656770057e1a453ebec320e9dae1af6401b879b58961d5ec6"
+  },
+  {
+   "path": "rollout_audit/17.jsonl.gz",
+   "gzip_of": "rollout_audit/17.jsonl",
+   "gcs_uri": "gs://ubench-logs/xiaotongyang/retool-gb200/runs/g64-retool-25s-01/rollout_audit/17.jsonl",
+   "bytes": 377278,
+   "md5_base64": "ooemQc+qRm055puZOVuvaA==",
+   "sha256": "40d2dc527ef5d2ba6e861b120d747e7eae5eaef4ee4f5fbc951ff2cd695bb2a1"
+  },
+  {
+   "path": "rollout_audit/18.jsonl.gz",
+   "gzip_of": "rollout_audit/18.jsonl",
+   "gcs_uri": "gs://ubench-logs/xiaotongyang/retool-gb200/runs/g64-retool-25s-01/rollout_audit/18.jsonl",
+   "bytes": 546610,
+   "md5_base64": "Xnnj45Z2jxZzmx20+vYctA==",
+   "sha256": "1b7843b5c6fdee729f4f085b9deeeb8659ed42c9455c4003b7c5d36b31c88875"
+  },
+  {
+   "path": "rollout_audit/19.jsonl.gz",
+   "gzip_of": "rollout_audit/19.jsonl",
+   "gcs_uri": "gs://ubench-logs/xiaotongyang/retool-gb200/runs/g64-retool-25s-01/rollout_audit/19.jsonl",
+   "bytes": 289913,
+   "md5_base64": "lzZZukR0xZBan0iqX/8eiA==",
+   "sha256": "e19b9fffd1c6b64fc845c7634db0b6756aeed7b3535ef9260225b0777ebe7c0e"
+  },
+  {
+   "path": "rollout_audit/20.jsonl.gz",
+   "gzip_of": "rollout_audit/20.jsonl",
+   "gcs_uri": "gs://ubench-logs/xiaotongyang/retool-gb200/runs/g64-retool-25s-01/rollout_audit/20.jsonl",
+   "bytes": 265144,
+   "md5_base64": "cDCaLR863cCR4njLJ4/dUg==",
+   "sha256": "72ff08049c025979e9af3f9bacc618b0c6b3ab5279141087558aa09955a19138"
+  },
+  {
+   "path": "rollout_audit/21.jsonl.gz",
+   "gzip_of": "rollout_audit/21.jsonl",
+   "gcs_uri": "gs://ubench-logs/xiaotongyang/retool-gb200/runs/g64-retool-25s-01/rollout_audit/21.jsonl",
+   "bytes": 343481,
+   "md5_base64": "ytDofEVlip45/Jm3O3KyFA==",
+   "sha256": "3b355c7c2c758966994d490055b0bd9c83c9bb6f5e801884649eec4acb48f24a"
+  },
+  {
+   "path": "rollout_audit/22.jsonl.gz",
+   "gzip_of": "rollout_audit/22.jsonl",
+   "gcs_uri": "gs://ubench-logs/xiaotongyang/retool-gb200/runs/g64-retool-25s-01/rollout_audit/22.jsonl",
+   "bytes": 336494,
+   "md5_base64": "wpfZD30vpdAFR7a1klrv9w==",
+   "sha256": "746b4e7cdac4534528cf8a4f53ab83a849d8a0ef91ec24b1cf2931c4e13091ec"
+  },
+  {
+   "path": "rollout_audit/23.jsonl.gz",
+   "gzip_of": "rollout_audit/23.jsonl",
+   "gcs_uri": "gs://ubench-logs/xiaotongyang/retool-gb200/runs/g64-retool-25s-01/rollout_audit/23.jsonl",
+   "bytes": 287741,
+   "md5_base64": "pTx8Zn+DiOzAiK1hQbNikw==",
+   "sha256": "0f39a8c6671cb0c313d14ea41f7e7f5fe1ab3a25d6452f8b02bbd5204cb7c10f"
+  },
+  {
+   "path": "rollout_audit/24.jsonl.gz",
+   "gzip_of": "rollout_audit/24.jsonl",
+   "gcs_uri": "gs://ubench-logs/xiaotongyang/retool-gb200/runs/g64-retool-25s-01/rollout_audit/24.jsonl",
+   "bytes": 268396,
+   "md5_base64": "9goD95Vejmrl/hB0aCi1yg==",
+   "sha256": "4cd5e121d787ae594b0137d4dd67c728b509ecbabfafc8ae1719274a1ac161ad"
+  },
+  {
+   "path": "rollout_audit/25.jsonl.gz",
+   "gzip_of": "rollout_audit/25.jsonl",
+   "gcs_uri": "gs://ubench-logs/xiaotongyang/retool-gb200/runs/g64-retool-25s-01/rollout_audit/25.jsonl",
+   "bytes": 425569,
+   "md5_base64": "LHbWECReUkqs6Y3lFNpeCw==",
+   "sha256": "dfa446ac7927f2da074953d4a45dc7a43e819f4fce3d220dc37d117e8a1942a8"
+  },
+  {
+   "path": "tensorboard/events.out.tfevents.1793824080.g64-retool-25s-01-worker-7.1081.0",
+   "gcs_uri": "gs://ubench-logs/xiaotongyang/retool-gb200/runs/g64-retool-25s-01/tensorboard/events.out.tfevents.1793824080.g64-retool-25s-01-worker-7.1081.0",
+   "bytes": 196889,
+   "md5_base64": "qoWrRSd0pnBVU8jQyu68xg==",
+   "sha256": "7b1868210a280eccbc37f31e3f68c36fd01ecab3a78eb995b4c30757bf64409b"
+  }
+ ]
+}

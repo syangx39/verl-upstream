@@ -316,7 +316,7 @@ bash examples/tpu/retool/gb200/run_ray_jobset_gb200.sh
 
 > **Important Notes on `ROLLOUT_TP` and `EXPECT_GIT_SHA`**:
 > 1. **`ROLLOUT_TP`**: In [`run_qwen3_30b_a3b_dapo_torchtitan_gb200.sh`](./run_qwen3_30b_a3b_dapo_torchtitan_gb200.sh), `ROLLOUT_TP` defaults to `TOTAL_ROLLOUT_GPUS`. For multi-node rollout (`16`, `32`, or `48` rollout GPUs), always pass `JOBENV_ROLLOUT_TP=4` explicitly so `verl` instantiates `4`, `8`, or `12` independent `TP=4` vLLM replicas.
-> 2. **`EXPECT_GIT_SHA` (Must point to the `gb200-retool-runtime` lineage matching the image's `uv.lock`)**: The prebuilt image `@sha256:087366ae...` was built from commit `a2cbde47ba729d0cba7e881da1692df20d8e05e4` on the `gb200-retool-runtime` branch (whose `uv.lock` SHA-256 is `df508db0b957fa181c229fb75885cd3863cb651fd5233d0fa5af95e990bda0be` and matches all 264 locked packages in `/workspace/verl-pin/.venv`). Because `tpu-main` is based on an earlier upstream `uv.lock` (`d30f7e35...`), checking out a `tpu-main` commit inside the GB200 container would fail `verify_venv_lock.py --expect-lock-sha256 df508db0...`. Instead, pass `EXPECT_GIT_SHA="32cbf016aa0de19bc4b70802c350aa78b3a4da3b"` (on `gb200-retool-runtime`, directly on top of `a2cbde47`, with zero diff in `uv.lock` or `pyproject.toml`, containing the V1 validation `num_turns` dump fix in `verl/trainer/ppo/v1/trainer_base.py` for offline shaped-reward reconciliation plus the updated `run_qwen3_30b_a3b_dapo_torchtitan_gb200.sh`, `run_ray_jobset_gb200.sh`, and `verify_venv_lock.py --output-json`) so every Pod checks out `32cbf016...`, verifies both `uv.lock` (`df508db0...`) and `git_sha` via `verify_venv_lock.py --output-json "${RUN_DIR}/env/${LAUNCH_ID}-${HOST_TAG}-precheck.json"`, and passes the cross-node JSON readiness gate.
+> 2. **`EXPECT_GIT_SHA` (Must point to the `gb200-retool-runtime` lineage matching the image's `uv.lock`)**: The prebuilt image `@sha256:087366ae...` was built from commit `a2cbde47ba729d0cba7e881da1692df20d8e05e4` on the `gb200-retool-runtime` branch (whose `uv.lock` SHA-256 is `df508db0b957fa181c229fb75885cd3863cb651fd5233d0fa5af95e990bda0be` and matches all 264 locked packages in `/workspace/verl-pin/.venv`). Because `tpu-main` is based on an earlier upstream `uv.lock` (`d30f7e35...`), checking out a `tpu-main` commit inside the GB200 container would fail `verify_venv_lock.py --expect-lock-sha256 df508db0...`. Instead, pass `EXPECT_GIT_SHA="27c41116acfdd89435f78e0993455bf9338a79fd"` (on `gb200-retool-runtime`, directly on top of `a2cbde47`, with zero diff in `uv.lock` or `pyproject.toml`, containing the V1 validation `num_turns` dump fix in `verl/trainer/ppo/v1/trainer_base.py` for offline shaped-reward reconciliation, `EXCLUDE_NODES` support in `run_ray_jobset_gb200.sh`, and automatic `'wandb'` logger enablement in `run_qwen3_30b_a3b_dapo_torchtitan_gb200.sh` when `WANDB_API_KEY` is present) so every Pod checks out `27c41116...`, verifies both `uv.lock` (`df508db0...`) and `git_sha` via `verify_venv_lock.py --output-json "${RUN_DIR}/env/${LAUNCH_ID}-${HOST_TAG}-precheck.json"`, and passes the cross-node JSON readiness gate.
 
 #### Example 64-GPU Launch Commands (`NUM_NODES=16`)
 
@@ -325,7 +325,7 @@ bash examples/tpu/retool/gb200/run_ray_jobset_gb200.sh
    RUN_NAME="g64a-retool-rl-25step-$(date -u +%Y%m%d-%H%M%S)" \
    NUM_NODES="16" \
    GPUS_PER_NODE="4" \
-   EXPECT_GIT_SHA="32cbf016aa0de19bc4b70802c350aa78b3a4da3b" \
+   EXPECT_GIT_SHA="27c41116acfdd89435f78e0993455bf9338a79fd" \
    KUBE_CONTEXT="<YOUR_GB200_KUBE_CONTEXT>" \
    NODEPOOL="<YOUR_4xGB200_NV18_NODEPOOL>" \
    GCS_BUCKET="<YOUR_GCS_BUCKET>" \
@@ -364,13 +364,19 @@ bash examples/tpu/retool/gb200/run_ray_jobset_gb200.sh
    RUN_NAME="g64d-p3c-parity-25s-$(date -u +%Y%m%d-%H%M%S)" \
    NUM_NODES="16" \
    GPUS_PER_NODE="4" \
-   EXPECT_GIT_SHA="32cbf016aa0de19bc4b70802c350aa78b3a4da3b" \
+   EXPECT_GIT_SHA="27c41116acfdd89435f78e0993455bf9338a79fd" \
    KUBE_CONTEXT="<YOUR_GB200_KUBE_CONTEXT>" \
    NODEPOOL="<YOUR_4xGB200_NV18_NODEPOOL>" \
    GCS_BUCKET="<YOUR_GCS_BUCKET>" \
    RUN_ROOT="<YOUR_USER>/retool-gb200/runs" \
    INPUTS_ROOT="<YOUR_USER>/retool-v7x/inputs" \
    IMAGE="us-central1-docker.pkg.dev/supercomputer-testing/pirillo-gcr/verl-torchtitan-cu130-arm64@sha256:087366ae58a31888c2af2c25992c33ea77471b1b2c58d221b370899f4721e689" \
+   WANDB_SECRET_NAME="<YOUR_WANDB_SECRET_NAME>" \
+   WANDB_SECRET_KEY="WANDB_API_KEY" \
+   JOBENV_LOGGER_LIST="['console','tensorboard','wandb']" \
+   JOBENV_WANDB_PROJECT="verl-torchtpu-grpo-test" \
+   JOBENV_WANDB_ENTITY="google-trellis" \
+   JOBENV_WANDB_MODE="online" \
    JOBENV_MODEL_SRC_PATH="/data/<YOUR_USER>/retool-v7x/runs/p2-retool-sft-01/checkpoint/global_step_372/huggingface" \
    JOBENV_NNODES_TRAINER="4" \
    JOBENV_N_GPUS_TRAINER="4" \
@@ -408,6 +414,238 @@ bash examples/tpu/retool/gb200/run_ray_jobset_gb200.sh
 
 1. Verify `ComputeDomain` / DRA domain limits on the target 8- or 16-node GKE nodepool: [`run_ray_jobset_gb200.sh`](./run_ray_jobset_gb200.sh) creates a single `ComputeDomain` (`numNodes: ${COMPUTE_DOMAIN_NUM_NODES}`, default `NUM_NODES`) whose `resourceClaimTemplate` is attached by all `${NUM_NODES}` Pods. Simply setting `COMPUTE_DOMAIN_NUM_NODES < NUM_NODES` on a single `ComputeDomain` while all `${NUM_NODES}` Pods still claim it is **not** a validated multi-domain solution; if 8 or 16 nodes span multiple NVLink domains that cannot join one `ComputeDomain`, per-domain `ComputeDomain` partitioning or non-IMEX cross-rack fallback must be validated on the target cluster first.
 2. [`run_ray_jobset_gb200.sh`](./run_ray_jobset_gb200.sh) sets Pod `nvidia.com/gpu` requests/limits to `GPUS_PER_NODE` (`1..4`, default `4`), verifies that `nvidia-smi -L` reports exactly `GPUS_PER_NODE` GPUs on every node, runs [`verify_venv_lock.py`](./verify_venv_lock.py) (`${LAUNCH_ID}-${HOST_TAG}-precheck.json`) and [`verify_g0_gb200.py`](./verify_g0_gb200.py) (`${LAUNCH_ID}-${HOST_TAG}-g0-verify.json`) on **every** node (`head` + `worker-0 .. worker-$((NUM_NODES-2))`), and blocks training until all `${NUM_NODES}` nodes match `EXPECT_GIT_SHA`, `EXPECT_CHECKPOINT_SHA256`, and `ray status` (`${TOTAL_GPUS}.0 GPU`).
-3. Run a 3-step smoke at 32 GPUs and 64 GPUs first to verify resolved Hydra config parity, finite gradients, actual optimizer updates, `0` `<tool_response>` mask violations, multi-turn sandbox execution, no OOM, and NCCL weight broadcast to all `4 / 8 / 12` rollout replicas.
+3. Run a smoke validation run at 64 GPUs first to verify resolved Hydra config parity, finite gradients, actual optimizer updates, `0` `<tool_response>` mask violations, multi-turn sandbox execution, no OOM, and NCCL weight broadcast to all `12` rollout replicas.
 4. Run the 25-step benchmark (with Step 0 and Step 25 `n=30` AIME 2024/2025 evaluations) under Profile 1 (for 8→32→64 GPU strong scaling) and Profile 2 (for 64-GPU GB200 vs. 64-chip TPU v7x `p3c-retool-25s-01` iso-accelerator comparison), and archive all metrics and wall-clock windows (`W1`, `W2`, evaluation, and end-to-end).
 
+---
+
+### 64-GPU (`G64-D`, `16` Nodes = `4` Trainer + `12` Rollout) Results: 25-Step Run (`g64-retool-25s-01`) and 5-Step Smoke (`g64-retool-smoke-04`)
+
+All tables below are generated by [`logs/gen_g64_report_tables.py`](./logs/gen_g64_report_tables.py) from each run's archived files ([`logs/g64-retool-25s-01/`](./logs/g64-retool-25s-01/), [`logs/g64-retool-smoke-04/`](./logs/g64-retool-smoke-04/)), which [`logs/build_g64_run_evidence.py`](./logs/build_g64_run_evidence.py) builds from the GCS run directories. Per-step metrics come from the `TaskRunnerV1` `step:N` lines in each `head.log` (`2969` / `1009` overlapping values agree with the runs' metrics JSON), wall clock per step and its split from `step_timing_breakdown.json` ([`step_timing_breakdown.py`](../step_timing_breakdown.py) on the archived TensorBoard event file), tool-call counts and the whole-session mask audit from `rollout_and_audit_summary.json` (the audit is recomputed from the archived raw sessions in `rollout_audit/`), evaluation results from the validation samples, and Askhat references from [`askhat_runs_summary.json`](../results/askhat-wandb-audit/askhat_runs_summary.json). [`test_launcher_and_sandbox.py`](./test_launcher_and_sandbox.py) checks that every `AUTO-GENERATED` block matches the generator output.
+
+#### 1. Setup shared by both runs
+
+- **Scheduling and preflight**: both runs used `a4x-highgpu-4g-a4x-pool-5` with `EXCLUDE_NODES=gke-a4x-baker-a4x-highgpu-4g-a4x-pool-aab7d37b-7329` (`GPU 00000009:01:00.0 is lost`) and one `ComputeDomain` (`numNodes: 16`). In each run all 16 `*-precheck.json` / `*-g0-verify.json` reports are `PASS` with `git_sha 27c41116` (the pods `git fetch` this commit from GitHub and check it out; pinned as tag [`run-code/g64-retool-smoke-04-25s-01`](https://github.com/syangx39/verl-upstream/tree/run-code/g64-retool-smoke-04-25s-01)) and one `uv_lock_sha256`, and the 16 `nvidia-smi -L` files list 64 GPUs ([`logs/recompute_g64_metrics.py --run <run>`](./logs/recompute_g64_metrics.py)).
+- **Same configuration**: the resolved Hydra configs printed in the two `head.log` files differ only in the run name and output paths, `trainer.test_freq` (`5 → 25`) and `trainer.total_training_steps` (`5 → 25`) (`resolved_config_diff` in the generator). Key settings, at the same line numbers in both logs: `tensor_model_parallel_size: 4` (L583), `data_parallel_shard_size: 16` (L284), `lr: 2e-06` (L211), `loss_mode: bypass_mode` (L224), `rollout_is: token` (L618, trainer-side only; see §4), `max_user_turns: 16` (L524), `enable_thinking: True` (L777), `max_response_length: 16384` (L790), `num_warmup_batches: 2` (L1066), reward `pkg://examples.tpu.retool.retool_tpu` (L776–L780). Each log shows 12 distinct `vLLMHttpServer` processes (`TP=4`).
+- **Checkpoint evidence boundary**: every node fully SHA-256-hashed its staged `/dev/shm` copy and matched the pinned composite `59247a00c13f2364a12aab5ab6b88b6d971d59ff643c57aad8ac4e55a71231b0`. The verifier version used in these runs then only size-checked `--ref-dir`, and its `ref_composite_sha256` field echoes the pinned value; it is not an independent hash of the reference copy. [`verify_g0_gb200.py`](./verify_g0_gb200.py) now reports `ref_check_mode="size_only"`, `ref_sha256_verified=false` and no reference hash in that mode, and `--full-ref-hash` hashes the reference files.
+- **No checkpoint was saved**: both runs set `trainer.save_freq=-1`, `trainer.resume_mode=disable` and `default_local_dir=/tmp/checkpoint/...` (`head.log` command line), so neither the final Step 25 / Step 5 weights nor any intermediate checkpoint exist.
+- **W&B**: 25-step run [`skzy1l0y`](https://wandb.ai/google-trellis/verl-torchtpu-grpo-test/runs/skzy1l0y), smoke [`hv1k9rwo`](https://wandb.ai/google-trellis/verl-torchtpu-grpo-test/runs/hv1k9rwo).
+
+#### 2. 25-step run (`g64-retool-25s-01`)
+
+**Step 0 vs. Step 25 AIME 2024 / 2025 (`n=30`)**
+
+<!-- BEGIN AUTO-GENERATED g64-retool-25s-01/eval_table (gen_g64_report_tables.py) -->
+| Metric (`n=30` samples per question, 30 questions) | Step 0 | Step 25 | Δ (Step 25 − Step 0) |
+| --- | --- | --- | --- |
+| AIME 2024 correct samples | `398 / 900` | `486 / 900` | `+88` |
+| AIME 2024 `acc/mean@30` | `44.22%` | `54.00%` | `+9.78 pp` (paired bootstrap 95% CI `[+3.89 pp, +16.22 pp]`) |
+| AIME 2024 `acc/maj@30/mean` | `61.97%` | `75.39%` | `+13.42 pp` |
+| AIME 2024 `acc/best@30/mean` | `78.07%` | `89.19%` | `+11.13 pp` |
+| AIME 2024 shaped `reward/mean@30` | `+0.0291` | `+0.1924` | `+0.1633` |
+| AIME 2024 questions improved / worse / tied (per-question correct count) | – | – | `21 / 6 / 3` |
+| AIME 2025 correct samples | `315 / 900` | `376 / 900` | `+61` |
+| AIME 2025 `acc/mean@30` | `35.00%` | `41.78%` | `+6.78 pp` (paired bootstrap 95% CI `[+1.67 pp, +12.22 pp]`) |
+| AIME 2025 `acc/maj@30/mean` | `55.90%` | `62.34%` | `+6.45 pp` |
+| AIME 2025 `acc/best@30/mean` | `72.78%` | `79.40%` | `+6.62 pp` |
+| AIME 2025 shaped `reward/mean@30` | `-0.1519` | `-0.0381` | `+0.1138` |
+| AIME 2025 questions improved / worse / tied (per-question correct count) | – | – | `17 / 6 / 7` |
+<!-- END AUTO-GENERATED g64-retool-25s-01/eval_table -->
+
+- Both two-level paired bootstrap 95% intervals exclude zero (AIME 2024 `[+3.89 pp, +16.22 pp]`, AIME 2025 `[+1.67 pp, +12.22 pp]`), and most questions improved (AIME 2024 `21 / 6 / 3` up / down / tied, AIME 2025 `17 / 6 / 7`). The intervals cover evaluation sampling noise on this fixed question set only; this is one training run.
+- The same SFT checkpoint scored `44.22% / 35.00%` at Step 0 here and `45.56% / 33.00%` in the smoke run, i.e. about ±2 pp of run-to-run evaluation spread at `n=30`.
+- `recompute_g64_metrics.py --run g64-retool-25s-01` rescored all 3,600 Step 0/25 samples with the runtime `retool_tpu.compute_score` (verbatim source, archived `output_tail_300` + `num_turns`): `pred`/`acc`/`score` match `3,600 / 3,600`.
+
+**Comparison with Askhat's v5p Regime 2 runs (16K + thinking + shaped reward, `max_user_turns=16`)**
+
+<!-- BEGIN AUTO-GENERATED g64-retool-25s-01/askhat_table (gen_g64_report_tables.py) -->
+| Run | Starts from | eval `n` per question | Step | AIME 2024 `acc` | AIME 2025 `acc` | train `critic/score/mean`, Steps 1–5 mean | Steps 21–25 mean |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `g64-retool-25s-01` (this run, 64× GB200) | SFT `p2-retool-sft-01` step 372 | `30` | 0 | `44.22%` | `35.00%` | – | – |
+| `g64-retool-25s-01` (this run, 64× GB200) | SFT `p2-retool-sft-01` step 372 | `30` | 25 | `54.00%` | `41.78%` | `-0.202` | `+0.432` |
+| `yjowd03u` (Askhat v5p) | Askhat's SFT checkpoint | `8` | 0 | `48.75%` | `30.83%` | – | – |
+| `ci0k54pl` (Askhat v5p) | resumed from `fcze3xlx (step 20 checkpoint)` | `8` | 25 | `58.33%` | `38.75%` | – | `+0.479` |
+| `rq1p980n` (Askhat v5p) | Askhat's SFT checkpoint | `8` | 25 | `56.67%` | `46.25%` | `-0.304` | `+0.483` |
+| `yrcsp4z6` (Askhat v5p) | Askhat's SFT checkpoint | `8` | 25 | `60.00%` | `46.67%` | `-0.306` | `+0.482` |
+<!-- END AUTO-GENERATED g64-retool-25s-01/askhat_table -->
+
+- At Step 25 we are `6.0`–`2.7` pp below Askhat on AIME 2024 and `4.5`–`4.9` pp below the two from-scratch runs on AIME 2025 (`+3.0` pp vs. the resumed `ci0k54pl`). The training reward over Steps 21–25 is `+0.432` vs. `+0.479`–`+0.483`.
+- These are not like-for-like: Askhat evaluates `n=8` per question (about 3 pp sampling standard error per number from that alone), Askhat's only Step 0 is from a different run (`yjowd03u`), the SFT checkpoints are not shown to be identical, and `ci0k54pl` resumed from Step 20. Within these limits there is no large gap; a difference of a few points cannot be resolved with these references.
+
+**Steps 1–25 training metrics (generated from `head.log`)**
+
+<!-- BEGIN AUTO-GENERATED g64-retool-25s-01/training_table (gen_g64_report_tables.py) -->
+| Step (`head.log` line) | `timing_s/step` | `timing_s/gen` | `timing_s/update_actor` | `timing_s/update_weights` | `perf/throughput` (tok/s/GPU) | `critic/score/mean` | `actor/pg_loss` | `actor/grad_norm` | `response_length/mean` (`max`) | `response_length/clip_ratio` | `num_turns/mean` (`max`) | trajectories with `<tool_response>` (calls) | `score <= -2.0` | audit mask violations |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 (L2511) | `248.77s` | `34.11s` | `209.48s` | `4.01s` | `119.6` | `-0.1200` | `-0.0267` | `0.1767` | `1,557.6` (`4,413`) | `0.10%` | `8.79` (`32`) | `1022 / 1024` (`3,477`) | `0` | `0 / 8` |
+| 2 (L2533) | `35.03s` | `0.03s` | `30.14s` | `4.28s` | `1406.4` | `-0.3013` | `-0.0823` | `0.1219` | `2,753.2` (`16,384`) | `0.10%` | `8.79` (`32`) | `1017 / 1024` (`3,475`) | `0` | `0 / 8` |
+| 3 (L2545) | `34.47s` | `0.04s` | `24.91s` | `8.96s` | `1381.8` | `-0.2828` | `-0.0316` | `0.1229` | `2,667.1` (`16,384`) | `0.20%` | `8.64` (`32`) | `1016 / 1024` (`3,401`) | `0` | `0 / 8` |
+| 4 (L2561) | `27.93s` | `0.04s` | `22.59s` | `4.73s` | `1585.0` | `-0.2601` | `-0.0527` | `0.1278` | `2,452.1` (`16,384`) | `0.10%` | `8.52` (`32`) | `1018 / 1024` (`3,340`) | `0` | `0 / 8` |
+| 5 (L2577) | `26.65s` | `0.04s` | `21.37s` | `4.31s` | `1542.1` | `-0.0478` | `-0.0741` | `0.1259` | `2,252.4` (`16,384`) | `0.49%` | `7.95` (`32`) | `1019 / 1024` (`3,044`) | `0` | `0 / 8` |
+| 6 (L2606) | `25.36s` | `0.04s` | `20.46s` | `4.30s` | `1591.6` | `-0.0373` | `-0.0909` | `0.1367` | `2,195.1` (`16,384`) | `0.20%` | `8.79` (`32`) | `1017 / 1024` (`3,476`) | `0` | `0 / 8` |
+| 7 (L2621) | `27.65s` | `0.03s` | `22.76s` | `4.28s` | `1624.4` | `+0.1388` | `-0.0085` | `0.1236` | `2,496.0` (`16,384`) | `0.10%` | `8.38` (`32`) | `1020 / 1024` (`3,265`) | `0` | `0 / 8` |
+| 8 (L2633) | `28.47s` | `0.04s` | `21.76s` | `5.74s` | `1498.3` | `+0.1380` | `-0.1245` | `0.1211` | `2,337.6` (`16,384`) | `0.10%` | `8.58` (`32`) | `1012 / 1024` (`3,371`) | `0` | `0 / 8` |
+| 9 (L2652) | `28.89s` | `0.03s` | `22.41s` | `5.89s` | `1518.0` | `+0.2105` | `-0.0939` | `0.1238` | `2,419.6` (`16,384`) | `0.10%` | `8.86` (`32`) | `1015 / 1024` (`3,512`) | `0` | `0 / 8` |
+| 10 (L2676) | `27.61s` | `0.04s` | `22.67s` | `4.33s` | `1617.5` | `+0.2861` | `-0.1354` | `0.1228` | `2,472.9` (`14,110`) | `0.10%` | `8.12` (`32`) | `1019 / 1024` (`3,133`) | `0` | `0 / 8` |
+| 11 (L2691) | `29.26s` | `0.04s` | `22.98s` | `5.31s` | `1536.8` | `+0.2740` | `-0.0453` | `0.1187` | `2,493.8` (`16,384`) | `0.29%` | `8.22` (`32`) | `1010 / 1024` (`3,184`) | `0` | `0 / 8` |
+| 12 (L2708) | `34.86s` | `0.04s` | `24.12s` | `10.12s` | `1348.7` | `+0.2293` | `-0.1551` | `0.1592` | `2,623.0` (`16,384`) | `0.20%` | `8.01` (`32`) | `1013 / 1024` (`3,079`) | `0` | `0 / 8` |
+| 13 (L2722) | `26.34s` | `0.04s` | `20.90s` | `4.83s` | `1590.8` | `+0.4393` | `-0.0675` | `0.1550` | `2,309.0` (`16,384`) | `0.10%` | `8.62` (`32`) | `1018 / 1024` (`3,391`) | `0` | `0 / 8` |
+| 14 (L2744) | `28.83s` | `0.03s` | `23.90s` | `4.31s` | `1615.7` | `+0.3871` | `-0.0991` | `0.1096` | `2,610.0` (`16,384`) | `0.10%` | `8.20` (`32`) | `1016 / 1024` (`3,176`) | `0` | `0 / 8` |
+| 15 (L2762) | `30.58s` | `0.04s` | `25.11s` | `4.39s` | `1584.3` | `+0.4492` | `-0.0496` | `0.1046` | `2,709.0` (`16,384`) | `0.29%` | `8.44` (`32`) | `1017 / 1024` (`3,296`) | `0` | `0 / 8` |
+| 16 (L2779) | `28.07s` | `0.04s` | `22.99s` | `4.31s` | `1651.1` | `+0.4584` | `-0.1208` | `0.1106` | `2,589.5` (`14,365`) | `0.10%` | `8.64` (`32`) | `1020 / 1024` (`3,402`) | `0` | `0 / 8` |
+| 17 (L2793) | `30.88s` | `0.04s` | `25.89s` | `4.32s` | `1658.8` | `+0.3941` | `-0.1449` | `0.1080` | `2,866.4` (`14,817`) | `0.10%` | `9.01` (`32`) | `1017 / 1024` (`3,588`) | `0` | `0 / 8` |
+| 18 (L2815) | `34.78s` | `0.04s` | `27.32s` | `6.41s` | `1492.9` | `+0.1824` | `-0.0906` | `0.1033` | `2,916.9` (`16,384`) | `0.39%` | `8.69` (`32`) | `1012 / 1024` (`3,424`) | `0` | `0 / 8` |
+| 19 (L2844) | `32.42s` | `0.04s` | `26.67s` | `5.06s` | `1528.8` | `+0.3364` | `-0.0712` | `0.1070` | `2,780.4` (`16,384`) | `0.20%` | `9.42` (`32`) | `1019 / 1024` (`3,799`) | `0` | `0 / 8` |
+| 20 (L2856) | `33.19s` | `0.04s` | `24.76s` | `7.75s` | `1434.6` | `+0.4260` | `-0.1119` | `0.1072` | `2,664.9` (`16,384`) | `0.10%` | `8.81` (`32`) | `1019 / 1024` (`3,489`) | `0` | `0 / 8` |
+| 21 (L2871) | `35.04s` | `0.04s` | `26.00s` | `8.35s` | `1429.2` | `+0.3412` | `-0.0329` | `0.1069` | `2,826.8` (`16,384`) | `0.49%` | `8.81` (`32`) | `1011 / 1024` (`3,488`) | `0` | `0 / 8` |
+| 22 (L2893) | `33.76s` | `0.04s` | `27.89s` | `5.18s` | `1562.3` | `+0.4788` | `-0.1389` | `0.0918` | `2,980.4` (`16,384`) | `0.10%` | `8.38` (`32`) | `1019 / 1024` (`3,269`) | `0` | `0 / 8` |
+| 23 (L2913) | `34.12s` | `0.05s` | `28.99s` | `4.43s` | `1602.5` | `+0.4405` | `-0.0731` | `0.0957` | `3,103.8` (`16,384`) | `0.39%` | `8.19` (`32`) | `1017 / 1024` (`3,171`) | `0` | `0 / 8` |
+| 24 (L2923) | `30.88s` | `0.04s` | `25.76s` | `4.33s` | `1620.0` | `+0.4258` | `-0.0470` | `0.1015` | `2,809.6` (`16,384`) | `0.49%` | `8.52` (`32`) | `1016 / 1024` (`3,336`) | `0` | `0 / 8` |
+| 25 (L2968) | `33.71s` | `0.04s` | `28.28s` | `4.34s` | `1630.5` | `+0.4716` | `-0.0633` | `0.0911` | `3,113.8` (`16,384`) | `0.49%` | `8.02` (`32`) | `1016 / 1024` (`3,082`) | `0` | `0 / 8` |
+| Steps 2–25 mean (24 steps) | `30.78s` (`25.36s`–`35.04s`) | `0.038s` | `24.61s` | `5.43s` | `1543.8` | – | – | – | – | – | – | total `25415 / 25600` (`83,668`) | total `0` | total `0 / 200` |
+<!-- END AUTO-GENERATED g64-retool-25s-01/training_table -->
+
+- Mean response length grew from `1,558` to `3,114` tokens with `response_length/clip_ratio <= 0.49%`; `0` trajectories scored `<= -2.0`. Peak trainer memory: `72.99` GB allocated / `112.31` GB reserved.
+- **Whole-session token-mask audit** ([`rollout_mask_audit.py`](../rollout_mask_audit.py)), recomputed from the 200 archived raw sessions ([`logs/g64-retool-25s-01/rollout_audit/`](./logs/g64-retool-25s-01/rollout_audit/); sizes and MD5 equal the GCS objects, see `raw_manifest.json`): `0` violations. All `706` `<tool_response>` blocks (`22,963` tokens, tags included) are outside the loss, each of the `706` `mask=0` runs is exactly the injected tool turn (`\n<|im_start|>user\n<tool_response>…</tool_response><|im_end|>\n<|im_start|>assistant\n`), and the `710` complete `<tool_call>` blocks are in the loss. Two sessions contain malformed `<tool_call>` tags written by the model (a duplicated `</tool_call>`; a second `<tool_call>` before the first was closed), all inside the loss. The earlier per-segment substring search could miss a tool-response block whose content and closing tag fall into a `mask=1` segment; [`test_retool_evidence_tools_on_cpu.py`](../../../../tests/special_tpu/test_retool_evidence_tools_on_cpu.py) builds such a session, which only the new audit flags. Scope: 8 sessions per step, 200 of the 25,600 training trajectories (0.78%).
+
+**Wall clock per step (TensorBoard timing)**
+
+<!-- BEGIN AUTO-GENERATED g64-retool-25s-01/timing_table (gen_g64_report_tables.py) -->
+| Step | wall clock (Δ of TensorBoard log starts) | `timing_s/step` | of which `gen` | of which `update_actor` | of which `update_weights` | `timing_s/testing` | TensorBoard logging of the previous step (scalars) | rest outside the timers | weight sync done → `logger.log` |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | `363.57s` | `248.77s` | `34.11s` | `209.48s` | `4.01s` | `0.00s` | `113.19s` (259) | `1.61s` | `1.25s` |
+| 2 | `78.99s` | `35.03s` | `0.03s` | `30.14s` | `4.28s` | `0.00s` | `41.74s` (98) | `2.21s` | `2.37s` |
+| 3 | `80.73s` | `34.47s` | `0.04s` | `24.91s` | `8.96s` | `0.00s` | `43.69s` (98) | `2.57s` | `2.66s` |
+| 4 | `71.92s` | `27.93s` | `0.04s` | `22.59s` | `4.74s` | `0.00s` | `41.74s` (98) | `2.24s` | `2.30s` |
+| 5 | `67.00s` | `26.65s` | `0.04s` | `21.37s` | `4.31s` | `0.00s` | `38.18s` (98) | `2.17s` | `2.29s` |
+| 6 | `69.08s` | `25.36s` | `0.04s` | `20.46s` | `4.30s` | `0.00s` | `41.15s` (98) | `2.56s` | `2.63s` |
+| 7 | `68.97s` | `27.65s` | `0.03s` | `22.76s` | `4.28s` | `0.00s` | `38.47s` (98) | `2.84s` | `2.34s` |
+| 8 | `74.04s` | `28.47s` | `0.04s` | `21.76s` | `5.74s` | `0.00s` | `43.39s` (98) | `2.18s` | `2.68s` |
+| 9 | `65.28s` | `28.89s` | `0.03s` | `22.41s` | `5.89s` | `0.00s` | `33.77s` (98) | `2.61s` | `2.72s` |
+| 10 | `68.39s` | `27.61s` | `0.04s` | `22.67s` | `4.33s` | `0.00s` | `38.74s` (98) | `2.04s` | `2.19s` |
+| 11 | `72.53s` | `29.26s` | `0.04s` | `22.98s` | `5.30s` | `0.00s` | `41.06s` (98) | `2.20s` | `2.84s` |
+| 12 | `76.67s` | `34.86s` | `0.04s` | `24.12s` | `10.12s` | `0.00s` | `39.60s` (98) | `2.21s` | `2.35s` |
+| 13 | `68.32s` | `26.34s` | `0.04s` | `20.90s` | `4.83s` | `0.00s` | `39.45s` (98) | `2.54s` | `2.68s` |
+| 14 | `70.75s` | `28.83s` | `0.03s` | `23.90s` | `4.31s` | `0.00s` | `39.62s` (98) | `2.31s` | `2.36s` |
+| 15 | `71.00s` | `30.58s` | `0.04s` | `25.11s` | `4.39s` | `0.00s` | `38.01s` (98) | `2.41s` | `2.60s` |
+| 16 | `69.66s` | `28.07s` | `0.04s` | `22.99s` | `4.31s` | `0.00s` | `39.02s` (98) | `2.57s` | `2.65s` |
+| 17 | `70.85s` | `30.88s` | `0.04s` | `25.89s` | `4.32s` | `0.00s` | `37.54s` (98) | `2.42s` | `2.58s` |
+| 18 | `75.82s` | `34.78s` | `0.04s` | `27.32s` | `6.41s` | `0.00s` | `38.32s` (98) | `2.72s` | `2.55s` |
+| 19 | `73.12s` | `32.42s` | `0.04s` | `26.68s` | `5.06s` | `0.00s` | `37.89s` (98) | `2.81s` | `2.53s` |
+| 20 | `82.48s` | `33.19s` | `0.04s` | `24.76s` | `7.75s` | `0.00s` | `46.59s` (98) | `2.70s` | `3.18s` |
+| 21 | `72.95s` | `35.04s` | `0.04s` | `26.00s` | `8.35s` | `0.00s` | `35.45s` (98) | `2.46s` | `2.56s` |
+| 22 | `85.55s` | `33.76s` | `0.04s` | `27.89s` | `5.18s` | `0.00s` | `47.81s` (98) | `3.98s` | `2.58s` |
+| 23 | `75.03s` | `34.12s` | `0.04s` | `29.00s` | `4.43s` | `0.00s` | `37.21s` (98) | `3.70s` | `2.88s` |
+| 24 | `73.81s` | `30.88s` | `0.04s` | `25.77s` | `4.33s` | `0.00s` | `40.54s` (98) | `2.40s` | `2.51s` |
+| 25 | `201.72s` | `33.71s` | `0.04s` | `28.28s` | `4.34s` | `126.53s` | `39.08s` (98) | `2.39s` | `128.98s` |
+| Steps 2–24 mean (23 steps) | `73.17s` | `30.66s` | `0.038s` | `24.45s` | `5.47s` | `0.00s` | `39.96s` (98) | `2.56s` | `2.57s` |
+<!-- END AUTO-GENERATED g64-retool-25s-01/timing_table -->
+
+- `timing_s/step` averages `30.78s` over Steps 2–25 (`30.66s` over Steps 2–24). It covers only the `step` timer of `RayPPOTrainer.fit`: sampling the batch (waiting for rollouts, `timing_s/gen`), `old_log_prob`, `adv`, `update_actor` and `update_weights`. Validation, `_compute_metrics`, the rollout / audit dump preparation (TransferQueue fetch and decode; the file writes run on a background thread), `tq.kv_clear` and `logger.log` (W&B, then one TensorBoard `add_scalar` per metric, then the console line) run outside it ([`trainer_base.py` L474–L540 at the run commit `27c41116`](https://github.com/syangx39/verl-upstream/blob/27c41116acfdd89435f78e0993455bf9338a79fd/verl/trainer/ppo/v1/trainer_base.py#L474-L540)).
+- TensorBoard records the wall time of every `add_scalar`, so the archived event file ([`logs/g64-retool-25s-01/tensorboard/`](./logs/g64-retool-25s-01/tensorboard/)) times each step independently of the trainer's timers; the first scalar of each step matches the W&B `_timestamp` to within 0.01 s (checked with the W&B API). Over Steps 2–24 the wall clock averages `73.17s` = `30.66s` `timing_s/step` + `39.96s` TensorBoard logging of the previous step (98 scalars, about `0.41s` each) + `2.56s` rest. The driver log gives `2.57s` from `update_weights done` to `logger.log`, which matches the rest, so the gap between wall clock and `timing_s/step` is the TensorBoard logging; it is not the rollout / audit GCS writes, which run on the dump thread.
+- Progress-bar (tqdm) intervals are not per-step training times: tqdm updates only after each step's TensorBoard logging, and the Steps 2–25 progress-bar mean (`83.7s`) includes Step 25, whose interval (`328s`) contains the `126.53s` final validation and the `165s` TensorBoard logging of Step 25's 358 scalars. By the TensorBoard clock Step 25 took `201.72s` = `33.71s` step + `126.53s` validation + `39.08s` TensorBoard logging of Step 24 + `2.39s`.
+- Likely cause of about `0.41s` per scalar (not tested separately): without TensorFlow installed, TensorBoard's `tensorflow_stub` `GFile` opens the event file in append mode, writes one record and closes it, for every record; `TENSORBOARD_DIR` is on GCS Fuse (`/data/...`), where each close uploads the whole file again. The TPU v7x run shows the same `0.41s` per scalar. To confirm, run 3 steps with `TENSORBOARD_DIR` on local disk (copied at the end) or without `tensorboard` in `LOGGER_LIST`.
+- `timing_s/gen ≈ 0.04s` means the replay buffer always had a batch ready. With about 40 s of TensorBoard logging per step the rollout also had that much extra time, so this shows the rollout keeps up with a ~73 s step, not that it would keep up with a ~33 s step. The TPU v7x comparison of these numbers is in PR #18 (`RETOOL_REWARD_CLIP_RERUN_PLAN_ZH.md` §8.5.6).
+- The 25,600 training trajectories are aggregated in `rollout_and_audit_summary.json`; they were not rescored per sample (the V1 training rollout dump has no `num_turns`).
+
+#### 3. 5-step smoke run (`g64-retool-smoke-04`, preliminary)
+
+<!-- BEGIN AUTO-GENERATED g64-retool-smoke-04/eval_table (gen_g64_report_tables.py) -->
+| Metric (`n=30` samples per question, 30 questions) | Step 0 | Step 5 | Δ (Step 5 − Step 0) |
+| --- | --- | --- | --- |
+| AIME 2024 correct samples | `410 / 900` | `416 / 900` | `+6` |
+| AIME 2024 `acc/mean@30` | `45.56%` | `46.22%` | `+0.67 pp` (paired bootstrap 95% CI `[-3.67 pp, +5.00 pp]`) |
+| AIME 2024 `acc/maj@30/mean` | `64.81%` | `66.62%` | `+1.81 pp` |
+| AIME 2024 `acc/best@30/mean` | `84.99%` | `84.61%` | `-0.38 pp` |
+| AIME 2024 shaped `reward/mean@30` | `+0.0504` | `+0.0651` | `+0.0147` |
+| AIME 2024 questions improved / worse / tied (per-question correct count) | – | – | `11 / 13 / 6` |
+| AIME 2025 correct samples | `297 / 900` | `315 / 900` | `+18` |
+| AIME 2025 `acc/mean@30` | `33.00%` | `35.00%` | `+2.00 pp` (paired bootstrap 95% CI `[-3.00 pp, +7.44 pp]`) |
+| AIME 2025 `acc/maj@30/mean` | `54.37%` | `54.42%` | `+0.06 pp` |
+| AIME 2025 `acc/best@30/mean` | `72.45%` | `71.40%` | `-1.05 pp` |
+| AIME 2025 shaped `reward/mean@30` | `-0.1869` | `-0.1487` | `+0.0382` |
+| AIME 2025 questions improved / worse / tied (per-question correct count) | – | – | `13 / 10 / 7` |
+<!-- END AUTO-GENERATED g64-retool-smoke-04/eval_table -->
+
+- A small increase in one run whose intervals include zero (AIME 2024 `[-3.67 pp, +5.00 pp]`, AIME 2025 `[-3.00 pp, +7.44 pp]`); the 25-step run above supersedes it.
+
+<!-- BEGIN AUTO-GENERATED g64-retool-smoke-04/training_table (gen_g64_report_tables.py) -->
+| Step (`head.log` line) | `timing_s/step` | `timing_s/gen` | `timing_s/update_actor` | `timing_s/update_weights` | `perf/throughput` (tok/s/GPU) | `critic/score/mean` | `actor/pg_loss` | `actor/grad_norm` | `response_length/mean` (`max`) | `response_length/clip_ratio` | `num_turns/mean` (`max`) | trajectories with `<tool_response>` (calls) | `score <= -2.0` | audit mask violations |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 (L2456) | `148.45s` | `34.11s` | `109.18s` | `3.99s` | `196.5` | `-0.2304` | `-0.0497` | `0.1716` | `1,512.5` (`3,782`) | `0.10%` | `8.37` (`32`) | `1020 / 1024` (`3,259`) | `0` | `0 / 8` |
+| 2 (L2469) | `30.20s` | `0.03s` | `25.29s` | `4.25s` | `1579.9` | `-0.2464` | `-0.0947` | `0.1268` | `2,666.1` (`15,193`) | `0.10%` | `9.20` (`32`) | `1016 / 1024` (`3,684`) | `0` | `0 / 8` |
+| 3 (L2498) | `32.15s` | `0.04s` | `24.49s` | `7.01s` | `1466.0` | `-0.2413` | `-0.0946` | `0.1225` | `2,633.4` (`16,384`) | `0.29%` | `8.33` (`32`) | `1019 / 1024` (`3,242`) | `0` | `0 / 8` |
+| 4 (L2513) | `27.50s` | `0.04s` | `22.64s` | `4.23s` | `1610.4` | `-0.2223` | `-0.0779` | `0.1245` | `2,452.9` (`16,384`) | `0.29%` | `8.27` (`32`) | `1019 / 1024` (`3,208`) | `0` | `0 / 8` |
+| 5 (L2544) | `25.64s` | `0.04s` | `20.43s` | `4.21s` | `1531.9` | `-0.0080` | `-0.1023` | `0.1441` | `2,138.6` (`16,384`) | `0.10%` | `7.98` (`32`) | `1014 / 1024` (`3,060`) | `0` | `0 / 8` |
+| Steps 2–5 mean (4 steps) | `28.87s` (`25.64s`–`32.15s`) | `0.037s` | `23.21s` | `4.92s` | `1547.0` | – | – | – | – | – | – | total `5088 / 5120` (`16,453`) | total `0` | total `0 / 40` |
+<!-- END AUTO-GENERATED g64-retool-smoke-04/training_table -->
+
+<!-- BEGIN AUTO-GENERATED g64-retool-smoke-04/timing_table (gen_g64_report_tables.py) -->
+| Step | wall clock (Δ of TensorBoard log starts) | `timing_s/step` | of which `gen` | of which `update_actor` | of which `update_weights` | `timing_s/testing` | TensorBoard logging of the previous step (scalars) | rest outside the timers | weight sync done → `logger.log` |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | `268.80s` | `148.45s` | `34.10s` | `109.18s` | `3.99s` | `0.00s` | `118.33s` (259) | `2.02s` | `1.22s` |
+| 2 | `71.11s` | `30.20s` | `0.03s` | `25.29s` | `4.25s` | `0.00s` | `38.71s` (98) | `2.21s` | `2.35s` |
+| 3 | `73.45s` | `32.15s` | `0.04s` | `24.49s` | `7.01s` | `0.00s` | `38.59s` (98) | `2.71s` | `2.85s` |
+| 4 | `67.24s` | `27.50s` | `0.04s` | `22.64s` | `4.23s` | `0.00s` | `37.44s` (98) | `2.31s` | `2.43s` |
+| 5 | `181.15s` | `25.64s` | `0.04s` | `20.43s` | `4.21s` | `115.89s` | `37.40s` (98) | `2.22s` | `118.20s` |
+| Steps 2–4 mean (3 steps) | `70.60s` | `29.95s` | `0.037s` | `24.14s` | `5.16s` | `0.00s` | `38.25s` (98) | `2.41s` | `2.54s` |
+<!-- END AUTO-GENERATED g64-retool-smoke-04/timing_table -->
+
+- Steps 2–5 `timing_s/step` mean `28.87s`; wall clock over Steps 2–4 `70.60s` per step, of which `38.25s` is TensorBoard logging (Step 5 includes the validation). Only 4 steps, so not a steady-state measurement. The whole-session mask audit of the 40 archived raw sessions finds `0` violations.
+
+#### 4. `actor/rollout_corr/rollout_is_*` diagnostics (same pattern on GPU and TPU)
+
+- `rollout_is_ratio_fraction_low ≈ 0.98–0.99` and `rollout_is_mean ≈ 0.005–0.02` contradict `k3_kl ≈ 0.01` if read as token-level statistics (a token with `ρ < 0.5` has `k3 ≥ 0.193`). They are sequence-level: the V1 trainer bypass path ([`trainer_base.py` L1713–L1721](../../../../verl/trainer/ppo/v1/trainer_base.py#L1713-L1721)) does not call [`apply_bypass_mode`](../../../../verl/trainer/ppo/rollout_corr_helper.py#L1109-L1144), so the actor keeps the dataclass default `policy_loss.rollout_correction.rollout_is="sequence"` ([`algorithm.py` L179](../../../../verl/trainer/config/algorithm.py#L179)), and the configured `algorithm.rollout_correction.rollout_is=token` never reaches the actor. With `Σ log ρ ≈ −KL × L` over 1.5K–3K-token responses, sequence weights collapse toward `e^-20`. Running the repository's `compute_rollout_correction_and_rejection_mask` on synthetic data ([`logs/repro_rollout_is_level.py`](./logs/repro_rollout_is_level.py), CPU `torch`; token KL ≈ 0.0094) gives `rollout_is_mean = 1.0004`, `fraction_low = 0` at token level and `0.0112`, `0.969` (equal to the sequence fraction) at sequence level.
+- With `loss_type="ppo_clip"` these weights are metrics only (`rollout_is_weights=None` in the loss). TPU 64-chip `p3c-retool-25s-01` Steps 1–9 show the same pattern (`rollout_is_mean 0.0022–0.0130`, `fraction_low 0.989–0.997`, `kl 0.0098–0.0126`). So these numbers are not evidence of a GPU-specific logprob misalignment, but they do not prove alignment either. Follow-ups: propagate `algorithm.rollout_correction` to the V1 actor (separate PR covering both platforms), and run a fixed-batch GPU/TPU logprob comparison on identical tokens and SFT weights.
+
+<details><summary>Per-step <code>actor/rollout_corr/*</code> values, 25-step run</summary>
+
+<!-- BEGIN AUTO-GENERATED g64-retool-25s-01/rollout_corr_table (gen_g64_report_tables.py) -->
+| Step | `actor/rollout_corr/kl` | `actor/rollout_corr/k3_kl` | `actor/rollout_corr/ppl_ratio` | `actor/rollout_corr/chi2_token` | `actor/rollout_corr/rollout_is_mean` | `actor/rollout_corr/rollout_is_ratio_fraction_low` | `actor/rollout_corr/rollout_is_seq_fraction_low` | `actor/rollout_corr/rollout_is_max` | `actor/rollout_corr/rollout_is_min` |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | `0.0115` | `0.0118` | `1.0127` | `0.0691` | `0.0101` | `0.9903` | `0.9903` | `0.242` | `6.84e-11` |
+| 2 | `0.0093` | `0.0093` | `1.0116` | `0.0331` | `0.0072` | `0.9953` | `0.9953` | `0.061` | `1.64e-04` |
+| 3 | `0.0094` | `0.0093` | `1.0124` | `0.0350` | `0.0033` | `0.9974` | `0.9974` | `0.073` | `6.97e-12` |
+| 4 | `0.0098` | `0.0098` | `1.0124` | `0.0386` | `0.0031` | `0.9966` | `0.9966` | `0.095` | `3.18e-11` |
+| 5 | `0.0094` | `0.0096` | `1.0116` | `0.0646` | `0.0127` | `0.9863` | `0.9863` | `0.519` | `3.61e-11` |
+| 6 | `0.0097` | `0.0100` | `1.0121` | `0.0716` | `0.0094` | `0.9918` | `0.9918` | `16.717` | `1.77e-05` |
+| 7 | `0.0091` | `0.0094` | `1.0112` | `0.0880` | `0.0106` | `0.9884` | `0.9884` | `0.051` | `6.45e-03` |
+| 8 | `0.0099` | `0.0098` | `1.0130` | `0.0459` | `0.0124` | `0.9895` | `0.9895` | `1.245` | `1.56e-06` |
+| 9 | `0.0095` | `0.0093` | `1.0114` | `0.0420` | `0.0088` | `0.9883` | `0.9883` | `1.922` | `3.39e-10` |
+| 10 | `0.0086` | `0.0086` | `1.0109` | `0.0309` | `0.0116` | `0.9903` | `0.9903` | `0.434` | `3.87e-11` |
+| 11 | `0.0090` | `0.0090` | `1.0111` | `0.0318` | `0.0119` | `0.9856` | `0.9856` | `1.255` | `1.42e-09` |
+| 12 | `0.0080` | `0.0090` | `1.0097` | `2.3181` | `0.0054` | `0.9907` | `0.9907` | `0.193` | `3.13e-10` |
+| 13 | `0.0087` | `0.0089` | `1.0106` | `0.0332` | `0.0097` | `0.9909` | `0.9909` | `1.796` | `2.18e-10` |
+| 14 | `0.0082` | `0.0084` | `1.0101` | `0.0475` | `0.0068` | `0.9947` | `0.9947` | `0.173` | `1.71e-10` |
+| 15 | `0.0076` | `0.0076` | `1.0094` | `0.0290` | `0.0097` | `0.9900` | `0.9900` | `0.286` | `1.06e-08` |
+| 16 | `0.0078` | `0.0078` | `1.0093` | `0.0371` | `0.0111` | `0.9870` | `0.9870` | `0.853` | `1.20e-09` |
+| 17 | `0.0077` | `0.0077` | `1.0096` | `0.0230` | `0.0058` | `0.9888` | `0.9888` | `0.300` | `1.23e-09` |
+| 18 | `0.0077` | `0.0077` | `1.0097` | `0.0267` | `0.0072` | `0.9889` | `0.9889` | `0.799` | `2.88e-10` |
+| 19 | `0.0079` | `0.0078` | `1.0101` | `0.0226` | `0.0074` | `0.9877` | `0.9877` | `0.446` | `2.91e-10` |
+| 20 | `0.0076` | `0.0079` | `1.0090` | `0.1237` | `0.0090` | `0.9914` | `0.9914` | `0.259` | `1.45e-10` |
+| 21 | `0.0076` | `0.0075` | `1.0093` | `0.0240` | `0.0057` | `0.9935` | `0.9935` | `0.288` | `9.49e-10` |
+| 22 | `0.0069` | `0.0068` | `1.0084` | `0.0230` | `0.0129` | `0.9854` | `0.9854` | `0.391` | `8.64e-09` |
+| 23 | `0.0067` | `0.0066` | `1.0082` | `0.0178` | `0.0143` | `0.9864` | `0.9864` | `0.247` | `5.78e-09` |
+| 24 | `0.0070` | `0.0070` | `1.0084` | `0.0231` | `0.0159` | `0.9802` | `0.9802` | `0.720` | `3.65e-08` |
+| 25 | `0.0064` | `0.0064` | `1.0078` | `0.0200` | `0.0102` | `0.9857` | `0.9857` | `0.508` | `2.50e-08` |
+<!-- END AUTO-GENERATED g64-retool-25s-01/rollout_corr_table -->
+
+</details>
+
+<details><summary>Per-step <code>actor/rollout_corr/*</code> values, 5-step smoke</summary>
+
+<!-- BEGIN AUTO-GENERATED g64-retool-smoke-04/rollout_corr_table (gen_g64_report_tables.py) -->
+| Step | `actor/rollout_corr/kl` | `actor/rollout_corr/k3_kl` | `actor/rollout_corr/ppl_ratio` | `actor/rollout_corr/chi2_token` | `actor/rollout_corr/rollout_is_mean` | `actor/rollout_corr/rollout_is_ratio_fraction_low` | `actor/rollout_corr/rollout_is_seq_fraction_low` | `actor/rollout_corr/rollout_is_max` | `actor/rollout_corr/rollout_is_min` |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | `0.0117` | `0.0116` | `1.0127` | `0.0639` | `0.0176` | `0.9844` | `0.9844` | `1.270` | `1.26e-10` |
+| 2 | `0.0092` | `0.0090` | `1.0116` | `0.0319` | `0.0048` | `0.9916` | `0.9916` | `0.093` | `4.92e-11` |
+| 3 | `0.0097` | `0.0097` | `1.0123` | `0.0348` | `0.0065` | `0.9931` | `0.9931` | `0.140` | `7.94e-09` |
+| 4 | `0.0097` | `0.0095` | `1.0121` | `0.0275` | `0.0057` | `0.9924` | `0.9924` | `0.282` | `1.96e-11` |
+| 5 | `0.0101` | `0.0100` | `1.0128` | `0.0327` | `0.0081` | `0.9897` | `0.9897` | `0.170` | `7.37e-11` |
+<!-- END AUTO-GENERATED g64-retool-smoke-04/rollout_corr_table -->
+
+</details>
+
+#### 5. Shared-code change
+
+- [`verl/utils/distributed.py`](../../../../verl/utils/distributed.py) keeps the `tpu-main` TPU branches (explicit `import torch_tpu` before `init_process_group`, TPU skip in `set_numa_affinity`); the new IPv4 Gloo/NCCL interface setup is a no-op on TPU.

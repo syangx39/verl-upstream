@@ -1,0 +1,20 @@
+{
+  "checked_packages": {
+    "flash-attn": "2.8.3",
+    "ray": "2.55.1",
+    "torch": "2.13.0+cu130",
+    "torch-checkpointing": "0.1.0",
+    "torchtitan": "0.3.0",
+    "transferqueue": "0.1.11",
+    "transformers": "5.16.1",
+    "vllm": "0.32.0"
+  },
+  "expected_git_sha": "27c41116acfdd89435f78e0993455bf9338a79fd",
+  "expected_lock_sha256": "df508db0b957fa181c229fb75885cd3863cb651fd5233d0fa5af95e990bda0be",
+  "git_sha": "27c41116acfdd89435f78e0993455bf9338a79fd",
+  "platform": "Linux/aarch64",
+  "python": "3.12.3",
+  "repo_dir": "/workspace/verl-pin",
+  "status": "PASS",
+  "uv_lock_sha256": "df508db0b957fa181c229fb75885cd3863cb651fd5233d0fa5af95e990bda0be"
+}

@@ -105,7 +105,19 @@ def verify_checkpoint_manifest(
     ref_dir: Path | None = None,
     expect_composite_sha256: str | None = None,
     workers: int = 8,
+    full_ref_hash: bool = False,
 ) -> dict[str, Any]:
+    """Hash the staged checkpoint and optionally cross-check it against a reference directory.
+
+    The staged ``model_dir`` is always fully SHA-256 hashed. For ``ref_dir``:
+
+    * ``ref_check_mode == "sha256"``: every reference file is hashed and compared entry by entry; this is
+      used whenever no pinned composite was matched, or when ``full_ref_hash`` is set.
+    * ``ref_check_mode == "size_only"``: when the staged copy already matched the pinned
+      ``expect_composite_sha256``, the reference files are only checked for presence and size (to avoid
+      re-reading ~57 GiB of shared storage on every node). Same-size files with different content are NOT
+      detected in this mode, so ``ref_composite_sha256`` stays ``None`` and ``ref_sha256_verified`` is False.
+    """
     t0 = time.time()
     required_meta = [
         "config.json",
@@ -131,18 +143,30 @@ def verify_checkpoint_manifest(
     composite_sha256_match = (composite_sha256 == expected_composite) if expected_composite is not None else None
 
     ref_match = None
+    ref_check_mode = None
+    ref_sha256_verified = False
     ref_composite_sha256 = None
     mismatches: list[str] = []
     if ref_dir is not None and ref_dir.exists():
-        ref_paths = [ref_dir / name for name in all_names]
-        with ThreadPoolExecutor(max_workers=workers) as ex:
-            ref_rows = list(ex.map(_sha256_file, ref_paths))
-        ref_manifest = {name: {"size_bytes": size_b, "sha256": digest} for name, size_b, digest in ref_rows}
-        ref_composite_sha256 = hashlib.sha256(json.dumps(ref_manifest, sort_keys=True).encode("utf-8")).hexdigest()
-        for name in all_names:
-            if manifest[name] != ref_manifest[name]:
-                mismatches.append(name)
-        ref_match = len(mismatches) == 0
+        if expected_composite is not None and composite_sha256_match and not full_ref_hash:
+            ref_check_mode = "size_only"
+            for name in all_names:
+                rp = ref_dir / name
+                if not rp.is_file() or rp.stat().st_size != manifest[name]["size_bytes"]:
+                    mismatches.append(name)
+            ref_match = len(mismatches) == 0
+        else:
+            ref_check_mode = "sha256"
+            ref_paths = [ref_dir / name for name in all_names]
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                ref_rows = list(ex.map(_sha256_file, ref_paths))
+            ref_manifest = {name: {"size_bytes": size_b, "sha256": digest} for name, size_b, digest in ref_rows}
+            ref_composite_sha256 = hashlib.sha256(json.dumps(ref_manifest, sort_keys=True).encode("utf-8")).hexdigest()
+            for name in all_names:
+                if manifest[name] != ref_manifest[name]:
+                    mismatches.append(name)
+            ref_match = len(mismatches) == 0
+            ref_sha256_verified = ref_match
 
     return {
         "model_dir": str(model_dir),
@@ -153,6 +177,8 @@ def verify_checkpoint_manifest(
         "composite_sha256": composite_sha256,
         "expected_composite_sha256": expected_composite,
         "composite_sha256_match": composite_sha256_match,
+        "ref_check_mode": ref_check_mode,
+        "ref_sha256_verified": ref_sha256_verified,
         "ref_composite_sha256": ref_composite_sha256,
         "ref_match": ref_match,
         "mismatches": mismatches,
@@ -395,6 +421,14 @@ def main() -> int:
         default=None,
         help="Optional path to write the JSON verification report.",
     )
+    parser.add_argument(
+        "--full-ref-hash",
+        action="store_true",
+        help=(
+            "Always SHA-256 every --ref-dir file. Without it, a staged copy that already matches "
+            "--expect-composite-sha256 only gets a size check against --ref-dir (ref_check_mode=size_only)."
+        ),
+    )
     args = parser.parse_args()
 
     stage_report = None
@@ -405,6 +439,7 @@ def main() -> int:
         args.model_dir,
         args.ref_dir,
         expect_composite_sha256=args.expect_composite_sha256,
+        full_ref_hash=args.full_ref_hash,
     )
     if args.ref_dir is not None and not manifest_report["ref_match"]:
         raise RuntimeError(f"Checkpoint manifest mismatch against {args.ref_dir}: {manifest_report['mismatches']}")

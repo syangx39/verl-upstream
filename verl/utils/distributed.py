@@ -65,7 +65,22 @@ def set_numa_affinity():
             pynvml.nvmlShutdown()
 
 
+def _configure_ipv4_socket_env_if_needed():
+    """Ensure Gloo/NCCL bind to the routable IPv4 interface when MASTER_ADDR is IPv4.
+
+    NVIDIA-only (GB200 GKE pods); a no-op on TPU so the TPU process-group setup is unchanged.
+    """
+    if get_platform().device_name == "tpu":
+        return
+    master_addr = os.environ.get("MASTER_ADDR", "")
+    if master_addr and not is_ipv6(master_addr) and os.path.exists("/sys/class/net/eth0"):
+        os.environ.setdefault("GLOO_SOCKET_IFNAME", "eth0")
+        os.environ.setdefault("NCCL_SOCKET_IFNAME", "eth0")
+        os.environ.setdefault("NCCL_SOCKET_FAMILY", "AF_INET")
+
+
 def initialize_global_process_group(timeout_second=36000):
+    _configure_ipv4_socket_env_if_needed()
     backend = f"cpu:gloo,{get_device_name()}:{get_nccl_backend()}"
     torch.distributed.init_process_group(
         backend=backend,
@@ -95,6 +110,7 @@ def initialize_global_process_group_ray(timeout_second=None, backend=None):
     if get_platform().device_name == "tpu":
         import torch_tpu  # noqa: F401
 
+    _configure_ipv4_socket_env_if_needed()
     timeout = timedelta(seconds=timeout_second) if timeout_second is not None else None
     backend = backend or f"cpu:gloo,{get_device_name()}:{get_nccl_backend()}"
     if not torch.distributed.is_initialized():

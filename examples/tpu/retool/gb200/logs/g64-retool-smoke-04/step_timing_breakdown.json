@@ -1,0 +1,100 @@
+{
+ "summary": {
+  "steps": [
+   2,
+   4
+  ],
+  "n": 3,
+  "mean_wall_s": 70.601,
+  "mean_timing_s_step": 29.948,
+  "mean_timing_s_gen": 0.037,
+  "mean_timing_s_update_actor": 24.14,
+  "mean_timing_s_update_weights": 5.163,
+  "mean_timing_s_testing": 0.0,
+  "mean_outside_timers_s": 40.654,
+  "mean_tb_span_prev_step_s": 38.247,
+  "mean_tb_scalars_prev_step": 98,
+  "mean_residual_s": 2.407,
+  "mean_post_sync_to_log_s": 2.543,
+  "min_timing_s_step": 27.498,
+  "max_timing_s_step": 32.15
+ },
+ "rows": [
+  {
+   "step": 1,
+   "wall_s": 268.801,
+   "timing_s_step": 148.453,
+   "timing_s_gen": 34.105,
+   "timing_s_update_actor": 109.181,
+   "timing_s_update_weights": 3.991,
+   "timing_s_testing": 0.0,
+   "outside_timers_s": 120.348,
+   "tb_span_prev_step_s": 118.334,
+   "tb_scalars_prev_step": 259,
+   "residual_s": 2.015,
+   "post_sync_to_log_s": 1.219
+  },
+  {
+   "step": 2,
+   "wall_s": 71.113,
+   "timing_s_step": 30.196,
+   "timing_s_gen": 0.029,
+   "timing_s_update_actor": 25.292,
+   "timing_s_update_weights": 4.25,
+   "timing_s_testing": 0.0,
+   "outside_timers_s": 40.917,
+   "tb_span_prev_step_s": 38.711,
+   "tb_scalars_prev_step": 98,
+   "residual_s": 2.206,
+   "post_sync_to_log_s": 2.348
+  },
+  {
+   "step": 3,
+   "wall_s": 73.452,
+   "timing_s_step": 32.15,
+   "timing_s_gen": 0.041,
+   "timing_s_update_actor": 24.49,
+   "timing_s_update_weights": 7.008,
+   "timing_s_testing": 0.0,
+   "outside_timers_s": 41.302,
+   "tb_span_prev_step_s": 38.595,
+   "tb_scalars_prev_step": 98,
+   "residual_s": 2.707,
+   "post_sync_to_log_s": 2.849
+  },
+  {
+   "step": 4,
+   "wall_s": 67.239,
+   "timing_s_step": 27.498,
+   "timing_s_gen": 0.04,
+   "timing_s_update_actor": 22.638,
+   "timing_s_update_weights": 4.23,
+   "timing_s_testing": 0.0,
+   "outside_timers_s": 39.742,
+   "tb_span_prev_step_s": 37.435,
+   "tb_scalars_prev_step": 98,
+   "residual_s": 2.307,
+   "post_sync_to_log_s": 2.433
+  },
+  {
+   "step": 5,
+   "wall_s": 181.15,
+   "timing_s_step": 25.64,
+   "timing_s_gen": 0.037,
+   "timing_s_update_actor": 20.433,
+   "timing_s_update_weights": 4.209,
+   "timing_s_testing": 115.895,
+   "outside_timers_s": 39.615,
+   "tb_span_prev_step_s": 37.395,
+   "tb_scalars_prev_step": 98,
+   "residual_s": 2.219,
+   "post_sync_to_log_s": 118.205
+  }
+ ],
+ "log_utc_offset_hours": 0.0,
+ "inputs": {
+  "tb_events": "tensorboard/events.out.tfevents.1793812428.g64-retool-smoke-04-worker-12.1050.0",
+  "log": "head.log",
+  "sync_done_regex": "update_weights done"
+ }
+}

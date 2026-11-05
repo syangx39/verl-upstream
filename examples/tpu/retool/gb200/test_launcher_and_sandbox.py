@@ -573,6 +573,36 @@ exit 0
         self.assertNotIn('nvidia.com/gpu: "4"', src)
         self.assertEqual(src.count("- name: EXPECT_GIT_SHA"), 2)
 
+    def test_wandb_secret_ref_and_plaintext_rejection(self):
+        """Verify WANDB_SECRET_NAME validation/check and rejection of plaintext JOBENV_WANDB_API_KEY."""
+        launcher = REPO_ROOT / "examples" / "tpu" / "retool" / "gb200" / "run_ray_jobset_gb200.sh"
+        with tempfile.TemporaryDirectory() as td:
+            bin_dir = self._make_mock_bins(Path(td), fail_on_create_idx=99)
+            base_env = os.environ.copy()
+            base_env.update(
+                {
+                    "PATH": f"{bin_dir}:{base_env.get('PATH', '')}",
+                    "RUN_NAME": "wandb-test-run",
+                    "KUBE_CONTEXT": "mock-ctx",
+                    "NODEPOOL": "mock-pool",
+                    "GCS_BUCKET": "mock-bucket",
+                    "RUN_ROOT": "mock-runs",
+                    "INPUTS_ROOT": "mock-inputs",
+                    "IMAGE": "mock-image:latest",
+                }
+            )
+            # 1. Plaintext JOBENV_WANDB_API_KEY must be rejected
+            env_plain = dict(base_env, JOBENV_WANDB_API_KEY="secret-value")
+            res_plain = subprocess.run(["bash", str(launcher)], env=env_plain, capture_output=True, text=True)
+            self.assertNotEqual(res_plain.returncode, 0)
+            self.assertIn("refusing to inject plaintext JOBENV_WANDB_API_KEY", res_plain.stderr)
+
+            # 2. Missing K8s Secret when WANDB_SECRET_NAME is set must fail closed
+            env_missing = dict(base_env, WANDB_SECRET_NAME="xiaotongyang-wandb")
+            res_missing = subprocess.run(["bash", str(launcher)], env=env_missing, capture_output=True, text=True)
+            self.assertNotEqual(res_missing.returncode, 0)
+            self.assertIn("Secret xiaotongyang-wandb (key WANDB_API_KEY) not found or empty", res_missing.stderr)
+
     def test_precheck_json_emission_and_cross_node_readiness_parsing(self):
         """Verify verify_venv_lock writes structured JSON and the launcher readiness snippet parses it end-to-end."""
         from examples.tpu.retool.gb200 import verify_venv_lock
@@ -661,6 +691,267 @@ class TestG0ManifestCompositeHashCheck(unittest.TestCase):
             self.assertEqual(rep_bad["expected_composite_sha256"], "0" * 64)
             self.assertFalse(rep_bad["composite_sha256_match"])
 
+            ref_dir = Path(td) / "ref"
+            ref_dir.mkdir()
+            for p in model_dir.iterdir():
+                if p.is_file():
+                    (ref_dir / p.name).write_bytes(p.read_bytes())
+
+            rep_ref_ok = verify_g0_gb200.verify_checkpoint_manifest(
+                model_dir, ref_dir=ref_dir, expect_composite_sha256=actual
+            )
+            # Pinned fast path: the staged copy is fully hashed, the reference is only size-checked,
+            # so no reference hash may be reported.
+            self.assertTrue(rep_ref_ok["ref_match"])
+            self.assertEqual(rep_ref_ok["ref_check_mode"], "size_only")
+            self.assertFalse(rep_ref_ok["ref_sha256_verified"])
+            self.assertIsNone(rep_ref_ok["ref_composite_sha256"])
+
+            rep_ref_full = verify_g0_gb200.verify_checkpoint_manifest(
+                model_dir, ref_dir=ref_dir, expect_composite_sha256=actual, full_ref_hash=True
+            )
+            self.assertEqual(rep_ref_full["ref_check_mode"], "sha256")
+            self.assertTrue(rep_ref_full["ref_match"])
+            self.assertTrue(rep_ref_full["ref_sha256_verified"])
+            self.assertEqual(rep_ref_full["ref_composite_sha256"], actual)
+
+            # Same size, different content: undetectable by the size-only check (and therefore never
+            # reported as hash-verified), detected by the full reference hash.
+            shard = ref_dir / "model-00001-of-00016.safetensors"
+            original = shard.read_bytes()
+            shard.write_bytes(bytes([original[0] ^ 0xFF]) + original[1:])
+            rep_same_size = verify_g0_gb200.verify_checkpoint_manifest(
+                model_dir, ref_dir=ref_dir, expect_composite_sha256=actual
+            )
+            self.assertEqual(rep_same_size["ref_check_mode"], "size_only")
+            self.assertFalse(rep_same_size["ref_sha256_verified"])
+            self.assertIsNone(rep_same_size["ref_composite_sha256"])
+            rep_same_size_full = verify_g0_gb200.verify_checkpoint_manifest(
+                model_dir, ref_dir=ref_dir, expect_composite_sha256=actual, full_ref_hash=True
+            )
+            self.assertFalse(rep_same_size_full["ref_match"])
+            self.assertFalse(rep_same_size_full["ref_sha256_verified"])
+            self.assertNotEqual(rep_same_size_full["ref_composite_sha256"], actual)
+            self.assertIn("model-00001-of-00016.safetensors", rep_same_size_full["mismatches"])
+
+            # Without a matched pinned composite the reference is always fully hashed.
+            rep_unpinned = verify_g0_gb200.verify_checkpoint_manifest(model_dir, ref_dir=ref_dir)
+            self.assertEqual(rep_unpinned["ref_check_mode"], "sha256")
+            self.assertFalse(rep_unpinned["ref_match"])
+
+            shard.write_bytes(b"corrupted-size")
+            rep_ref_bad = verify_g0_gb200.verify_checkpoint_manifest(
+                model_dir, ref_dir=ref_dir, expect_composite_sha256=actual
+            )
+            self.assertFalse(rep_ref_bad["ref_match"])
+            self.assertIn("model-00001-of-00016.safetensors", rep_ref_bad["mismatches"])
+
+
+class TestDistributedTpuGuards(unittest.TestCase):
+    """The GB200 IPv4 socket fix in verl/utils/distributed.py must not change the shared TPU path."""
+
+    @staticmethod
+    def _functions():
+        import ast
+
+        src = (REPO_ROOT / "verl" / "utils" / "distributed.py").read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        return src, {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
+
+    def test_tpu_branches_are_kept(self):
+        import ast
+
+        src, funcs = self._functions()
+        numa = ast.get_source_segment(src, funcs["set_numa_affinity"])
+        self.assertLess(numa.index('if device_name == "TPU":'), numa.index('ctypes.CDLL("libnuma.so")'))
+        ray_init = ast.get_source_segment(src, funcs["initialize_global_process_group_ray"])
+        self.assertIn("import torch_tpu", ray_init)
+        self.assertLess(ray_init.index('get_platform().device_name == "tpu"'), ray_init.index("init_process_group("))
+        self.assertLess(ray_init.index("import torch_tpu"), ray_init.index("_configure_ipv4_socket_env_if_needed()"))
+
+    def test_ipv4_socket_env_is_noop_on_tpu_and_set_on_gpu(self):
+        import ast
+        import types
+
+        src, funcs = self._functions()
+        fn_src = ast.get_source_segment(src, funcs["_configure_ipv4_socket_env_if_needed"])
+        keys = ("MASTER_ADDR", "GLOO_SOCKET_IFNAME", "NCCL_SOCKET_IFNAME", "NCCL_SOCKET_FAMILY")
+        for device_name, expect_set in (("tpu", False), ("cuda", True)):
+            ns = {
+                "os": os,
+                "get_platform": lambda device_name=device_name: types.SimpleNamespace(device_name=device_name),
+                "is_ipv6": lambda addr: ":" in addr,
+            }
+            exec(fn_src, ns)
+            env = {k: v for k, v in os.environ.items() if k not in keys}
+            env["MASTER_ADDR"] = "10.0.0.2"
+            with mock.patch.dict(os.environ, env, clear=True), mock.patch("os.path.exists", return_value=True):
+                ns["_configure_ipv4_socket_env_if_needed"]()
+                self.assertEqual("GLOO_SOCKET_IFNAME" in os.environ, expect_set, device_name)
+                self.assertEqual(os.environ.get("NCCL_SOCKET_FAMILY") == "AF_INET", expect_set, device_name)
+
+
+class TestG64ReportTables(unittest.TestCase):
+    """README / REPRO_RESULTS G64-D tables must be the verbatim output of logs/gen_g64_report_tables.py."""
+
+    LOGS_DIR = REPO_ROOT / "examples" / "tpu" / "retool" / "gb200" / "logs"
+    DOCS = (
+        REPO_ROOT / "examples" / "tpu" / "retool" / "gb200" / "README.md",
+        REPO_ROOT / "examples" / "tpu" / "retool" / "gb200" / "exp" / "REPRO_RESULTS_GB200_ZH.md",
+    )
+
+    @classmethod
+    def setUpClass(cls):
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("gen_g64", cls.LOGS_DIR / "gen_g64_report_tables.py")
+        cls.gen = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.gen)
+        cls.out = {run: cls.gen.build_all(run) for run in cls.gen.RUNS}
+
+    def test_head_log_matches_metrics_json_and_reviewer_spot_checks(self):
+        self.assertGreater(self.out["g64-retool-smoke-04"]["head_log_vs_metrics_json_values_compared"], 900)
+        self.assertGreater(self.out["g64-retool-25s-01"]["head_log_vs_metrics_json_values_compared"], 2500)
+        steps = self.gen.parse_head_log_steps(self.LOGS_DIR / "g64-retool-smoke-04" / "head.log")
+        self.assertAlmostEqual(steps[1]["metrics"]["actor/grad_norm"], 0.17162081599235535, places=12)
+        self.assertAlmostEqual(steps[5]["metrics"]["critic/score/mean"], -0.008007812313735485, places=12)
+        smoke = self.out["g64-retool-smoke-04"]["training_table"]
+        self.assertIn("`0.1716`", smoke)
+        self.assertIn("`-0.0080`", smoke)
+        self.assertIn("Steps 2–5 mean (4 steps)", smoke)
+        self.assertIn("Steps 2–25 mean (24 steps)", self.out["g64-retool-25s-01"]["training_table"])
+        self.assertIn("askhat_table", self.out["g64-retool-25s-01"])
+
+    def test_doc_blocks_match_generator(self):
+        for doc in self.DOCS:
+            text = doc.read_text(encoding="utf-8")
+            for run, tables in self.out.items():
+                for name in self.gen.TABLES:
+                    if name not in tables:
+                        continue
+                    m = re.search(
+                        rf"<!-- BEGIN AUTO-GENERATED {run}/{name} \(gen_g64_report_tables\.py\) -->\n(.*?)\n"
+                        rf"<!-- END AUTO-GENERATED {run}/{name} -->",
+                        text,
+                        re.S,
+                    )
+                    self.assertIsNotNone(m, f"{doc.name}: missing AUTO-GENERATED {run}/{name} block")
+                    self.assertEqual(m.group(1), tables[name], f"{doc.name}: {run}/{name} differs from generator")
+
+    def test_25_step_run_config_matches_smoke_except_step_count_and_paths(self):
+        changed = {
+            d[1:].strip().split("'")[1]
+            for d in self.gen.resolved_config_diff("g64-retool-smoke-04", "g64-retool-25s-01")
+        }
+        self.assertEqual(
+            changed,
+            {
+                "experiment_name",
+                "TENSORBOARD_DIR",
+                "default_local_dir",
+                "rollout_audit_dir",
+                "rollout_data_dir",
+                "test_freq",
+                "total_training_steps",
+                "validation_data_dir",
+            },
+        )
+
+    def test_recompute_script_uses_runtime_scorer(self):
+        script = self.LOGS_DIR / "recompute_g64_metrics.py"
+        self.assertNotIn("def compute_expected_shaped_score", script.read_text(encoding="utf-8"))
+        for run, final in (("g64-retool-smoke-04", 5), ("g64-retool-25s-01", 25)):
+            res = subprocess.run(
+                [sys.executable, str(script), "--run", run], capture_output=True, text=True, cwd=str(REPO_ROOT)
+            )
+            self.assertEqual(res.returncode, 0, res.stderr[-2000:])
+            summary = json.loads(res.stdout)
+            self.assertEqual(summary["env_verification"]["num_nodes_verified"], 16)
+            self.assertIn("retool_tpu.py::compute_score", summary["validation_scorer"]["function"])
+            for step_key in ("validation_step_0", f"validation_step_{final}"):
+                for ds in ("aime_2024", "aime_2025"):
+                    self.assertEqual(
+                        summary[step_key][ds]["rescored_samples_matching_logged_pred_acc_score"], "900 / 900"
+                    )
+            self.assertEqual(summary["training_rollouts"]["per_sample_rescoring"].split(" ")[0], "not")
+
+    def _build_ev(self):
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("build_ev", self.LOGS_DIR / "build_g64_run_evidence.py")
+        build_ev = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(build_ev)
+        return build_ev
+
+    def test_mask_audit_flags_a_tool_response_straddling_segments(self):
+        a = self._build_ev().mask_audit
+        text = {a.IM_START: "<|im_start|>", a.IM_END: "<|im_end|>", a.NEWLINE: "\n", a.USER: "user"}
+        text |= {a.ASSISTANT: "assistant", a.TOOL_CALL_OPEN: "<tool_call>", a.TOOL_CALL_CLOSE: "</tool_call>"}
+        text |= {a.TOOL_RESPONSE_OPEN: "<tool_response>", a.TOOL_RESPONSE_CLOSE: "</tool_response>"}
+        model = [1, a.TOOL_CALL_OPEN, 2, a.TOOL_CALL_CLOSE, a.IM_END]
+        turn = [a.NEWLINE, a.IM_START, a.USER, a.NEWLINE, a.TOOL_RESPONSE_OPEN, 5, 6, a.TOOL_RESPONSE_CLOSE]
+        turn += [a.IM_END, a.NEWLINE, a.IM_START, a.ASSISTANT, a.NEWLINE]
+        for leak_from, expect_violation in ((len(turn), False), (6, True)):
+            ids = model + turn + [7, a.IM_END]
+            mask = [1] * len(model) + [0 if i < leak_from else 1 for i in range(len(turn))] + [1, 1]
+            segs = [
+                {"mask": m, "start": i, "end": j, "text": "".join(text.get(t, "w") for t in ids[i:j])}
+                for m, i, j in a._runs(mask)
+            ]
+            rec = {"response_ids": ids, "response_mask": mask, "segments": segs, "mask_length_matches": True}
+            res = a.audit_session(rec)
+            self.assertEqual(bool(res["violations"]), expect_violation, res)
+            self.assertFalse(a.per_segment_check(rec), "the earlier per-segment check misses both cases")
+
+    def test_mask_audit_recomputed_from_archived_raw_sessions(self):
+        import base64
+        import gzip
+        import hashlib
+
+        build_ev = self._build_ev()
+        for run, final in (("g64-retool-smoke-04", 5), ("g64-retool-25s-01", 25)):
+            ev_dir = self.LOGS_DIR / run
+            manifest = json.loads((ev_dir / "raw_manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(len(manifest["files"]), final + 1)
+            for f in manifest["files"]:
+                data = (ev_dir / f["path"]).read_bytes()
+                data = gzip.decompress(data) if f["path"].endswith(".gz") else data
+                self.assertEqual(hashlib.sha256(data).hexdigest(), f["sha256"], f["path"])
+                self.assertEqual(base64.b64encode(hashlib.md5(data).digest()).decode(), f["md5_base64"], f["path"])
+            summary = json.loads((ev_dir / "rollout_and_audit_summary.json").read_text(encoding="utf-8"))
+            for s, audit in build_ev.audit_steps(ev_dir / "rollout_audit", final, ".jsonl.gz").items():
+                self.assertEqual({k: summary["steps"][s][k] for k in audit}, audit, f"{run} step {s}")
+            t = summary["totals"]
+            self.assertEqual(t["total_audit_sessions"], 8 * final)
+            for key in (
+                "audit_mask_violations",
+                "audit_tool_response_tokens_in_loss",
+                "audit_tool_call_tokens_not_in_loss",
+                "audit_mask0_runs_not_tool_turn",
+                "audit_im_start_in_loss",
+            ):
+                self.assertEqual(t[key], 0, f"{run}: {key}")
+        # Two sessions of the 25-step run have malformed tool-call tags written by the model, all in the loss.
+        self.assertEqual(t["audit_sessions_malformed_tool_call_tags"], 2)
+        self.assertEqual((t["audit_tool_response_blocks"], t["audit_mask0_runs"]), (706, 706))
+
+    def test_timing_breakdown_recomputed_from_tensorboard_events(self):
+        build_ev = self._build_ev()
+        for run, spec in self.gen.RUNS.items():
+            ev_dir = self.LOGS_DIR / run
+            metrics = json.loads((ev_dir / spec["metrics"]).read_text(encoding="utf-8"))
+            archived = json.loads((ev_dir / "step_timing_breakdown.json").read_text(encoding="utf-8"))
+            fresh = build_ev.timing_breakdown(ev_dir, metrics, spec["final_step"])
+            self.assertEqual(json.loads(json.dumps(fresh)), archived, run)
+            self.assertEqual(archived["log_utc_offset_hours"], 0.0)
+        s = archived["summary"]
+        self.assertEqual((s["steps"], s["n"]), ([2, 24], 23))
+        self.assertAlmostEqual(s["mean_wall_s"], 73.171, places=3)
+        self.assertAlmostEqual(s["mean_tb_span_prev_step_s"], 39.956, places=3)
+        self.assertLess(abs(s["mean_residual_s"] - s["mean_post_sync_to_log_s"]), 0.1)
+        step25 = archived["rows"][-1]
+        self.assertAlmostEqual(step25["timing_s_testing"], 126.531, places=3)
+
 
 class TestV1ValidateDumpNumTurns(unittest.TestCase):
     """Verify V1 PPOTrainer._validate writes session num_turns for shaped reward reconciliation."""
@@ -722,6 +1013,72 @@ class TestV1ValidateDumpNumTurns(unittest.TestCase):
         exec(compile(mod, str(test_path), "exec"), ns)
         with tempfile.TemporaryDirectory() as td:
             ns["test_validate_dump_writes_num_turns_and_reconciles_shaped_reward"](Path(td))
+
+    def test_dapo_script_scales_max_token_len_per_gpu_for_16k_response(self):
+        dapo_script = REPO_ROOT / "examples" / "tpu" / "retool" / "gb200" / "run_qwen3_30b_a3b_dapo_torchtitan_gb200.sh"
+        src = dapo_script.read_text(encoding="utf-8")
+        self.assertIn(
+            "MIN_TOKEN_LEN_PER_GPU=$(( (max_model_len + CONTEXT_PARALLEL_SIZE - 1) / CONTEXT_PARALLEL_SIZE ))",
+            src,
+        )
+        self.assertIn(
+            "DEFAULT_MAX_TOKEN_LEN_PER_GPU=$(( MIN_TOKEN_LEN_PER_GPU > 16384 ? MIN_TOKEN_LEN_PER_GPU : 16384 ))",
+            src,
+        )
+
+    def test_dapo_script_auto_enables_wandb_when_wandb_api_key_present(self):
+        dapo_script = REPO_ROOT / "examples" / "tpu" / "retool" / "gb200" / "run_qwen3_30b_a3b_dapo_torchtitan_gb200.sh"
+        src = dapo_script.read_text(encoding="utf-8")
+        self.assertIn('if [[ -z "${LOGGER_LIST:-}" ]]; then', src)
+        self.assertIn('if [[ -n "${WANDB_API_KEY:-}" ]]; then', src)
+        self.assertIn("LOGGER_LIST=\"['console','tensorboard','wandb']\"", src)
+
+    def test_launcher_exclude_nodes_renders_node_affinity(self):
+        launcher = REPO_ROOT / "examples" / "tpu" / "retool" / "gb200" / "run_ray_jobset_gb200.sh"
+        src = launcher.read_text(encoding="utf-8")
+        self.assertIn('if [[ -n "${EXCLUDE_NODES:-}" ]]; then', src)
+        self.assertEqual(src.count("${NODE_AFFINITY_YAML}"), 4)
+        snippet = """
+import sys
+nodes = [n.strip() for n in sys.argv[1].split(",") if n.strip()]
+if nodes:
+    print("    nodeAffinity:")
+    print("      requiredDuringSchedulingIgnoredDuringExecution:")
+    print("        nodeSelectorTerms:")
+    print("        - matchExpressions:")
+    print("          - key: kubernetes.io/hostname")
+    print("            operator: NotIn")
+    print("            values:")
+    for n in nodes:
+        print(f"            - {n}")
+"""
+        res = subprocess.run([sys.executable, "-c", snippet, "bad-node-1, bad-node-2 "], capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertIn("key: kubernetes.io/hostname", res.stdout)
+        self.assertIn("operator: NotIn", res.stdout)
+        self.assertIn("- bad-node-1", res.stdout)
+        self.assertIn("- bad-node-2", res.stdout)
+
+    def test_recompute_g64_smoke_metrics_script(self):
+        recompute_script = REPO_ROOT / "examples" / "tpu" / "retool" / "gb200" / "logs" / "recompute_g64_metrics.py"
+        res = subprocess.run(
+            [sys.executable, str(recompute_script), "--run", "g64-retool-smoke-04"], capture_output=True, text=True
+        )
+        self.assertEqual(res.returncode, 0, res.stderr)
+        payload = json.loads(res.stdout)
+        self.assertEqual(payload["run_name"], "g64-retool-smoke-04")
+        self.assertEqual(payload["env_verification"]["num_nodes_verified"], 16)
+        self.assertEqual(payload["env_verification"]["total_gpus_verified"], 64)
+        self.assertEqual(
+            payload["env_verification"]["staged_checkpoint_composite_sha256_all_nodes"],
+            "59247a00c13f2364a12aab5ab6b88b6d971d59ff643c57aad8ac4e55a71231b0",
+        )
+        self.assertEqual(
+            payload["validation_step_0"]["aime_2025"]["rescored_samples_matching_logged_pred_acc_score"], "900 / 900"
+        )
+        self.assertEqual(
+            payload["validation_step_5"]["aime_2025"]["rescored_samples_matching_logged_pred_acc_score"], "900 / 900"
+        )
 
 
 if __name__ == "__main__":

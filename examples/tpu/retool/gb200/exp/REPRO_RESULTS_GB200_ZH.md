@@ -1,9 +1,9 @@
 # ReTool（Qwen3-30B-A3B）：NVIDIA GB200 复现进展、结果与 TPU v7x 对照记录
 
-状态：**GB200 全部阶段已完成（Stage 0.1–0.3 / G0 / G1 / G2 25-Step 均 PASS，2026-11-03 更新）**
+状态：**GB200 8 卡全阶段（Stage 0.1–0.3 / G0 / G1 / G2 25-Step）均 PASS；64 卡 16 节点 Stage G64-D 完成 5 步 Smoke （`g64-retool-smoke-04`）与 25 步运行（`g64-retool-25s-01`，2026-11-04 更新，结果与边界见 §9）**
 精简版英文复现指南（Quickstart & Repro Guide）：[`gb200/README.md`](../README.md)
-对应计划：[`REPRO_PLAN_GB200_ZH.md`](REPRO_PLAN_GB200_ZH.md)（PR #8 已合入 `tpu-main` `10f16720`）
-对照 TPU 基线：[`REPRO_RESULTS_TPU7X.md`](https://github.com/syangx39/verl-upstream/blob/retool-tpu7x-exp-results/examples/tpu/retool/REPRO_RESULTS_TPU7X.md)（PR #7）
+对应计划：[`REPRO_PLAN_GB200_ZH.md`](REPRO_PLAN_GB200_ZH.md)（PR #8 已合入 `tpu-main` `10f16720`；64 卡扩展设计 PR #16 已合入 `tpu-main` `c4726400`）
+对照 TPU 基线：[`RETOOL_REWARD_CLIP_RERUN_PLAN_ZH.md`](../../RETOOL_REWARD_CLIP_RERUN_PLAN_ZH.md)（PR #15 已合入 `tpu-main`）及 [`REPRO_RESULTS_TPU7X.md`](https://github.com/syangx39/verl-upstream/blob/retool-tpu7x-exp-results/examples/tpu/retool/REPRO_RESULTS_TPU7X.md)（PR #7）
 负责人：@syangx39
 
 ---
@@ -20,6 +20,8 @@
 | **Stage G1 (Attempt 2)** | GB200 ReTool 多轮工具调用 3 步 RL Smoke（对照 TPU `P1c`） | `g1-retool-rl-smoke-02` (`bb704378`) | 2 节点 × 4 张 GB200（健康 `NV18` 全互联节点 + `ComputeDomain` IMEX 通道） | 挂载 `ComputeDomain` + `privileged: true` 并校验 `can_device_access_peer`，完成完整 30B 加载、真实 `actor -> NCCL -> vLLM` 同步（`4.42s / 3.07s / 3.02s / 3.89s`）及 3 步真实更新（`grad_norm: 0.637 -> 0.593 -> 0.864`，`score/mean: -0.625 -> -0.1875 -> +0.3125`，`num_turns/mean: 5.875 / 6.0 / 5.625`） | 冷启动含 SM100 JIT 44 m（其中 3 步训练仅 `108 s`） | **PASS（训练与多轮工具调用通过）** |
 | **Stage G1 (Attempt 3)** | GB200 ReTool 多轮工具调用 3 步 RL Smoke + Token 级 `rollout_audit` 落盘 | `g1-retool-rl-smoke-03` (`64ef634b`) | 2 节点 × 4 张 GB200（复用热 SM100 FlashInfer/vLLM 缓存） | 默认开启 `trainer.rollout_data_dir` 与 `+trainer.rollout_audit_dir`，落盘 `rollout/{1,2,3}.jsonl`（共 172 次 `<tool_response>`）与 `rollout_audit/{1,2,3}.jsonl`（24 个审计会话，`mask_length_matches=True`，`<tool_response>` 位于 `mask==1` 违规数 **`0`**） | 7 m 15 s（其中 3 步训练 `107.8 s`） | **PASS（全项门槛通过）** |
 | **Stage G2** | GB200 ReTool 25 步正式 RL 对照 + Step 0/25 AIME 2024/2025 (`n=30`) 评估（对照 TPU `P3`） | `g2-retool-rl-25step-01` (`64ef634b`) | 2 节点 × 4 张 GB200（`4 trainer FSDP2=4 + 4 rollout TP=4`） | 完成全部 **25/25 步**训练 + Step 0/25 AIME 2024/2025 (`n=30`) 评估（`rc=0`，`SAVE_FREQ=-1` 未保存 Step-25 权重 checkpoint，所有原始日志与评估样本已归档至 [`gb200/logs/g2-retool-rl-25step-01/`](../logs/g2-retool-rl-25step-01/)）：AIME 2024 `mean@30: 23.78% (214/900) -> 28.78% (259/900, +5.00 pp)`、`maj@30: 40.55% -> 47.13% (+6.58 pp)`、`best@30: 64.29% -> 69.05%`；AIME 2025 `mean@30: 17.00% (153/900) -> 17.89% (161/900)`、`best@30: 45.52% -> 57.34% (+11.82 pp)`；25 步共 12,800 条轨迹触发 `24,106` 次 `<tool_response>`，200 个审计会话掩码违规 **`0`**，Step 2–25 均值 **`39.84s/step`**（Step 3–25 稳态均值 **`38.59s/step`**，异步全重叠步 `18.55s–24.63s`） | 25 步训练 `18m 24s`；`tqdm`（25 步 + Step 25 评估）`21m 35s`；**含 Step 0 + Step 25 两次 `n=30` 评估共 `24m 36s`**（`main_ppo` 全程 `27m 37s`） | **PASS（25/25 完成）** |
+| **Stage G64-D（25 步）** | 64 卡 GB200（16 节点）ReTool 25 步 + Step 0/25 AIME 2024/2025 (`n=30`) 评估 + W&B Online | `g64-retool-25s-01` (`27c41116`) | 16 节点 × 4 张 GB200 = 64 张 GPU（4 节点 Trainer `FSDP2=16` + 12 节点 `12 × TP=4` Rollout，`a4x-highgpu-4g-a4x-pool-5`） | 25/25 步完成；AIME 2024 `398 → 486 / 900`（`+9.78 pp`，95% CI `[+3.89 pp, +16.22 pp]`）、AIME 2025 `315 → 376 / 900`（`+6.78 pp`，95% CI `[+1.67 pp, +12.22 pp]`）；与 Askhat v5p 参照见 §9.3 | Steps 2–25 `timing_s/step` 均值 `30.78s`；Steps 2–24 墙钟 `73.17s`/步，其中计时外的 TensorBoard 写入 `39.96s`（§9.4）；Step 25 评估 `126.53s` | **25/25 完成** |
+| **Stage G64-D（Smoke）** | 64 卡 GB200（16 节点）ReTool 5 步 Smoke + Step 0/5 AIME 2024/2025 (`n=30`) 评估 | `g64-retool-smoke-04` (`27c41116`) | 同上 | 5/5 步完成；AIME 2024 `410 → 416 / 900`、AIME 2025 `297 → 315 / 900`（区间含 0，见 §9.6） | Steps 2–5 `timing_s/step` 均值 `28.87s` | **Smoke 完成（5/5 步）** |
 
 ---
 
@@ -379,6 +381,7 @@ verl.workers.engine.torchtitan.utils.configure_qwen3_moe_for_rl: present
   - **`mask_length_matches == True`**：**`200 / 200` (`100%`)**；
   - **`<tool_response>` 落入 `mask == 1` 的违规片段数**：**`0 / 386` (`0` 违规)**；
   - **`warnings` / `error` 计数**：**`0` / `0`**。
+  - 注：以上计数来自逐段检查（在每个 segment 内找完整标签），可能漏掉跨 segment 的工具返回块。用第 9.4 节的整段审计 [`rollout_mask_audit.py`](../../rollout_mask_audit.py) 重跑 G2 的 200 个原始会话（GCS `rollout_audit/{1..25}.jsonl`，未归档到仓库）同样 `0` 违规；G2 关闭 thinking，工具轮次末尾多一个空的 `<think>\n\n</think>\n\n`，审计已把它算作注入模板的一部分。
 - **显存水位（全 25 步恒定无泄漏）**：
   - `actor/perf/max_memory_allocated_gb`：**`154.47 GB` (`143.86 GiB`)**
   - `actor/perf/max_memory_reserved_gb`：**`172.57 GB` (`160.72 GiB`)**（低于单卡实测 `184.31 GiB` HBM 容量，留有 `23.6 GiB` 裕量，全 25 步 0 OOM）
@@ -414,5 +417,238 @@ verl.workers.engine.torchtitan.utils.configure_qwen3_moe_for_rl: present
 - **后续同卡数（Iso-Accelerator-Count）性能对照 TODO（已在独立 PR #11 [`ISO_CHIP_PERF_BENCHMARK_PLAN.md`](https://github.com/syangx39/verl-upstream/pull/11) 中建立专门基准计划与占位记录）**：
   1. **先行完成 `Stage P1c` 受控验证与 `Stage P3`（32 芯片 `2 × 2×2×4` 基线）**；
   2. **Tier A：8 物理芯片主对照档（`8 × TPU v7x 物理芯片` vs 现有 `8 × NVIDIA GB200 GPU` `G2`）**：在 TPU v7x（`4 芯片 trainer + 4 芯片 rollout`，即双 `2×2×1` 拓扑、每侧 1 个 TPU Host、合计 2 个 TPU Hosts / 8 颗物理芯片 / 16 逻辑 TensorCore）上采用与 `G2` **完全一致的运行期奖励语义（`default_compute_score` / `strict_box_verify=False`）** 和 `BS=64, n=8, lr=1.4e-6, trainer.v1.separate_async.num_warmup_batches=2`，直接与现有 `G2` 对比稳态 `update_actor`、`update_weights`、`gen`、`timing_s/step` 及总吞吐（`tok/s` 与 `tok/s/accelerator`）；
-  3. **Tier B：32 物理芯片扩展档（`32 × TPU v7x 物理芯片` vs `32 × NVIDIA GB200 GPU`）**：作为后续扩展，在 TPU v7x `Stage P3` 原规格（`2 × 2×2×4`，Trainer `FSDP2=8, CP=4, TP=1, EP=1` + Rollout `1 × TP=32, EP=32`）与 8 节点 `32 × GB200 GPU`（`16 GPU trainer + 16 GPU rollout`）之间进行 32 物理加速器规模扩展对照，同时完整记录拓扑、总 token 数与计时边界以解释跨架构性能差异。
+  3. **Tier B：32 物理芯片扩展档（`32 × TPU v7x 物理芯片` vs `32 × NVIDIA GB200 GPU`）**：作为后续扩展，在 TPU v7x `Stage P3` 原规格（`2 × 2×2×4`，Trainer `FSDP2=8, CP=4, TP=1, EP=1` + Rollout `1 × TP=32, EP=32`）与 8 节点 `32 × GB200 GPU`（`16 GPU trainer + 16 GPU rollout`）之间进行 32 物理加速器规模扩展对照，同时完整记录拓扑、总 token 数与计时边界以解释跨架构性能差异；
+  4. **Tier C：64 物理加速器规模对照档（`64 × TPU v7x 物理芯片` vs `64 × NVIDIA GB200 GPU`）**：已完成 **64 × NVIDIA GB200 GPU（`Stage G64-D`，`g64-retool-smoke-04`）** 全量核验，见下文第 9 节。
 
+---
+
+## 9. Stage G64-D（64 × NVIDIA GB200 GPU，16 节点 = 4 Trainer + 12 Rollout）：25 步运行（`g64-retool-25s-01`）与 5 步 Smoke（`g64-retool-smoke-04`）
+
+> **数据来源与生成方式**：本节所有数值表格由 [`logs/gen_g64_report_tables.py`](../logs/gen_g64_report_tables.py) 从各次运行的归档原始产物（[`logs/g64-retool-25s-01/`](../logs/g64-retool-25s-01/)、[`logs/g64-retool-smoke-04/`](../logs/g64-retool-smoke-04/)，由 [`logs/build_g64_run_evidence.py`](../logs/build_g64_run_evidence.py) 从 GCS 运行目录生成）直接生成，不手工录入：逐步指标取自各 `head.log` 中 `TaskRunnerV1` 的 `step:N` 行（与各自 metrics JSON 共 `2969` / `1009` 个重叠数值逐一比对一致），每步墙钟及其拆分取自 `step_timing_breakdown.json`（[`step_timing_breakdown.py`](../../step_timing_breakdown.py) 读取归档的 TensorBoard 事件文件），工具调用与整段掩码审计取自 `rollout_and_audit_summary.json`（掩码审计由归档的原始会话 `rollout_audit/` 重算），评估取自 validation 样本，Askhat 参照取自 [`askhat_runs_summary.json`](../../results/askhat-wandb-audit/askhat_runs_summary.json)。[`test_launcher_and_sandbox.py`](../test_launcher_and_sandbox.py) 断言下文所有 `AUTO-GENERATED` 区块与生成结果逐字一致。
+
+### 9.1 两次运行共享的环境与配置
+
+1. **调度与预检**：两次运行都在 `a4x-highgpu-4g-a4x-pool-5` 上，以 `EXCLUDE_NODES` 排除 GPU 丢失的节点 `gke-a4x-baker-a4x-highgpu-4g-a4x-pool-aab7d37b-7329`（`GPU 00000009:01:00.0 is lost`），单个 `ComputeDomain`（`numNodes: 16`）。每次运行 16 份 `*-precheck.json` / `*-g0-verify.json` 均为 `PASS`，`git_sha 27c41116`（pod 从 GitHub `git fetch` 该 commit 后检出；已打 tag [`run-code/g64-retool-smoke-04-25s-01`](https://github.com/syangx39/verl-upstream/tree/run-code/g64-retool-smoke-04-25s-01)）、`uv_lock_sha256` 一致，16 份 `nvidia-smi -L` 合计 64 张 GPU（[`logs/recompute_g64_metrics.py --run <run>`](../logs/recompute_g64_metrics.py) 断言）。
+2. **配置相同**：两份 `head.log` 打印的 Hydra resolved config 只在运行名与输出路径、`trainer.test_freq`（`5 → 25`）与 `trainer.total_training_steps`（`5 → 25`）上不同（生成器 `resolved_config_diff`）。关键配置在两份日志中的行号相同：`tensor_model_parallel_size: 4`（L583）、`data_parallel_shard_size: 16`（L284）、`lr: 2e-06`（L211）、`loss_mode: bypass_mode`（L224）、`rollout_is: token`（L618，仅 trainer 侧，见 §9.5）、`max_user_turns: 16`（L524）、`enable_thinking: True`（L777）、`max_response_length: 16384`（L790）、`num_warmup_batches: 2`（L1066）、reward `pkg://examples.tpu.retool.retool_tpu`（L776–L780）；每份日志均可见 12 个不同的 `vLLMHttpServer` 进程（`TP=4`）。
+3. **SFT checkpoint 校验边界**：每个节点对拷入本地 `/dev/shm` 的 checkpoint 做全量 SHA-256，组合摘要均等于钉定值 `59247a00c13f2364a12aab5ab6b88b6d971d59ff643c57aad8ac4e55a71231b0`。但这两次运行所用的 [`verify_g0_gb200.py`](../verify_g0_gb200.py) 在钉定值命中后对 `--ref-dir` 只检查文件存在与大小，归档 JSON 中的 `ref_composite_sha256` 只是回显钉定值，**不是对参考目录的独立哈希**。本 PR 已修正：该模式现在报告 `ref_check_mode = "size_only"`、`ref_sha256_verified = false` 且不再输出参考哈希；需要对参考目录全量哈希时使用 `--full-ref-hash`。
+4. **W&B**：25 步运行 [`skzy1l0y`](https://wandb.ai/google-trellis/verl-torchtpu-grpo-test/runs/skzy1l0y)，smoke [`hv1k9rwo`](https://wandb.ai/google-trellis/verl-torchtpu-grpo-test/runs/hv1k9rwo)。
+5. **没有保存 checkpoint**：两次运行都设 `trainer.save_freq=-1`、`trainer.resume_mode=disable`、`default_local_dir=/tmp/checkpoint/...`（见 `head.log` 启动命令），所以 Step 25 / Step 5 的最终权重和任何中间 checkpoint 都没有保存。
+
+### 9.2 25 步运行（`g64-retool-25s-01`）：Step 0 vs Step 25 AIME 2024 / 2025（`n=30`）
+
+<!-- BEGIN AUTO-GENERATED g64-retool-25s-01/eval_table (gen_g64_report_tables.py) -->
+| Metric (`n=30` samples per question, 30 questions) | Step 0 | Step 25 | Δ (Step 25 − Step 0) |
+| --- | --- | --- | --- |
+| AIME 2024 correct samples | `398 / 900` | `486 / 900` | `+88` |
+| AIME 2024 `acc/mean@30` | `44.22%` | `54.00%` | `+9.78 pp` (paired bootstrap 95% CI `[+3.89 pp, +16.22 pp]`) |
+| AIME 2024 `acc/maj@30/mean` | `61.97%` | `75.39%` | `+13.42 pp` |
+| AIME 2024 `acc/best@30/mean` | `78.07%` | `89.19%` | `+11.13 pp` |
+| AIME 2024 shaped `reward/mean@30` | `+0.0291` | `+0.1924` | `+0.1633` |
+| AIME 2024 questions improved / worse / tied (per-question correct count) | – | – | `21 / 6 / 3` |
+| AIME 2025 correct samples | `315 / 900` | `376 / 900` | `+61` |
+| AIME 2025 `acc/mean@30` | `35.00%` | `41.78%` | `+6.78 pp` (paired bootstrap 95% CI `[+1.67 pp, +12.22 pp]`) |
+| AIME 2025 `acc/maj@30/mean` | `55.90%` | `62.34%` | `+6.45 pp` |
+| AIME 2025 `acc/best@30/mean` | `72.78%` | `79.40%` | `+6.62 pp` |
+| AIME 2025 shaped `reward/mean@30` | `-0.1519` | `-0.0381` | `+0.1138` |
+| AIME 2025 questions improved / worse / tied (per-question correct count) | – | – | `17 / 6 / 7` |
+<!-- END AUTO-GENERATED g64-retool-25s-01/eval_table -->
+
+- 两项 `Δ acc/mean@30` 的两层配对 bootstrap 95% 区间均不含 0（AIME 2024 `[+3.89 pp, +16.22 pp]`，AIME 2025 `[+1.67 pp, +12.22 pp]`），多数题目上升（AIME 2024 上升 / 下降 / 持平 `21 / 6 / 3`，AIME 2025 `17 / 6 / 7`）。该区间只刻画固定题集上的评估采样波动，本结果来自单次训练运行。
+- 同一 SFT checkpoint 在本次 Step 0 为 `44.22% / 35.00%`，在 smoke 的 Step 0 为 `45.56% / 33.00%`，即 `n=30` 下运行间评估差异约 ±2 pp。
+- `recompute_g64_metrics.py --run g64-retool-25s-01` 以运行时 `retool_tpu.compute_score`（`ast` 原样执行源码，输入为归档的 `output_tail_300` 与 `num_turns`）重新打分全部 3,600 条 Step 0/25 样本，`pred`/`acc`/`score` `3,600 / 3,600` 一致。
+
+### 9.3 与 Askhat v5p Regime 2（16K + thinking + shaped reward，`max_user_turns=16`）对照
+
+<!-- BEGIN AUTO-GENERATED g64-retool-25s-01/askhat_table (gen_g64_report_tables.py) -->
+| Run | Starts from | eval `n` per question | Step | AIME 2024 `acc` | AIME 2025 `acc` | train `critic/score/mean`, Steps 1–5 mean | Steps 21–25 mean |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `g64-retool-25s-01` (this run, 64× GB200) | SFT `p2-retool-sft-01` step 372 | `30` | 0 | `44.22%` | `35.00%` | – | – |
+| `g64-retool-25s-01` (this run, 64× GB200) | SFT `p2-retool-sft-01` step 372 | `30` | 25 | `54.00%` | `41.78%` | `-0.202` | `+0.432` |
+| `yjowd03u` (Askhat v5p) | Askhat's SFT checkpoint | `8` | 0 | `48.75%` | `30.83%` | – | – |
+| `ci0k54pl` (Askhat v5p) | resumed from `fcze3xlx (step 20 checkpoint)` | `8` | 25 | `58.33%` | `38.75%` | – | `+0.479` |
+| `rq1p980n` (Askhat v5p) | Askhat's SFT checkpoint | `8` | 25 | `56.67%` | `46.25%` | `-0.304` | `+0.483` |
+| `yrcsp4z6` (Askhat v5p) | Askhat's SFT checkpoint | `8` | 25 | `60.00%` | `46.67%` | `-0.306` | `+0.482` |
+<!-- END AUTO-GENERATED g64-retool-25s-01/askhat_table -->
+
+- Step 25 时，我们在 AIME 2024 上比 Askhat 低 `6.0`–`2.7` pp，在 AIME 2025 上比两条从头训练的 run 低 `4.5`–`4.9` pp（比从 Step 20 恢复的 `ci0k54pl` 高 `+3.0` pp）；Steps 21–25 训练 reward 为 `+0.432`，Askhat 为 `+0.479`–`+0.483`。
+- 这不是同口径对照：Askhat 每题采样 `n=8`（仅采样误差就约 3 pp 标准误），Askhat 唯一的 Step 0 来自另一个 run（`yjowd03u`），SFT checkpoint 尚未证明相同，`ci0k54pl` 从 Step 20 恢复。在这些限制下没有大的差距；几个百分点量级的差异无法用这些参照分辨。
+
+### 9.4 25 步训练逐步指标（逐行由 `head.log` 生成）
+
+<!-- BEGIN AUTO-GENERATED g64-retool-25s-01/training_table (gen_g64_report_tables.py) -->
+| Step (`head.log` line) | `timing_s/step` | `timing_s/gen` | `timing_s/update_actor` | `timing_s/update_weights` | `perf/throughput` (tok/s/GPU) | `critic/score/mean` | `actor/pg_loss` | `actor/grad_norm` | `response_length/mean` (`max`) | `response_length/clip_ratio` | `num_turns/mean` (`max`) | trajectories with `<tool_response>` (calls) | `score <= -2.0` | audit mask violations |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 (L2511) | `248.77s` | `34.11s` | `209.48s` | `4.01s` | `119.6` | `-0.1200` | `-0.0267` | `0.1767` | `1,557.6` (`4,413`) | `0.10%` | `8.79` (`32`) | `1022 / 1024` (`3,477`) | `0` | `0 / 8` |
+| 2 (L2533) | `35.03s` | `0.03s` | `30.14s` | `4.28s` | `1406.4` | `-0.3013` | `-0.0823` | `0.1219` | `2,753.2` (`16,384`) | `0.10%` | `8.79` (`32`) | `1017 / 1024` (`3,475`) | `0` | `0 / 8` |
+| 3 (L2545) | `34.47s` | `0.04s` | `24.91s` | `8.96s` | `1381.8` | `-0.2828` | `-0.0316` | `0.1229` | `2,667.1` (`16,384`) | `0.20%` | `8.64` (`32`) | `1016 / 1024` (`3,401`) | `0` | `0 / 8` |
+| 4 (L2561) | `27.93s` | `0.04s` | `22.59s` | `4.73s` | `1585.0` | `-0.2601` | `-0.0527` | `0.1278` | `2,452.1` (`16,384`) | `0.10%` | `8.52` (`32`) | `1018 / 1024` (`3,340`) | `0` | `0 / 8` |
+| 5 (L2577) | `26.65s` | `0.04s` | `21.37s` | `4.31s` | `1542.1` | `-0.0478` | `-0.0741` | `0.1259` | `2,252.4` (`16,384`) | `0.49%` | `7.95` (`32`) | `1019 / 1024` (`3,044`) | `0` | `0 / 8` |
+| 6 (L2606) | `25.36s` | `0.04s` | `20.46s` | `4.30s` | `1591.6` | `-0.0373` | `-0.0909` | `0.1367` | `2,195.1` (`16,384`) | `0.20%` | `8.79` (`32`) | `1017 / 1024` (`3,476`) | `0` | `0 / 8` |
+| 7 (L2621) | `27.65s` | `0.03s` | `22.76s` | `4.28s` | `1624.4` | `+0.1388` | `-0.0085` | `0.1236` | `2,496.0` (`16,384`) | `0.10%` | `8.38` (`32`) | `1020 / 1024` (`3,265`) | `0` | `0 / 8` |
+| 8 (L2633) | `28.47s` | `0.04s` | `21.76s` | `5.74s` | `1498.3` | `+0.1380` | `-0.1245` | `0.1211` | `2,337.6` (`16,384`) | `0.10%` | `8.58` (`32`) | `1012 / 1024` (`3,371`) | `0` | `0 / 8` |
+| 9 (L2652) | `28.89s` | `0.03s` | `22.41s` | `5.89s` | `1518.0` | `+0.2105` | `-0.0939` | `0.1238` | `2,419.6` (`16,384`) | `0.10%` | `8.86` (`32`) | `1015 / 1024` (`3,512`) | `0` | `0 / 8` |
+| 10 (L2676) | `27.61s` | `0.04s` | `22.67s` | `4.33s` | `1617.5` | `+0.2861` | `-0.1354` | `0.1228` | `2,472.9` (`14,110`) | `0.10%` | `8.12` (`32`) | `1019 / 1024` (`3,133`) | `0` | `0 / 8` |
+| 11 (L2691) | `29.26s` | `0.04s` | `22.98s` | `5.31s` | `1536.8` | `+0.2740` | `-0.0453` | `0.1187` | `2,493.8` (`16,384`) | `0.29%` | `8.22` (`32`) | `1010 / 1024` (`3,184`) | `0` | `0 / 8` |
+| 12 (L2708) | `34.86s` | `0.04s` | `24.12s` | `10.12s` | `1348.7` | `+0.2293` | `-0.1551` | `0.1592` | `2,623.0` (`16,384`) | `0.20%` | `8.01` (`32`) | `1013 / 1024` (`3,079`) | `0` | `0 / 8` |
+| 13 (L2722) | `26.34s` | `0.04s` | `20.90s` | `4.83s` | `1590.8` | `+0.4393` | `-0.0675` | `0.1550` | `2,309.0` (`16,384`) | `0.10%` | `8.62` (`32`) | `1018 / 1024` (`3,391`) | `0` | `0 / 8` |
+| 14 (L2744) | `28.83s` | `0.03s` | `23.90s` | `4.31s` | `1615.7` | `+0.3871` | `-0.0991` | `0.1096` | `2,610.0` (`16,384`) | `0.10%` | `8.20` (`32`) | `1016 / 1024` (`3,176`) | `0` | `0 / 8` |
+| 15 (L2762) | `30.58s` | `0.04s` | `25.11s` | `4.39s` | `1584.3` | `+0.4492` | `-0.0496` | `0.1046` | `2,709.0` (`16,384`) | `0.29%` | `8.44` (`32`) | `1017 / 1024` (`3,296`) | `0` | `0 / 8` |
+| 16 (L2779) | `28.07s` | `0.04s` | `22.99s` | `4.31s` | `1651.1` | `+0.4584` | `-0.1208` | `0.1106` | `2,589.5` (`14,365`) | `0.10%` | `8.64` (`32`) | `1020 / 1024` (`3,402`) | `0` | `0 / 8` |
+| 17 (L2793) | `30.88s` | `0.04s` | `25.89s` | `4.32s` | `1658.8` | `+0.3941` | `-0.1449` | `0.1080` | `2,866.4` (`14,817`) | `0.10%` | `9.01` (`32`) | `1017 / 1024` (`3,588`) | `0` | `0 / 8` |
+| 18 (L2815) | `34.78s` | `0.04s` | `27.32s` | `6.41s` | `1492.9` | `+0.1824` | `-0.0906` | `0.1033` | `2,916.9` (`16,384`) | `0.39%` | `8.69` (`32`) | `1012 / 1024` (`3,424`) | `0` | `0 / 8` |
+| 19 (L2844) | `32.42s` | `0.04s` | `26.67s` | `5.06s` | `1528.8` | `+0.3364` | `-0.0712` | `0.1070` | `2,780.4` (`16,384`) | `0.20%` | `9.42` (`32`) | `1019 / 1024` (`3,799`) | `0` | `0 / 8` |
+| 20 (L2856) | `33.19s` | `0.04s` | `24.76s` | `7.75s` | `1434.6` | `+0.4260` | `-0.1119` | `0.1072` | `2,664.9` (`16,384`) | `0.10%` | `8.81` (`32`) | `1019 / 1024` (`3,489`) | `0` | `0 / 8` |
+| 21 (L2871) | `35.04s` | `0.04s` | `26.00s` | `8.35s` | `1429.2` | `+0.3412` | `-0.0329` | `0.1069` | `2,826.8` (`16,384`) | `0.49%` | `8.81` (`32`) | `1011 / 1024` (`3,488`) | `0` | `0 / 8` |
+| 22 (L2893) | `33.76s` | `0.04s` | `27.89s` | `5.18s` | `1562.3` | `+0.4788` | `-0.1389` | `0.0918` | `2,980.4` (`16,384`) | `0.10%` | `8.38` (`32`) | `1019 / 1024` (`3,269`) | `0` | `0 / 8` |
+| 23 (L2913) | `34.12s` | `0.05s` | `28.99s` | `4.43s` | `1602.5` | `+0.4405` | `-0.0731` | `0.0957` | `3,103.8` (`16,384`) | `0.39%` | `8.19` (`32`) | `1017 / 1024` (`3,171`) | `0` | `0 / 8` |
+| 24 (L2923) | `30.88s` | `0.04s` | `25.76s` | `4.33s` | `1620.0` | `+0.4258` | `-0.0470` | `0.1015` | `2,809.6` (`16,384`) | `0.49%` | `8.52` (`32`) | `1016 / 1024` (`3,336`) | `0` | `0 / 8` |
+| 25 (L2968) | `33.71s` | `0.04s` | `28.28s` | `4.34s` | `1630.5` | `+0.4716` | `-0.0633` | `0.0911` | `3,113.8` (`16,384`) | `0.49%` | `8.02` (`32`) | `1016 / 1024` (`3,082`) | `0` | `0 / 8` |
+| Steps 2–25 mean (24 steps) | `30.78s` (`25.36s`–`35.04s`) | `0.038s` | `24.61s` | `5.43s` | `1543.8` | – | – | – | – | – | – | total `25415 / 25600` (`83,668`) | total `0` | total `0 / 200` |
+<!-- END AUTO-GENERATED g64-retool-25s-01/training_table -->
+
+- 平均响应长度从 `1,558` 增至 `3,114` token，`response_length/clip_ratio <= 0.49%`；`score <= -2.0` 为 `0`。Trainer 峰值显存：已分配 `72.99` GB / 预留 `112.31` GB。
+- **整段 token 掩码审计**（[`rollout_mask_audit.py`](../../rollout_mask_audit.py)）：从归档的 200 个原始会话（[`logs/g64-retool-25s-01/rollout_audit/`](../logs/g64-retool-25s-01/rollout_audit/)，大小与 MD5 和 GCS 对象一致，见 `raw_manifest.json`）重算，`0` 违规。全部 `706` 个 `<tool_response>` 块（含标签共 `22,963` 个 token）都不在 loss 里，`706` 段 `mask=0` 每段都恰好是注入的工具轮次（`\n<|im_start|>user\n<tool_response>…</tool_response><|im_end|>\n<|im_start|>assistant\n`），`710` 个完整 `<tool_call>` 块都在 loss 里。另有 2 个会话里模型自己写出了不规范的 `<tool_call>` 标签（重复的 `</tool_call>`；第一个未闭合就又写了 `<tool_call>`），这些 token 都在 loss 里，不是掩码问题。旧脚本在每个 segment 内找完整标签，可能漏掉内容与 `</tool_response>` 落进 `mask=1` 段的工具返回块；[`test_retool_evidence_tools_on_cpu.py`](../../../../../tests/special_tpu/test_retool_evidence_tools_on_cpu.py) 构造了这种会话，只有新审计能报出。范围：每步 8 个会话，共 200 个，占 25,600 条训练轨迹的 0.78%。
+
+**每步墙钟拆分（TensorBoard 计时）**
+
+<!-- BEGIN AUTO-GENERATED g64-retool-25s-01/timing_table (gen_g64_report_tables.py) -->
+| Step | wall clock (Δ of TensorBoard log starts) | `timing_s/step` | of which `gen` | of which `update_actor` | of which `update_weights` | `timing_s/testing` | TensorBoard logging of the previous step (scalars) | rest outside the timers | weight sync done → `logger.log` |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | `363.57s` | `248.77s` | `34.11s` | `209.48s` | `4.01s` | `0.00s` | `113.19s` (259) | `1.61s` | `1.25s` |
+| 2 | `78.99s` | `35.03s` | `0.03s` | `30.14s` | `4.28s` | `0.00s` | `41.74s` (98) | `2.21s` | `2.37s` |
+| 3 | `80.73s` | `34.47s` | `0.04s` | `24.91s` | `8.96s` | `0.00s` | `43.69s` (98) | `2.57s` | `2.66s` |
+| 4 | `71.92s` | `27.93s` | `0.04s` | `22.59s` | `4.74s` | `0.00s` | `41.74s` (98) | `2.24s` | `2.30s` |
+| 5 | `67.00s` | `26.65s` | `0.04s` | `21.37s` | `4.31s` | `0.00s` | `38.18s` (98) | `2.17s` | `2.29s` |
+| 6 | `69.08s` | `25.36s` | `0.04s` | `20.46s` | `4.30s` | `0.00s` | `41.15s` (98) | `2.56s` | `2.63s` |
+| 7 | `68.97s` | `27.65s` | `0.03s` | `22.76s` | `4.28s` | `0.00s` | `38.47s` (98) | `2.84s` | `2.34s` |
+| 8 | `74.04s` | `28.47s` | `0.04s` | `21.76s` | `5.74s` | `0.00s` | `43.39s` (98) | `2.18s` | `2.68s` |
+| 9 | `65.28s` | `28.89s` | `0.03s` | `22.41s` | `5.89s` | `0.00s` | `33.77s` (98) | `2.61s` | `2.72s` |
+| 10 | `68.39s` | `27.61s` | `0.04s` | `22.67s` | `4.33s` | `0.00s` | `38.74s` (98) | `2.04s` | `2.19s` |
+| 11 | `72.53s` | `29.26s` | `0.04s` | `22.98s` | `5.30s` | `0.00s` | `41.06s` (98) | `2.20s` | `2.84s` |
+| 12 | `76.67s` | `34.86s` | `0.04s` | `24.12s` | `10.12s` | `0.00s` | `39.60s` (98) | `2.21s` | `2.35s` |
+| 13 | `68.32s` | `26.34s` | `0.04s` | `20.90s` | `4.83s` | `0.00s` | `39.45s` (98) | `2.54s` | `2.68s` |
+| 14 | `70.75s` | `28.83s` | `0.03s` | `23.90s` | `4.31s` | `0.00s` | `39.62s` (98) | `2.31s` | `2.36s` |
+| 15 | `71.00s` | `30.58s` | `0.04s` | `25.11s` | `4.39s` | `0.00s` | `38.01s` (98) | `2.41s` | `2.60s` |
+| 16 | `69.66s` | `28.07s` | `0.04s` | `22.99s` | `4.31s` | `0.00s` | `39.02s` (98) | `2.57s` | `2.65s` |
+| 17 | `70.85s` | `30.88s` | `0.04s` | `25.89s` | `4.32s` | `0.00s` | `37.54s` (98) | `2.42s` | `2.58s` |
+| 18 | `75.82s` | `34.78s` | `0.04s` | `27.32s` | `6.41s` | `0.00s` | `38.32s` (98) | `2.72s` | `2.55s` |
+| 19 | `73.12s` | `32.42s` | `0.04s` | `26.68s` | `5.06s` | `0.00s` | `37.89s` (98) | `2.81s` | `2.53s` |
+| 20 | `82.48s` | `33.19s` | `0.04s` | `24.76s` | `7.75s` | `0.00s` | `46.59s` (98) | `2.70s` | `3.18s` |
+| 21 | `72.95s` | `35.04s` | `0.04s` | `26.00s` | `8.35s` | `0.00s` | `35.45s` (98) | `2.46s` | `2.56s` |
+| 22 | `85.55s` | `33.76s` | `0.04s` | `27.89s` | `5.18s` | `0.00s` | `47.81s` (98) | `3.98s` | `2.58s` |
+| 23 | `75.03s` | `34.12s` | `0.04s` | `29.00s` | `4.43s` | `0.00s` | `37.21s` (98) | `3.70s` | `2.88s` |
+| 24 | `73.81s` | `30.88s` | `0.04s` | `25.77s` | `4.33s` | `0.00s` | `40.54s` (98) | `2.40s` | `2.51s` |
+| 25 | `201.72s` | `33.71s` | `0.04s` | `28.28s` | `4.34s` | `126.53s` | `39.08s` (98) | `2.39s` | `128.98s` |
+| Steps 2–24 mean (23 steps) | `73.17s` | `30.66s` | `0.038s` | `24.45s` | `5.47s` | `0.00s` | `39.96s` (98) | `2.56s` | `2.57s` |
+<!-- END AUTO-GENERATED g64-retool-25s-01/timing_table -->
+
+- Steps 2–25 的 `timing_s/step` 均值 `30.78s`（Steps 2–24 为 `30.66s`）。它只覆盖 `RayPPOTrainer.fit` 里的 `step` 计时：取样（即等 rollout，`timing_s/gen`）、`old_log_prob`、`adv`、`update_actor` 和 `update_weights`。验证、`_compute_metrics`、rollout / 审计 dump 的准备（TransferQueue 取数与 decode，写文件在后台线程）、`tq.kv_clear` 和 `logger.log`（先 W&B，再对每个指标调用一次 TensorBoard `add_scalar`，最后打印 console 行）都在计时之外（运行代码 [`trainer_base.py` L474–L540，`27c41116`](https://github.com/syangx39/verl-upstream/blob/27c41116acfdd89435f78e0993455bf9338a79fd/verl/trainer/ppo/v1/trainer_base.py#L474-L540)）。
+- TensorBoard 为每次 `add_scalar` 记录 `wall_time`，所以归档的事件文件（[`logs/g64-retool-25s-01/tensorboard/`](../logs/g64-retool-25s-01/tensorboard/)）能独立于 trainer 计时给出每步耗时；每步第一个 scalar 的时间与 W&B `_timestamp` 相差不到 0.01 s（W&B API 核对）。Steps 2–24 墙钟均值 `73.17s` = `timing_s/step` `30.66s` + 上一步 TensorBoard 记录 `39.96s`（98 个 scalar，每个约 `0.41s`）+ 其余 `2.56s`。driver log 中 `update_weights done` 到 `logger.log` 为 `2.57s`，与“其余”吻合，所以墙钟与 `timing_s/step` 的差额是 TensorBoard 写入，而不是 rollout / 审计记录写 GCS（它们在 dump 后台线程里写）。
+- 进度条（tqdm）间隔不是每步训练耗时：tqdm 在每步 TensorBoard 记录之后才更新，Steps 2–25 的进度条均值 `83.7s` 还包含 Step 25，而 Step 25 的 `328s` 里有 `126.53s` 的最终验证和 Step 25 自身 358 个 scalar 的 `165s` TensorBoard 记录。按 TensorBoard 计时，Step 25 为 `201.72s` = 训练步 `33.71s` + 验证 `126.53s` + Step 24 的 TensorBoard 记录 `39.08s` + 其余 `2.39s`。
+- 每个 scalar 约 `0.41s` 的可能原因（未单独实验）：镜像没有 TensorFlow 时，TensorBoard 用 `tensorflow_stub` 的 `GFile`，每写一条记录都以追加方式打开事件文件、写入、关闭；`TENSORBOARD_DIR` 在 GCS Fuse（`/data/...`）上，每次关闭都要把整个文件重新上传。TPU v7x 运行同样是每个 scalar 约 `0.41s`。验证办法：把 `TENSORBOARD_DIR` 放到本地盘（结束后再拷贝）或从 `LOGGER_LIST` 去掉 `tensorboard`，跑 3 步对比。
+- `timing_s/gen ≈ 0.04s` 说明 replay buffer 里总有现成的 batch；但每步约 40 s 的 TensorBoard 记录也给了 rollout 同样多的余量，所以只能说明 rollout 跟得上约 73 s 一步，不能说明去掉这部分开销后还跟得上约 33 s 一步。与 TPU v7x 的耗时对照见 PR #18（`RETOOL_REWARD_CLIP_RERUN_PLAN_ZH.md` §8.5.6）。
+- 25,600 条训练轨迹只做了 `rollout_and_audit_summary.json` 汇总，没有逐条复算（V1 训练 rollout dump 不含 `num_turns`）。
+
+### 9.5 `actor/rollout_corr/rollout_is_*` 指标排查（GPU 与 TPU 现象一致）
+
+1. **现象**：`rollout_is_ratio_fraction_low` 约 `0.98–0.99`、`rollout_is_mean` 约 `0.005–0.02`，同时 token 级 `kl ≈ k3_kl ≈ 0.01`。若这些 IS 指标是 token 级的，二者互相矛盾（`ρ < 0.5` 的 token 其 `k3 ≥ 0.193`）；此外 `rollout_is_min` 低于 token 级下限 `exp(−20)`，TPU 侧 `rollout_is_max` 达到 `17.17`，且 token 与 sequence 两个 fraction 每一步都完全相等。
+2. **原因**：V1 trainer 的 bypass 分支（[`trainer_base.py` L1713–L1721](../../../../../verl/trainer/ppo/v1/trainer_base.py#L1713-L1721)）没有调用 [`apply_bypass_mode`](../../../../../verl/trainer/ppo/rollout_corr_helper.py#L1109-L1144) 把 `algorithm.rollout_correction` 写入 actor，actor 使用 dataclass 默认值（[`algorithm.py` L179](../../../../../verl/trainer/config/algorithm.py#L179) `rollout_is = "sequence"`），按**序列级**计算这些诊断指标；1.5K–3K token 的长响应使序列级权重塌缩到 `e^-20` 附近。
+3. **复现**：[`logs/repro_rollout_is_level.py`](../logs/repro_rollout_is_level.py)（需 CPU `torch`）用仓库原函数在合成数据上（token KL ≈ 0.0094）复算：token 级 `rollout_is_mean = 1.0004`、`fraction_low = 0`；sequence 级 `0.0112`、`0.969`，复现了 GPU/TPU 的模式。
+4. **影响与后续**：`loss_type = "ppo_clip"` 时这些权重只用于指标、不参与 loss。TPU 64 卡 `p3c-retool-25s-01` Steps 1–9 呈相同模式，因此它们不构成 GPU 侧 logprob 错位的证据，也不能证明两侧完全对齐。后续：(a) 把 `algorithm.rollout_correction` 下发给 V1 actor（单独 PR，同时覆盖两个平台）；(b) 用同一固定 batch 在 GPU 与 TPU 上对比 trainer logprob 与 rollout logprob。
+
+<details><summary>25 步运行逐步 <code>actor/rollout_corr/*</code></summary>
+
+<!-- BEGIN AUTO-GENERATED g64-retool-25s-01/rollout_corr_table (gen_g64_report_tables.py) -->
+| Step | `actor/rollout_corr/kl` | `actor/rollout_corr/k3_kl` | `actor/rollout_corr/ppl_ratio` | `actor/rollout_corr/chi2_token` | `actor/rollout_corr/rollout_is_mean` | `actor/rollout_corr/rollout_is_ratio_fraction_low` | `actor/rollout_corr/rollout_is_seq_fraction_low` | `actor/rollout_corr/rollout_is_max` | `actor/rollout_corr/rollout_is_min` |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | `0.0115` | `0.0118` | `1.0127` | `0.0691` | `0.0101` | `0.9903` | `0.9903` | `0.242` | `6.84e-11` |
+| 2 | `0.0093` | `0.0093` | `1.0116` | `0.0331` | `0.0072` | `0.9953` | `0.9953` | `0.061` | `1.64e-04` |
+| 3 | `0.0094` | `0.0093` | `1.0124` | `0.0350` | `0.0033` | `0.9974` | `0.9974` | `0.073` | `6.97e-12` |
+| 4 | `0.0098` | `0.0098` | `1.0124` | `0.0386` | `0.0031` | `0.9966` | `0.9966` | `0.095` | `3.18e-11` |
+| 5 | `0.0094` | `0.0096` | `1.0116` | `0.0646` | `0.0127` | `0.9863` | `0.9863` | `0.519` | `3.61e-11` |
+| 6 | `0.0097` | `0.0100` | `1.0121` | `0.0716` | `0.0094` | `0.9918` | `0.9918` | `16.717` | `1.77e-05` |
+| 7 | `0.0091` | `0.0094` | `1.0112` | `0.0880` | `0.0106` | `0.9884` | `0.9884` | `0.051` | `6.45e-03` |
+| 8 | `0.0099` | `0.0098` | `1.0130` | `0.0459` | `0.0124` | `0.9895` | `0.9895` | `1.245` | `1.56e-06` |
+| 9 | `0.0095` | `0.0093` | `1.0114` | `0.0420` | `0.0088` | `0.9883` | `0.9883` | `1.922` | `3.39e-10` |
+| 10 | `0.0086` | `0.0086` | `1.0109` | `0.0309` | `0.0116` | `0.9903` | `0.9903` | `0.434` | `3.87e-11` |
+| 11 | `0.0090` | `0.0090` | `1.0111` | `0.0318` | `0.0119` | `0.9856` | `0.9856` | `1.255` | `1.42e-09` |
+| 12 | `0.0080` | `0.0090` | `1.0097` | `2.3181` | `0.0054` | `0.9907` | `0.9907` | `0.193` | `3.13e-10` |
+| 13 | `0.0087` | `0.0089` | `1.0106` | `0.0332` | `0.0097` | `0.9909` | `0.9909` | `1.796` | `2.18e-10` |
+| 14 | `0.0082` | `0.0084` | `1.0101` | `0.0475` | `0.0068` | `0.9947` | `0.9947` | `0.173` | `1.71e-10` |
+| 15 | `0.0076` | `0.0076` | `1.0094` | `0.0290` | `0.0097` | `0.9900` | `0.9900` | `0.286` | `1.06e-08` |
+| 16 | `0.0078` | `0.0078` | `1.0093` | `0.0371` | `0.0111` | `0.9870` | `0.9870` | `0.853` | `1.20e-09` |
+| 17 | `0.0077` | `0.0077` | `1.0096` | `0.0230` | `0.0058` | `0.9888` | `0.9888` | `0.300` | `1.23e-09` |
+| 18 | `0.0077` | `0.0077` | `1.0097` | `0.0267` | `0.0072` | `0.9889` | `0.9889` | `0.799` | `2.88e-10` |
+| 19 | `0.0079` | `0.0078` | `1.0101` | `0.0226` | `0.0074` | `0.9877` | `0.9877` | `0.446` | `2.91e-10` |
+| 20 | `0.0076` | `0.0079` | `1.0090` | `0.1237` | `0.0090` | `0.9914` | `0.9914` | `0.259` | `1.45e-10` |
+| 21 | `0.0076` | `0.0075` | `1.0093` | `0.0240` | `0.0057` | `0.9935` | `0.9935` | `0.288` | `9.49e-10` |
+| 22 | `0.0069` | `0.0068` | `1.0084` | `0.0230` | `0.0129` | `0.9854` | `0.9854` | `0.391` | `8.64e-09` |
+| 23 | `0.0067` | `0.0066` | `1.0082` | `0.0178` | `0.0143` | `0.9864` | `0.9864` | `0.247` | `5.78e-09` |
+| 24 | `0.0070` | `0.0070` | `1.0084` | `0.0231` | `0.0159` | `0.9802` | `0.9802` | `0.720` | `3.65e-08` |
+| 25 | `0.0064` | `0.0064` | `1.0078` | `0.0200` | `0.0102` | `0.9857` | `0.9857` | `0.508` | `2.50e-08` |
+<!-- END AUTO-GENERATED g64-retool-25s-01/rollout_corr_table -->
+
+</details>
+
+<details><summary>5 步 smoke 逐步 <code>actor/rollout_corr/*</code></summary>
+
+<!-- BEGIN AUTO-GENERATED g64-retool-smoke-04/rollout_corr_table (gen_g64_report_tables.py) -->
+| Step | `actor/rollout_corr/kl` | `actor/rollout_corr/k3_kl` | `actor/rollout_corr/ppl_ratio` | `actor/rollout_corr/chi2_token` | `actor/rollout_corr/rollout_is_mean` | `actor/rollout_corr/rollout_is_ratio_fraction_low` | `actor/rollout_corr/rollout_is_seq_fraction_low` | `actor/rollout_corr/rollout_is_max` | `actor/rollout_corr/rollout_is_min` |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | `0.0117` | `0.0116` | `1.0127` | `0.0639` | `0.0176` | `0.9844` | `0.9844` | `1.270` | `1.26e-10` |
+| 2 | `0.0092` | `0.0090` | `1.0116` | `0.0319` | `0.0048` | `0.9916` | `0.9916` | `0.093` | `4.92e-11` |
+| 3 | `0.0097` | `0.0097` | `1.0123` | `0.0348` | `0.0065` | `0.9931` | `0.9931` | `0.140` | `7.94e-09` |
+| 4 | `0.0097` | `0.0095` | `1.0121` | `0.0275` | `0.0057` | `0.9924` | `0.9924` | `0.282` | `1.96e-11` |
+| 5 | `0.0101` | `0.0100` | `1.0128` | `0.0327` | `0.0081` | `0.9897` | `0.9897` | `0.170` | `7.37e-11` |
+<!-- END AUTO-GENERATED g64-retool-smoke-04/rollout_corr_table -->
+
+</details>
+
+### 9.6 5 步 Smoke（`g64-retool-smoke-04`，前期验证）
+
+<!-- BEGIN AUTO-GENERATED g64-retool-smoke-04/eval_table (gen_g64_report_tables.py) -->
+| Metric (`n=30` samples per question, 30 questions) | Step 0 | Step 5 | Δ (Step 5 − Step 0) |
+| --- | --- | --- | --- |
+| AIME 2024 correct samples | `410 / 900` | `416 / 900` | `+6` |
+| AIME 2024 `acc/mean@30` | `45.56%` | `46.22%` | `+0.67 pp` (paired bootstrap 95% CI `[-3.67 pp, +5.00 pp]`) |
+| AIME 2024 `acc/maj@30/mean` | `64.81%` | `66.62%` | `+1.81 pp` |
+| AIME 2024 `acc/best@30/mean` | `84.99%` | `84.61%` | `-0.38 pp` |
+| AIME 2024 shaped `reward/mean@30` | `+0.0504` | `+0.0651` | `+0.0147` |
+| AIME 2024 questions improved / worse / tied (per-question correct count) | – | – | `11 / 13 / 6` |
+| AIME 2025 correct samples | `297 / 900` | `315 / 900` | `+18` |
+| AIME 2025 `acc/mean@30` | `33.00%` | `35.00%` | `+2.00 pp` (paired bootstrap 95% CI `[-3.00 pp, +7.44 pp]`) |
+| AIME 2025 `acc/maj@30/mean` | `54.37%` | `54.42%` | `+0.06 pp` |
+| AIME 2025 `acc/best@30/mean` | `72.45%` | `71.40%` | `-1.05 pp` |
+| AIME 2025 shaped `reward/mean@30` | `-0.1869` | `-0.1487` | `+0.0382` |
+| AIME 2025 questions improved / worse / tied (per-question correct count) | – | – | `13 / 10 / 7` |
+<!-- END AUTO-GENERATED g64-retool-smoke-04/eval_table -->
+
+- 单次运行的小幅上升，两个区间均包含 0（AIME 2024 `[-3.67 pp, +5.00 pp]`，AIME 2025 `[-3.00 pp, +7.44 pp]`），已由上面的 25 步运行取代。
+
+<!-- BEGIN AUTO-GENERATED g64-retool-smoke-04/training_table (gen_g64_report_tables.py) -->
+| Step (`head.log` line) | `timing_s/step` | `timing_s/gen` | `timing_s/update_actor` | `timing_s/update_weights` | `perf/throughput` (tok/s/GPU) | `critic/score/mean` | `actor/pg_loss` | `actor/grad_norm` | `response_length/mean` (`max`) | `response_length/clip_ratio` | `num_turns/mean` (`max`) | trajectories with `<tool_response>` (calls) | `score <= -2.0` | audit mask violations |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 (L2456) | `148.45s` | `34.11s` | `109.18s` | `3.99s` | `196.5` | `-0.2304` | `-0.0497` | `0.1716` | `1,512.5` (`3,782`) | `0.10%` | `8.37` (`32`) | `1020 / 1024` (`3,259`) | `0` | `0 / 8` |
+| 2 (L2469) | `30.20s` | `0.03s` | `25.29s` | `4.25s` | `1579.9` | `-0.2464` | `-0.0947` | `0.1268` | `2,666.1` (`15,193`) | `0.10%` | `9.20` (`32`) | `1016 / 1024` (`3,684`) | `0` | `0 / 8` |
+| 3 (L2498) | `32.15s` | `0.04s` | `24.49s` | `7.01s` | `1466.0` | `-0.2413` | `-0.0946` | `0.1225` | `2,633.4` (`16,384`) | `0.29%` | `8.33` (`32`) | `1019 / 1024` (`3,242`) | `0` | `0 / 8` |
+| 4 (L2513) | `27.50s` | `0.04s` | `22.64s` | `4.23s` | `1610.4` | `-0.2223` | `-0.0779` | `0.1245` | `2,452.9` (`16,384`) | `0.29%` | `8.27` (`32`) | `1019 / 1024` (`3,208`) | `0` | `0 / 8` |
+| 5 (L2544) | `25.64s` | `0.04s` | `20.43s` | `4.21s` | `1531.9` | `-0.0080` | `-0.1023` | `0.1441` | `2,138.6` (`16,384`) | `0.10%` | `7.98` (`32`) | `1014 / 1024` (`3,060`) | `0` | `0 / 8` |
+| Steps 2–5 mean (4 steps) | `28.87s` (`25.64s`–`32.15s`) | `0.037s` | `23.21s` | `4.92s` | `1547.0` | – | – | – | – | – | – | total `5088 / 5120` (`16,453`) | total `0` | total `0 / 40` |
+<!-- END AUTO-GENERATED g64-retool-smoke-04/training_table -->
+
+<!-- BEGIN AUTO-GENERATED g64-retool-smoke-04/timing_table (gen_g64_report_tables.py) -->
+| Step | wall clock (Δ of TensorBoard log starts) | `timing_s/step` | of which `gen` | of which `update_actor` | of which `update_weights` | `timing_s/testing` | TensorBoard logging of the previous step (scalars) | rest outside the timers | weight sync done → `logger.log` |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | `268.80s` | `148.45s` | `34.10s` | `109.18s` | `3.99s` | `0.00s` | `118.33s` (259) | `2.02s` | `1.22s` |
+| 2 | `71.11s` | `30.20s` | `0.03s` | `25.29s` | `4.25s` | `0.00s` | `38.71s` (98) | `2.21s` | `2.35s` |
+| 3 | `73.45s` | `32.15s` | `0.04s` | `24.49s` | `7.01s` | `0.00s` | `38.59s` (98) | `2.71s` | `2.85s` |
+| 4 | `67.24s` | `27.50s` | `0.04s` | `22.64s` | `4.23s` | `0.00s` | `37.44s` (98) | `2.31s` | `2.43s` |
+| 5 | `181.15s` | `25.64s` | `0.04s` | `20.43s` | `4.21s` | `115.89s` | `37.40s` (98) | `2.22s` | `118.20s` |
+| Steps 2–4 mean (3 steps) | `70.60s` | `29.95s` | `0.037s` | `24.14s` | `5.16s` | `0.00s` | `38.25s` (98) | `2.41s` | `2.54s` |
+<!-- END AUTO-GENERATED g64-retool-smoke-04/timing_table -->
+
+- Steps 2–5 `timing_s/step` 均值 `28.87s`；Steps 2–4 墙钟 `70.60s`/步，其中 TensorBoard 记录 `38.25s`（Step 5 含验证）。只有 4 步，不作为稳态测量。40 个归档原始会话的整段掩码审计 `0` 违规。
+
+### 9.7 本 PR 对共享代码的改动
+
+- [`verl/utils/distributed.py`](../../../../../verl/utils/distributed.py)：恢复 `tpu-main` 中被误删的 TPU 分支（`initialize_global_process_group_ray` 在建 process group 前显式 `import torch_tpu`；`set_numa_affinity` 在 TPU 上跳过 NVIDIA NUMA 设置），新增的 IPv4 Gloo/NCCL 网卡设置在 TPU 上为 no-op；单测对这些分支做检查。

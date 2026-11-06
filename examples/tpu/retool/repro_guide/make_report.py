@@ -105,7 +105,9 @@ COLORS = {
 DATASETS = ("aime_2024", "aime_2025")
 DATASET_NAMES = {"aime_2024": "AIME 2024", "aime_2025": "AIME 2025"}
 
-# Algorithm settings that must be identical in every run (checked, not assumed).
+# Algorithm settings that must be identical in the W&B resolved config of every run (checked, not assumed). This is
+# the resolved config, not verified runtime behaviour: rows listed in RUNTIME_CAVEATS are known to act differently in
+# the code of our two runs (explained under the table in REPRO_GUIDE.md).
 INVARIANTS = [
     ("Advantage estimator", "algorithm.adv_estimator"),
     ("Normalize advantage by group std", "algorithm.norm_adv_by_std_in_grpo"),
@@ -161,6 +163,7 @@ INVARIANTS = [
     (None, "actor_rollout_ref.rollout.dtype"),
     ("Validation every N steps", "trainer.test_freq"),
 ]
+RUNTIME_CAVEATS = {"Rollout correction: IS level / threshold", "Rollout correction: loss type"}
 # Settings that differ but do not change the algorithm (explained in the guide).
 NON_SYSTEM_DIFFS = [
     ("`optim.clip_grad`", "actor_rollout_ref.actor.optim.clip_grad"),
@@ -387,16 +390,18 @@ def table_summary(snap: Snapshot) -> str:
             lambda p: cell(p, lambda s: window(snap.series(s, "critic/score/mean"), 21, 25), "+.3f"),
         ),
         (
-            "Wall clock per step, mean of steps 2–25 (s)",
+            "Observed wall clock per step, mean of steps 2–25 (s)",
             lambda p: cell(p, lambda s: mean(wall_time(snap, s).values()), ",.0f"),
         ),
         (
-            "… without TensorBoard logging (s)",
+            "… minus measured TensorBoard writing (s, arithmetic, not a measured step time)",
             lambda p: cell(
                 p,
-                lambda s: mean(wall_time(snap, s).values()) - mean((tb_time(snap, s) or {0: 0.0}).values()),
+                lambda s: mean(wall_time(snap, s).values()) - mean(tb_time(snap, s).values()),
                 ",.0f",
-            ),
+            )
+            if all(s["key"] in snap.tb for s in groups[p])
+            else "no TensorBoard logger",
         ),
     ]
     lines = ["| | " + " | ".join(PLATFORM_NAMES[p] for p in plats) + " |", "| --- | --- | --- | --- |"]
@@ -434,9 +439,9 @@ def table_invariants(snap: Snapshot) -> str:
         if label is None:
             rows[-1][1].append(value)
         else:
-            rows.append((label, [value]))
+            rows.append((f"{label} †" if label in RUNTIME_CAVEATS else label, [value]))
     lines = [
-        f"| Setting | Value (identical in all {len(RUNS)} runs) |",
+        f"| Setting | W&B resolved config (identical in all {len(RUNS)} runs) |",
         "| --- | --- |",
     ]
     lines += [f"| {label} | {' / '.join(code(v) for v in vals)} |" for label, vals in rows]
@@ -503,7 +508,7 @@ def table_eval(snap: Snapshot) -> str:
 
 def table_eval_paired(snap: Snapshot) -> str:
     lines = [
-        "| Comparison (same 30 problems per year) | AIME 2024 | AIME 2025 |",
+        "| Comparison on the same 30 problems per year (interval: response sampling only) | AIME 2024 | AIME 2025 |",
         "| --- | --- | --- |",
     ]
     for step in (0, MAX_STEP):
@@ -578,8 +583,9 @@ def phase_mean(snap: Snapshot, spec: dict, metric: str) -> float:
 
 def table_wall(snap: Snapshot) -> str:
     lines = [
-        "| Run | Chips/GPUs (trainer + rollout) | Wall clock per step | TensorBoard logging per step "
-        "| Wall clock without TensorBoard logging | Tokens per step | Wall clock without TensorBoard per 1M tokens |",
+        "| Run | Chips/GPUs (trainer + rollout) | Observed wall clock per step "
+        "| of which TensorBoard writing (measured) | Wall clock minus TensorBoard writing (arithmetic) "
+        "| Tokens per step | Observed wall clock per 1M tokens |",
         "| --- | --- | --- | --- | --- | --- | --- |",
     ]
     for spec in RUNS:
@@ -591,8 +597,9 @@ def table_wall(snap: Snapshot) -> str:
             f"| {spec['label']} | {hw(snap, spec, 'trainer')} + {hw(snap, spec, 'rollout')} | "
             f"{mean(wall.values()):,.1f} | "
             f"{f(mean(tb.values()), ',.1f') if spec['key'] in snap.tb else 'no TensorBoard logger'} | "
-            f"{mean(net.values()):,.1f} | {mean(tok[s] for s in wall) / 1e6:.2f} M | "
-            f"{mean(net[s] / tok[s] * 1e6 for s in wall):,.1f} |"
+            f"{f(mean(net.values()), ',.1f') if spec['key'] in snap.tb else '–'} | "
+            f"{mean(tok[s] for s in wall) / 1e6:.2f} M | "
+            f"{mean(wall[s] / tok[s] * 1e6 for s in wall):,.1f} |"
         )
     return "\n".join(lines)
 

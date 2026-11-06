@@ -37,17 +37,21 @@ flowchart LR
 | AIME 2025 accuracy, Step 0 | not evaluated | 32.56% | 35.00% |
 | AIME 2025 accuracy, Step 25 | 38.75% to 46.67% | 42.00% | 41.78% |
 | Train reward, mean of steps 21–25 | +0.479 to +0.483 | +0.516 | +0.432 |
-| Wall clock per step, mean of steps 2–25 (s) | 236 to 998 | 337 | 73 |
-| … without TensorBoard logging (s) | 236 to 998 | 291 | 33 |
+| Observed wall clock per step, mean of steps 2–25 (s) | 236 to 998 | 337 | 73 |
+| … minus measured TensorBoard writing (s, arithmetic, not a measured step time) | no TensorBoard logger | 291 | 33 |
 <!-- END AUTO-GENERATED summary -->
 
-**Same in all runs** (checked, §3):
+**Same in all runs** (what was checked, and how, is in §3):
 
-- Every algorithm setting in the W&B config: GRPO advantages, DAPO clip-higher 0.2 / 0.28, token-mean loss, no KL,
-  64 prompts × 16 responses per step, one optimizer step per batch, constant LR 2e-6, sampling temperature 1, 16K
-  response cap, 16 turns, thinking on, async trainer with staleness ≤ 4 (§3.1).
-- The reward function and dataset code: `retool_tpu.py` and `retool_dataset_utils.py` are byte-identical in
-  Askhat's merged recipe and in the code of our two runs, and all six runs log the same reward function (§3.2).
+- Every algorithm setting in the W&B resolved config: GRPO advantages, DAPO clip-higher 0.2 / 0.28, token-mean loss,
+  no KL, 64 prompts × 16 responses per step, one optimizer step per batch, constant LR 2e-6, sampling temperature 1,
+  16K response cap, 16 turns, thinking on, async trainer with staleness ≤ 4 (§3.1). This is the resolved config,
+  not verified runtime behaviour: in our two runs `rollout_correction.rollout_is` / threshold never reach the
+  actor (§3.1), and for Askhat's runs the code is not recorded.
+- The reward function and dataset code, as far as can be checked: `retool_tpu.py` and `retool_dataset_utils.py`
+  are byte-identical in Askhat's merged recipe and in the code of our two runs, and all six runs log the same reward
+  function path and name. Askhat's runs used local changes whose commit is not recorded, so this does not prove that
+  his runs loaded the same code (§3.2).
 - The input files: Askhat's runs read `/data/jialei/` (`gs://torchprime/jialei/`), ours read a byte-identical copy
   (same MD5); their rows equal the pinned Hugging Face revisions (§1.3).
 - The SFT recipe: same script settings and the same token count at each of the 372 steps (23.8M tokens in total);
@@ -56,8 +60,8 @@ flowchart LR
 **Different** (by design or not controlled):
 
 - Accelerators, parallelism, kernels and memory settings (§3.1 "System adaptations").
-- The SFT checkpoint: v5p starts from Askhat's SFT; TPU v7x and GB200 start from the same TPU v7x SFT checkpoint
-  (same bytes, verified by hash on every GB200 node).
+- The SFT checkpoint: v5p starts from Askhat's SFT (matched by its path name, not by hash); TPU v7x and GB200 start
+  from the same TPU v7x SFT checkpoint (same bytes, verified by hash on every GB200 node).
 - Evaluation: Askhat's runs evaluate 8 samples per problem and skip Step 0; ours evaluate 30 samples per problem at
   Step 0 and Step 25.
 - Code base: Askhat's runs used the `jialei777/verl-upstream` TPU code with local changes (the commit is not
@@ -66,17 +70,19 @@ flowchart LR
 
 **Conclusions** (details and caveats in §4.5):
 
-1. **TPU v7x vs. GB200 match.** From the same SFT checkpoint, Step 0 and Step 25 accuracy agree within sampling
-   noise (all paired differences have 95% intervals that include 0), and both improve by about +10 pp on AIME 2024
-   and +7 to +9 pp on AIME 2025 in 25 steps.
+1. **TPU v7x and GB200 end close: a positive, preliminary parity signal.** From the same SFT checkpoint, the Step 25
+   accuracies differ by +0.67 pp (AIME 2024) and +0.22 pp (AIME 2025), and both runs improve by about +10 pp on
+   AIME 2024 and +7 to +9 pp on AIME 2025. No difference was detected on this fixed problem set, but that does not
+   show the two are equivalent: there is one formal run per platform, and the intervals cover only the sampling of
+   responses, not run-to-run (training seed) variance. Whether the training distributions match is still open.
 2. **Both are close to Askhat's TPU v5p runs.** Reward, response length, turns, gradient norm and clip fraction
    follow the band of the four v5p runs. At Step 25, AIME 2025 is inside the v5p range and AIME 2024 is 1.6 to
-   6.0 pp below it. Askhat's runs and ours started from different SFT checkpoints, and v5p has no Step 0
-   evaluation, so this gap cannot be attributed to the hardware.
-3. **Speed.** GB200 takes 73 s per step (33 s without TensorBoard logging); TPU v7x takes 337 s (291 s), and most of
-   it is waiting for the rollout; Askhat's fastest v5p configuration takes 236 s on 48 chips. These are different
-   chip generations, counts and rollout layouts, so this is a comparison of these configurations, not a per-chip
-   benchmark.
+   6.0 pp below it. Askhat's runs and ours started from different SFT checkpoints, v5p has no Step 0 evaluation and
+   his run code is not recorded, so this gap cannot be attributed to the hardware.
+3. **Speed.** Observed wall clock per step: GB200 73 s, TPU v7x 337 s (most of it waiting for the rollout), and
+   236 s for Askhat's fastest v5p configuration on 48 chips. Our two runs spent 40 s and 47 s per step writing
+   TensorBoard to the GCS FUSE mount; how much of that a local log directory would save is not measured yet. These
+   are different chip generations, counts and rollout layouts, so this compares configurations, not chips.
 
 **Files this guide uses** (all at the top of `examples/tpu/retool/` unless noted):
 
@@ -105,17 +111,14 @@ flowchart LR
 | RL run image | tag `v20261006-tsync1006`, digest `sha256:d92a2b3d6667584d67ea51874a721228a96c799263ab40f4aee168680476f64e` (the TPU CI image, [`tpu-ci-image.env`](../../../tests/special_tpu/gke/tpu-ci-image.env)) |
 | SFT run image | tag `v20261001-tsync990787257`, digest `sha256:dcece4bc3813359450f48d4523e5bd78e3139dc441a88b5c2e4d638caa054cbe` |
 
-We used the prebuilt images. To rebuild, the Dockerfile needs an access token for the `torch-tpu` package index and
-GitHub credentials that can clone `google-pytorch/torchtitan` and `vllm-project/vllm-torchtpu`; it copies nothing
-from the build context:
+Use these prebuilt images; this guide does not give a rebuild command.
 
-```bash
-docker build -f examples/tpu/gke/Dockerfile.tpu \
-  --build-arg AUTH_TOKEN="$(gcloud auth print-access-token)" \
-  --build-arg GITHUB_USER=<user> --build-arg GITHUB_TOKEN=<token> \
-  -t us-west2-docker.pkg.dev/tpu-pytorch/raycluster/verl-tpu:<tag> examples/tpu/gke
-docker push us-west2-docker.pkg.dev/tpu-pytorch/raycluster/verl-tpu:<tag>
-```
+> [!WARNING]
+> Do not rebuild `Dockerfile.tpu` as it is with your own credentials and push the result. It takes an access token
+> and a GitHub token as build arguments, keeps the access token in an `ENV` of intermediate layers, and clones
+> private repositories with the token in the URL (which stays in `.git/config`). Anyone who can pull such an image
+> can read those values from its history and layers. A safe rebuild needs the Dockerfile to use BuildKit secrets,
+> followed by a check that neither the final image nor its history contains them.
 
 **Key versions** (`pip` metadata recorded by the RL run, plus the source pins in the Dockerfile):
 
@@ -145,41 +148,49 @@ docker push us-west2-docker.pkg.dev/tpu-pytorch/raycluster/verl-tpu:<tag>
 
 ### 1.3 Model, datasets & preprocessing
 
+**Where the pods read inputs.** The pods do not see the disk of the machine that runs the launcher. Every launcher
+mounts the bucket `gs://$GCS_BUCKET` at `/data` and passes `/data/$INPUTS_ROOT` to the recipe: as `RAY_DATA_HOME` on
+TPU ([`run_ray_jobset_v7x_nap.sh`](../gke/run_ray_jobset_v7x_nap.sh)) and as `DATA_ROOT` on GB200
+([`run_ray_jobset_gb200.sh`](gb200/run_ray_jobset_gb200.sh)). The inputs therefore have to be in
+`gs://$GCS_BUCKET/$INPUTS_ROOT/` with this layout:
+
 **Base model.** `Qwen/Qwen3-30B-A3B` at revision `ad44e777bcd18fa416d9da3bd8f70d33ebb85d39` (16 safetensors
-shards, about 61 GB):
+shards, about 61 GB), under `assets/hf/Qwen3-30B-A3B/` (the SFT recipe's default `MODEL_SRC_PATH`).
 
-```bash
-hf download Qwen/Qwen3-30B-A3B --revision ad44e777bcd18fa416d9da3bd8f70d33ebb85d39 \
-  --local-dir "$RAY_DATA_HOME/assets/hf/Qwen3-30B-A3B"
-```
+**Datasets.** Four parquet files:
 
-**Datasets.** The recipes read four parquet files under `RAY_DATA_HOME`:
-
-| Dataset | Hugging Face source (revision) | Path under `RAY_DATA_HOME` | Rows |
+| Dataset | Hugging Face source (revision) | Path under `gs://$GCS_BUCKET/$INPUTS_ROOT/` | Rows |
 | --- | --- | --- | --- |
 | ReTool-SFT (SFT) | `JoeYing/ReTool-SFT` (`74943ce5`) `train_2000.parquet`, converted (below) | `dataset/ReTool-SFT/data/train-00000-of-00001.parquet` | 2,000 |
 | DAPO-Math-17k (RL) | `BytedTsinghua-SIA/DAPO-Math-17k` (`65877096`) `data/dapo-math-17k.parquet` | `dataset/BytedTsinghua-SIA/DAPO-Math-17k/data/train-00000-of-00001.parquet` | 1,791,700 (17,398 distinct prompts) |
 | AIME 2024 (eval) | `Maxwell-Jia/AIME_2024` (`8d88b287`) `aime_2024_problems.parquet` | `dataset/Maxwell-Jia/AIME_2024/data/train-00000-of-00001.parquet` | 30 |
 | AIME 2025 (eval) | `yentinglin/aime_2025` (`6f71d77b`) `data/train-00000-of-00001-243207c6c994e1bd.parquet` | `dataset/yentinglin/aime_2025/data/train-00000-of-00001.parquet` | 30 |
 
-Two ways to get them:
+Getting them there:
 
 ```bash
-# (a) Google-internal: copy the staged inputs that every run in this guide read (assets/ holds the base model).
-gcloud storage cp -r gs://ubench-logs/xiaotongyang/retool-v7x/inputs/dataset "$RAY_DATA_HOME/"
-gcloud storage cp -r gs://ubench-logs/xiaotongyang/retool-v7x/inputs/assets "$RAY_DATA_HOME/"
+GCS_BUCKET=<your-bucket>      # mounted at /data by the launchers, which take the same two variables
+INPUTS_ROOT=<inputs-prefix>   # e.g. $USER/retool/inputs
 
-# (b) From Hugging Face at the pinned revisions (needs pyarrow, pyyaml, huggingface_hub).
-python3 examples/tpu/retool/prepare_retool_data.py --out "$RAY_DATA_HOME"   # add --with-model for the base model
+# (a) Google-internal: copy the staged inputs that every run in this guide read (or point the launchers at them
+#     directly with GCS_BUCKET=ubench-logs INPUTS_ROOT=xiaotongyang/retool-v7x/inputs, if you can read that bucket).
+gcloud storage cp -r gs://ubench-logs/xiaotongyang/retool-v7x/inputs/dataset \
+  gs://ubench-logs/xiaotongyang/retool-v7x/inputs/assets "gs://$GCS_BUCKET/$INPUTS_ROOT/"
 
-# Either way, check the rows (exit code 0 = identical to what the runs read; about 1 minute).
-python3 examples/tpu/retool/prepare_retool_data.py --check "$RAY_DATA_HOME"
+# (b) From Hugging Face at the pinned revisions, prepared on any machine (needs pyarrow, pyyaml, huggingface_hub):
+#     download, convert and check into a local directory, then upload it.
+LOCAL_INPUTS=/tmp/retool-inputs
+python3 examples/tpu/retool/prepare_retool_data.py --out "$LOCAL_INPUTS" --with-model
+gcloud storage cp -r "$LOCAL_INPUTS/dataset" "$LOCAL_INPUTS/assets" "gs://$GCS_BUCKET/$INPUTS_ROOT/"
+
+# Check any local copy (exit code 0 = the same rows the runs read; about 1 minute). --out already runs it.
+python3 examples/tpu/retool/prepare_retool_data.py --check "$LOCAL_INPUTS"
 ```
 
 `gs://ubench-logs/xiaotongyang/retool-v7x/inputs/` is a copy of `gs://torchprime/jialei/` (mounted as `/data/jialei`
 in Askhat's runs); the four dataset files and the model shards have the same MD5 in both buckets. The files are
 re-exports, so their sizes differ from the Hugging Face files, but `--check` compares rows: options (a) and (b) give
-the same rows in the same order.
+the same rows in the same order (to check option (a), copy `dataset/` to a local directory first).
 
 **Preprocessing.**
 
@@ -201,9 +212,27 @@ the same rows in the same order.
 
 [`run_qwen3_30b_a3b_sft_torchtitan.sh`](run_qwen3_30b_a3b_sft_torchtitan.sh) with its defaults: 6 epochs × 62 steps =
 372 steps, 32 sequences per step, `max_length=16384`, AdamW (β = 0.9 / 0.95, weight decay 0.01), LR 1e-5 with 10%
-warm-up and cosine decay to 1e-6, gradient clipping 1.0, context parallel 4, Hugging Face export only. Our run
-`p2-retool-sft-01` used one `2x2x4` slice (16 chips); this command is rebuilt from the run's `job_spec.json` and
-`run_record.json` in its run directory:
+warm-up and cosine decay to 1e-6, gradient clipping 1.0, context parallel 4, Hugging Face export only. Our run used
+one `2x2x4` slice (16 chips). To run it again (`GCS_BUCKET` and `INPUTS_ROOT` as in §1.3):
+
+```bash
+RUN_ROOT=<runs-prefix>        # e.g. $USER/retool/runs
+SFT_RUN=<new-run-name>        # the launcher refuses a RUN_NAME whose gs://$GCS_BUCKET/$RUN_ROOT/$RUN_NAME/ has objects
+DRY_RUN=0 RUN_NAME="$SFT_RUN" GCS_BUCKET="$GCS_BUCKET" RUN_ROOT="$RUN_ROOT" INPUTS_ROOT="$INPUTS_ROOT" \
+RAY_NAMESPACE=<namespace> TPU_TOPOLOGY=2x2x4 TRAINER_SLICES=1 ROLLOUT_SLICES=0 \
+IMAGE=us-west2-docker.pkg.dev/tpu-pytorch/raycluster/verl-tpu@sha256:dcece4bc3813359450f48d4523e5bd78e3139dc441a88b5c2e4d638caa054cbe \
+JOB_SCRIPT=examples/tpu/retool/run_qwen3_30b_a3b_sft_torchtitan.sh \
+JOBENV_NNODES_TRAINER=4 JOBENV_N_CHIPS_TRAINER=8 \
+JOBENV_LIBTPU_INIT_ARGS="--xla_tpu_use_enhanced_launch_barrier=false --xla_tpu_bf16_emission_mode=PROMOTE_F32" \
+JOBENV_MODEL_PATH=/dev/shm/models/Qwen3-30B-A3B \
+JOBENV_SAVE_PATH=@RUN_DIR@/checkpoint JOBENV_SAVE_FREQ=186 JOBENV_TEST_FREQ=62 JOBENV_TENSORBOARD_DIR=@RUN_DIR@/tensorboard \
+bash examples/tpu/gke/run_ray_jobset_v7x_nap.sh   # CODE_REF defaults to your checkout's HEAD
+```
+
+<details>
+<summary>Historical command of our SFT run <code>p2-retool-sft-01</code> (for the record; its run name and directory are taken)</summary>
+
+Rebuilt from the run's `job_spec.json` and `run_record.json`:
 
 ```bash
 DRY_RUN=0 RUN_NAME=p2-retool-sft-01 GCS_BUCKET=ubench-logs RUN_ROOT=xiaotongyang/retool-v7x/runs \
@@ -219,13 +248,29 @@ JOBENV_SAVE_PATH=@RUN_DIR@/checkpoint JOBENV_SAVE_FREQ=186 JOBENV_TEST_FREQ=62 J
 bash examples/tpu/gke/run_ray_jobset_v7x_nap.sh
 ```
 
-The RL runs on TPU v7x and GB200 start from its export
+</details>
+
+**Where the checkpoint goes and how the RL runs find it.** In the pods, `@RUN_DIR@` is `/data/$RUN_ROOT/$RUN_NAME`,
+i.e. `gs://$GCS_BUCKET/$RUN_ROOT/$RUN_NAME/`, so the final Hugging Face export is
+`gs://$GCS_BUCKET/$RUN_ROOT/$SFT_RUN/checkpoint/global_step_372/huggingface`. Both RL launchers read it through the
+same mount with `JOBENV_MODEL_SRC_PATH=/data/$RUN_ROOT/$SFT_RUN/checkpoint/global_step_372/huggingface`, and every host
+copies it to `MODEL_PATH` (host-local `/dev/shm/...`) before training. An RL run that mounts another bucket needs a
+copy of the checkpoint there. The GB200 launcher also checks the checkpoint against `EXPECT_CHECKPOINT_SHA256`, which
+defaults to the composite SHA-256 of our checkpoint (below); for another checkpoint, set it to that checkpoint's
+value:
+
+```bash
+python3 -c 'import sys; from pathlib import Path; sys.path.insert(0, "examples/tpu/retool/gb200"); import verify_g0_gb200 as g; print(g.verify_checkpoint_manifest(Path(sys.argv[1]))["composite_sha256"])' <local-copy-of-the-export>
+```
+
+The RL runs on TPU v7x and GB200 in this guide start from the export
 `gs://ubench-logs/xiaotongyang/retool-v7x/runs/p2-retool-sft-01/checkpoint/global_step_372/huggingface`
 (61,084,185,820 bytes; SHA-256 over its 20 core files as computed by `gb200/verify_g0_gb200.py`:
-`59247a00c13f2364a12aab5ab6b88b6d971d59ff643c57aad8ac4e55a71231b0`). Askhat's runs start from his own v5p SFT run of
-the same script ([`myaf5pal`](https://wandb.ai/google-trellis/verl-torchtpu-grpo-test/runs/myaf5pal), 16 v5p chips).
-The two SFT runs processed the same number of tokens at every step (consistent with the same data order) and their
-losses agree:
+`59247a00c13f2364a12aab5ab6b88b6d971d59ff643c57aad8ac4e55a71231b0`). Askhat's RL runs load
+`/tmp/models/multiturn-sft-qwen3-30b-a3b-v5p`; by its name this is the export of his v5p SFT run of the same script
+([`myaf5pal`](https://wandb.ai/google-trellis/verl-torchtpu-grpo-test/runs/myaf5pal), 16 v5p chips), which has not
+been verified by hash. The two SFT runs processed the same number of tokens at every step (consistent with the same
+data order) and their losses agree:
 
 <!-- BEGIN AUTO-GENERATED sft (make_report.py) -->
 | Quantity | TPU v5p SFT (Askhat) | TPU v7x SFT (ours, used by v7x and GB200) |
@@ -299,8 +344,8 @@ docker buildx build --platform linux/arm64 --progress=plain \
 Identical to TPU v7x (§1.3, §1.4): the GB200 run read the same `INPUTS_ROOT=xiaotongyang/retool-v7x/inputs` and
 started from the same SFT export. Every node copied the checkpoint to `/dev/shm` and matched the 20-file SHA-256
 `59247a00…` before training (`verify_g0_gb200.py --expect-composite-sha256`). `verify_g0_gb200.py` also checks that
-the TorchTitan MoE expert-bias load balancing is disabled, as on TPU (`configure_qwen3_moe_for_rl` in
-`verl/workers/engine/torchtitan/utils.py`).
+the TorchTitan MoE expert-bias load balancing is disabled; the TPU code of our run (and Askhat's merged code) disables
+it with the same function (`configure_qwen3_moe_for_rl` in `verl/workers/engine/torchtitan/utils.py`).
 
 ## 3. Launching runs: TPU v5p vs. TPU v7x vs. GB200
 
@@ -320,8 +365,63 @@ after every optimizer step the trainer pushes the new weights to the rollout ser
 and a batch may be generated by weights at most 4 steps old. Each rollout worker runs the tool calls in a local
 sandbox server on its own pod.
 
+**Running it again.** Both launchers refuse a `RUN_NAME` whose run directory
+`gs://$GCS_BUCKET/$RUN_ROOT/$RUN_NAME/` already has objects, so every run needs a new name. With `GCS_BUCKET`,
+`INPUTS_ROOT` from §1.3 and `RUN_ROOT`, `SFT_RUN` from §1.4:
+
+```bash
+# TPU v7x: 1 trainer + 3 rollout 2x2x4 slices (64 chips).
+RL_RUN=<new-run-name>
+DRY_RUN=0 RUN_NAME="$RL_RUN" GCS_BUCKET="$GCS_BUCKET" RUN_ROOT="$RUN_ROOT" INPUTS_ROOT="$INPUTS_ROOT" \
+RAY_NAMESPACE=<namespace> JOBSET_MAX_RESTARTS=1 ALLOW_REQUEUE=0 RUN_LIMIT_MIN=220 DRIVER_TIMEOUT_MIN=210 \
+TPU_TOPOLOGY=2x2x4 TRAINER_SLICES=1 ROLLOUT_SLICES=3 \
+WANDB_SECRET_NAME=<k8s-secret-with-WANDB_API_KEY> WANDB_SECRET_KEY=WANDB_API_KEY \
+IMAGE=us-west2-docker.pkg.dev/tpu-pytorch/raycluster/verl-tpu@sha256:d92a2b3d6667584d67ea51874a721228a96c799263ab40f4aee168680476f64e \
+JOB_SCRIPT=examples/tpu/retool/run_qwen3_30b_a3b_dapo_torchtitan.sh \
+JOBENV_LIBTPU_INIT_ARGS="--xla_tpu_use_enhanced_launch_barrier=false --xla_tpu_bf16_emission_mode=PROMOTE_F32" \
+JOBENV_MODEL_PATH=/dev/shm/models/multiturn-sft-qwen3-30b-a3b-tpu7x \
+JOBENV_MODEL_SRC_PATH="/data/$RUN_ROOT/$SFT_RUN/checkpoint/global_step_372/huggingface" \
+JOBENV_CKPTS_DIR=@RUN_DIR@/checkpoints \
+JOBENV_NNODES_TRAINER=4 JOBENV_N_CHIPS_TRAINER=8 JOBENV_NNODES_ROLLOUT=12 JOBENV_N_CHIPS_ROLLOUT=8 \
+JOBENV_ROLLOUT_TP=32 JOBENV_ROLLOUT_EP=32 JOBENV_TRAIN_BATCH_SIZE=64 JOBENV_PPO_MINI_BATCH_SIZE=64 \
+JOBENV_MAX_RESPONSE_LENGTH=16384 JOBENV_MAX_TURNS=16 JOBENV_N_RESP_PER_PROMPT=16 JOBENV_N_RESP_PER_PROMPT_VAL=30 \
+JOBENV_ACTOR_LR=2e-6 JOBENV_NUM_WARMUP_BATCHES=2 JOBENV_RELEASE_SYNC_BUFFERS=False JOBENV_VERL_RAIDEN_RELEASE_BUFFERS=0 \
+JOBENV_VERIFY_PARITY=all JOBENV_VAL_BEFORE_TRAIN=True JOBENV_TEST_FREQ=25 JOBENV_TOTAL_TRAINING_STEPS=25 JOBENV_SAVE_FREQ=-1 \
+JOBENV_LOGGER_LIST="['console','tensorboard','wandb']" JOBENV_PROJECT_NAME=verl-torchtpu-grpo-test \
+JOBENV_WANDB_ENTITY=google-trellis JOBENV_EXPERIMENT_NAME="$RL_RUN" JOBENV_TENSORBOARD_DIR=@RUN_DIR@/tensorboard \
+bash examples/tpu/gke/run_ray_jobset_v7x_nap.sh \
+  "trainer.rollout_data_dir=@RUN_DIR@/rollout" "trainer.validation_data_dir=@RUN_DIR@/validation" \
+  "+trainer.rollout_audit_dir=@RUN_DIR@/rollout_audit" "+trainer.rollout_audit_sessions=8" \
+  "reward.custom_reward_function.path=pkg://examples.tpu.retool.retool_tpu" \
+  "reward.custom_reward_function.name=compute_score" "++data.apply_chat_template_kwargs.enable_thinking=True"
+
+# GB200: 16 nodes x 4 GPUs (4 trainer + 12 rollout nodes). EXPECT_GIT_SHA is the commit the pods check out.
+# This launcher has no dry-run mode: it creates the pods right away.
+RL_RUN=<new-run-name>
+RUN_NAME="$RL_RUN" NUM_NODES=16 GPUS_PER_NODE=4 \
+KUBE_CONTEXT=gke_supercomputer-testing_us-central1_a4x-baker K8S_NAMESPACE=<namespace> \
+NODEPOOL=a4x-highgpu-4g-a4x-pool-5 GCS_BUCKET="$GCS_BUCKET" RUN_ROOT="$RUN_ROOT" INPUTS_ROOT="$INPUTS_ROOT" \
+EXPECT_GIT_SHA=27c41116acfdd89435f78e0993455bf9338a79fd \
+EXPECT_CHECKPOINT_SHA256=<composite-sha256-of-the-SFT-export> \
+IMAGE=us-central1-docker.pkg.dev/supercomputer-testing/pirillo-gcr/verl-torchtitan-cu130-arm64@sha256:087366ae58a31888c2af2c25992c33ea77471b1b2c58d221b370899f4721e689 \
+WANDB_SECRET_NAME=<k8s-secret-with-WANDB_API_KEY> WANDB_SECRET_KEY=WANDB_API_KEY \
+JOBENV_LOGGER_LIST="['console','tensorboard','wandb']" JOBENV_WANDB_PROJECT=verl-torchtpu-grpo-test \
+JOBENV_WANDB_ENTITY=google-trellis JOBENV_WANDB_MODE=online \
+JOBENV_MODEL_SRC_PATH="/data/$RUN_ROOT/$SFT_RUN/checkpoint/global_step_372/huggingface" \
+JOBENV_NNODES_TRAINER=4 JOBENV_N_GPUS_TRAINER=4 JOBENV_NNODES_ROLLOUT=12 JOBENV_N_GPUS_ROLLOUT=4 \
+JOBENV_DATA_PARALLEL_SHARD_SIZE=16 JOBENV_ROLLOUT_TP=4 JOBENV_ROLLOUT_EP=1 \
+JOBENV_MAX_PROMPT_LENGTH=2048 JOBENV_MAX_RESPONSE_LENGTH=16384 JOBENV_ACTOR_MAX_TOKEN_LEN_PER_GPU=18432 \
+JOBENV_LOG_PROB_MAX_TOKEN_LEN_PER_GPU=18432 JOBENV_TORCHTITAN_MAX_SEQ_LEN=18432 JOBENV_MAX_TURNS=16 \
+JOBENV_N_RESP_PER_PROMPT=16 JOBENV_N_RESP_PER_PROMPT_VAL=30 JOBENV_ACTOR_LR=2e-6 JOBENV_CLIP_GRAD=0.088 \
+JOBENV_ENABLE_THINKING=True JOBENV_BYPASS_MODE=True JOBENV_ROLLOUT_IS=token JOBENV_ROLLOUT_IS_THRESHOLD=2.0 \
+JOBENV_USE_SHAPED_REWARD=True JOBENV_TRAIN_BATCH_SIZE=64 JOBENV_PPO_MINI_BATCH_SIZE=64 JOBENV_NUM_WARMUP_BATCHES=2 \
+JOBENV_TOTAL_TRAINING_STEPS=25 JOBENV_VAL_BEFORE_TRAIN=True JOBENV_TEST_FREQ=25 JOBENV_SAVE_FREQ=-1 \
+JOBENV_EXPERIMENT_NAME="$RL_RUN" \
+bash examples/tpu/retool/gb200/run_ray_jobset_gb200.sh
+```
+
 <details>
-<summary>Exact launch commands</summary>
+<summary>Commands of the runs in this guide (for the record; their run names and directories are taken)</summary>
 
 TPU v7x (`p3c-retool-25s-02`; `EXCLUDE_NODEPOOLS` listed five unhealthy node pools that day, omitted here):
 
@@ -330,7 +430,7 @@ DRY_RUN=0 KEEP_JOBSET=1 RUN_NAME=p3c-retool-25s-02 GCS_BUCKET=ubench-logs RUN_RO
 INPUTS_ROOT=xiaotongyang/retool-v7x/inputs RAY_NAMESPACE=<namespace> KUEUE_QUEUE=multislice-queue PRIORITY_CLASS=medium \
 JOBSET_MAX_RESTARTS=1 ALLOW_REQUEUE=0 RUN_LIMIT_MIN=220 DRIVER_TIMEOUT_MIN=210 \
 TPU_TOPOLOGY=2x2x4 TRAINER_SLICES=1 ROLLOUT_SLICES=3 CODE_REF=348bbff9f4d303da43b27001a79d5734628d8b43 \
-WANDB_SECRET_NAME=<k8s secret with WANDB_API_KEY> WANDB_SECRET_KEY=WANDB_API_KEY \
+WANDB_SECRET_NAME=<k8s-secret-with-WANDB_API_KEY> WANDB_SECRET_KEY=WANDB_API_KEY \
 IMAGE=us-west2-docker.pkg.dev/tpu-pytorch/raycluster/verl-tpu@sha256:d92a2b3d6667584d67ea51874a721228a96c799263ab40f4aee168680476f64e \
 JOB_SCRIPT=examples/tpu/retool/run_qwen3_30b_a3b_dapo_torchtitan.sh \
 JOBENV_LIBTPU_INIT_ARGS="--xla_tpu_use_enhanced_launch_barrier=false --xla_tpu_bf16_emission_mode=PROMOTE_F32" \
@@ -353,15 +453,17 @@ bash examples/tpu/gke/run_ray_jobset_v7x_nap.sh \
   "reward.custom_reward_function.name=compute_score" "++data.apply_chat_template_kwargs.enable_thinking=True"
 ```
 
-GB200 (`g64-retool-25s-01`; `EXCLUDE_NODES` listed one unhealthy node that day, omitted here):
+GB200 (`g64-retool-25s-01`; `EXCLUDE_NODES` listed one unhealthy node that day, omitted here). The original
+invocation also set `RAY_NAMESPACE=default` and `DRY_RUN=0`, which this launcher does not read (its namespace
+variable is `K8S_NAMESPACE`, default `default`, and it has no dry-run mode), so both are dropped here:
 
 ```bash
-DRY_RUN=0 RUN_NAME=g64-retool-25s-01 NUM_NODES=16 GPUS_PER_NODE=4 \
-KUBE_CONTEXT=gke_supercomputer-testing_us-central1_a4x-baker RAY_NAMESPACE=default NODEPOOL=a4x-highgpu-4g-a4x-pool-5 \
+RUN_NAME=g64-retool-25s-01 NUM_NODES=16 GPUS_PER_NODE=4 \
+KUBE_CONTEXT=gke_supercomputer-testing_us-central1_a4x-baker NODEPOOL=a4x-highgpu-4g-a4x-pool-5 \
 GCS_BUCKET=ubench-logs RUN_ROOT=xiaotongyang/retool-gb200/runs INPUTS_ROOT=xiaotongyang/retool-v7x/inputs \
 EXPECT_GIT_SHA=27c41116acfdd89435f78e0993455bf9338a79fd \
 IMAGE=us-central1-docker.pkg.dev/supercomputer-testing/pirillo-gcr/verl-torchtitan-cu130-arm64@sha256:087366ae58a31888c2af2c25992c33ea77471b1b2c58d221b370899f4721e689 \
-WANDB_SECRET_NAME=<k8s secret with WANDB_API_KEY> WANDB_SECRET_KEY=WANDB_API_KEY \
+WANDB_SECRET_NAME=<k8s-secret-with-WANDB_API_KEY> WANDB_SECRET_KEY=WANDB_API_KEY \
 JOBENV_LOGGER_LIST="['console','tensorboard','wandb']" JOBENV_WANDB_PROJECT=verl-torchtpu-grpo-test \
 JOBENV_WANDB_ENTITY=google-trellis JOBENV_WANDB_MODE=online \
 JOBENV_MODEL_SRC_PATH=/data/xiaotongyang/retool-v7x/runs/p2-retool-sft-01/checkpoint/global_step_372/huggingface \
@@ -395,17 +497,19 @@ bash examples/tpu/retool/run_qwen3_30b_a3b_dapo_torchtitan.sh actor_rollout_ref.
 
 </details>
 
-**Frozen invariants.** Read from the W&B config of every run; `make_report.py` fails if any of them differs:
+**Frozen invariants (W&B resolved config).** Read from the resolved config that every run logged to W&B;
+`make_report.py` fails if any of them differs. This is configuration, not verified runtime behaviour: the rows
+marked † are known to act differently in the code of our two runs (note below the table).
 
 <!-- BEGIN AUTO-GENERATED invariants (make_report.py) -->
-| Setting | Value (identical in all 6 runs) |
+| Setting | W&B resolved config (identical in all 6 runs) |
 | --- | --- |
 | Advantage estimator | `grpo` |
 | Normalize advantage by group std | `True` |
 | Policy loss | `bypass_mode` |
 | Rollout correction: bypass mode | `True` |
-| Rollout correction: IS level / threshold | `token` / `2` |
-| Rollout correction: loss type | `ppo_clip` |
+| Rollout correction: IS level / threshold † | `token` / `2` |
+| Rollout correction: loss type † | `ppo_clip` |
 | Clip ratio low / high (DAPO clip-higher) | `0.2` / `0.28` |
 | Dual-clip ratio c | `10` |
 | Loss aggregation | `token-mean` |
@@ -433,10 +537,23 @@ bash examples/tpu/retool/run_qwen3_30b_a3b_dapo_torchtitan.sh actor_rollout_ref.
 | Validation every N steps | `25` |
 <!-- END AUTO-GENERATED invariants -->
 
-In short: 64 prompts × 16 responses = 1,024 trajectories per step, one optimizer update per step (mini-batch =
-batch, 1 epoch), no reference model and no KL (β = 0), clip ratio 0.2 / 0.28 (DAPO clip-higher), token-mean loss,
-response cap 16,384 tokens and 16 turns, sampling temperature 1 / top-p 1 (validation top-p 0.6), constant LR 2e-6,
-data order fixed by seed 42.
+† **Runtime behaviour of the rollout-correction settings in our two runs.** In bypass mode the V1 trainer only
+replaces the old log-probs with the rollout log-probs
+([`_compute_old_log_prob`](../../../verl/trainer/ppo/v1/trainer_base.py#L1707-L1721)). Unlike the non-V1 trainer
+(`verl/trainer/ppo/ray_trainer.py`), it does not call
+[`apply_bypass_mode`](../../../verl/trainer/ppo/rollout_corr_helper.py#L1109-L1144), so
+`algorithm.rollout_correction` never reaches the actor. The actor's bypass loss therefore uses the dataclass defaults
+([`algorithm.py` L179–L185](../../../verl/trainer/config/algorithm.py#L179-L185): `rollout_is="sequence"`, threshold
+2, `loss_type="ppo_clip"`): the `actor/rollout_corr/rollout_is_*` metrics are sequence-level diagnostics, and with
+`ppo_clip` no IS weight enters the loss ([`core_algos.py` L2529–L2541](../../../verl/trainer/ppo/core_algos.py#L2529-L2541)).
+The effective objective is PPO-clip on π<sub>θ</sub> / π<sub>rollout</sub> (clip 0.2 / 0.28); the configured `token`
+/ `2` change nothing. This was found in the GB200 review (PR #17) and holds for both of our run commits (`348bbff9`,
+`27c41116`). Askhat's run code is not recorded, so his actor's behaviour cannot be inferred from his config.
+
+In short (resolved config): 64 prompts × 16 responses = 1,024 trajectories per step, one optimizer update per step
+(mini-batch = batch, 1 epoch), no reference model and no KL (β = 0), clip ratio 0.2 / 0.28 (DAPO clip-higher),
+token-mean loss, response cap 16,384 tokens and 16 turns, sampling temperature 1 / top-p 1 (validation top-p 0.6),
+constant LR 2e-6, data seed 42.
 
 **Other differences that do not change the algorithm:**
 
@@ -451,16 +568,19 @@ data order fixed by seed 42.
 | `save_freq` | `10` | `-1` | `-1` |
 <!-- END AUTO-GENERATED diffs -->
 
-- `optim.clip_grad` has no effect in these runs: the TorchTitan engine does not pass it to TorchTitan, which clips
-  at its own `training.max_norm = 1.0` (both our logs print `optim.clip_grad=0.088 is not passed to TorchTitan`).
-  The largest gradient norm in steps 1–25 is below 0.2 in every run (§4.3), so no run clipped.
+- `optim.clip_grad`: in our two runs it has no effect. The TorchTitan engine does not pass it to TorchTitan, which
+  clips at its own `training.max_norm = 1.0` (both our logs print `optim.clip_grad=0.088 is not passed to
+  TorchTitan`), and their gradient norms in steps 1–25 stay below 0.18 (§4.3), so they never clipped. Askhat's merged
+  code builds the TorchTitan config the same way, but his run code is not recorded: if his runs did apply
+  `clip_grad=0.0625`, every one of their first 25 steps was clipped (their gradient norms are 0.086–0.196), which
+  would make his updates smaller than ours. This is unverified either way.
 - `total_training_steps` only sets the length of the LR schedule. The schedule is constant (no warm-up,
-  `min_lr_factor=1`), so steps 1–25 use LR 2e-6 in every run.
+  `min_lr_factor=1`), and the logged `actor/lr` is 2e-6 at every one of steps 1–25 in all six runs.
 - `save_freq=10` makes the v5p runs save a checkpoint at steps 10 and 20 (about 1,400 s each). Step times in §4.4
   subtract it.
 - `val_before_train` and the number of validation samples change only what is measured (§4.2).
 
-**System adaptations.** Everything that differs between platforms, read from W&B:
+**System adaptations.** The system settings that differ between platforms, read from the W&B resolved config:
 
 <!-- BEGIN AUTO-GENERATED adaptations (make_report.py) -->
 | Setting | v5p cp1-pr115 | v5p cp1-pr115-async | v5p cp1-opt | v5p cp2 | v7x p3c-retool-25s-02 | GB200 g64-retool-25s-01 |
@@ -500,12 +620,15 @@ data order fixed by seed 42.
 
 ### 3.2 Reward function
 
-All three platforms use `compute_score` in [`retool_tpu.py`](retool_tpu.py). Its file is byte-identical (git blob
-`c8e6f0ae`) in Askhat's merged recipe
+All six runs log the same reward function: `compute_score` in [`retool_tpu.py`](retool_tpu.py)
+(`reward.custom_reward_function`). What can be checked is the file. It is byte-identical (git blob `c8e6f0ae`) in
+Askhat's merged recipe
 ([`f9e896fd`](https://github.com/jialei777/verl-upstream/commit/f9e896fd71b3077a5f93d14e2878520fa7899eda)), in the
-TPU v7x code (`348bbff9`), in the GB200 code (`27c41116`) and on `tpu-main`; so are
+TPU v7x run code (`348bbff9`), in the GB200 run code (`27c41116`) and on `tpu-main`; so are
 [`retool_dataset_utils.py`](retool_dataset_utils.py) (`2b572fe4`) and
-[`sandbox_fusion_tool_config_tpu.yaml`](sandbox_fusion_tool_config_tpu.yaml) (`3e81f56d`).
+[`sandbox_fusion_tool_config_tpu.yaml`](sandbox_fusion_tool_config_tpu.yaml) (`3e81f56d`). Askhat's runs used local
+changes at an unrecorded commit (the Ray code package differs between his runs), so the same function path and name
+in W&B do not prove that his runs loaded this code. The table describes the function in these files:
 
 | Case | Reward |
 | --- | --- |
@@ -519,8 +642,8 @@ TPU v7x code (`348bbff9`), in the GB200 code (`27c41116`) and on `tpu-main`; so 
 - The tool runs the model's code in a local FastAPI sandbox ([`sandbox_fusion_server.py`](sandbox_fusion_server.py))
   on each rollout pod: 8 s timeout per call, at least 4 GiB address-space limit, the process group is killed on
   timeout, and the output returned to the model is cut to 256 tokens (`max_tool_response_length`, middle
-  truncation). Between Askhat's version and ours the server only gained infrastructure changes (dropping root
-  privileges, hiding accelerators from the subprocess, health checks); the limits are the same.
+  truncation). Between Askhat's merged version and ours the server only gained infrastructure changes (dropping
+  root privileges, hiding accelerators from the subprocess, health checks); the limits are the same.
 
 ## 4. Collecting results
 
@@ -552,8 +675,9 @@ Our run directories also keep the per-step rollouts (`rollout/<step>.jsonl`), va
 ### 4.2 Evaluation (AIME 2024 / 2025)
 
 Mean accuracy over the 30 problems of each year (`mean@n`: the fraction of correct samples per problem, averaged
-over problems). ± is the half-width of the 95% interval from sampling `n` responses per problem (the problems are
-fixed); it needs the per-problem counts of our validation dumps, which Askhat's runs do not have.
+over problems). ± is the half-width of the 95% interval from sampling `n` responses per problem, with the problems
+held fixed; it needs the per-problem counts of our validation dumps, which Askhat's runs do not have. It does not
+include run-to-run (training seed) variance or the uncertainty from having only 30 problems per year.
 
 <!-- BEGIN AUTO-GENERATED eval (make_report.py) -->
 | Run | `n` | AIME 2024 Step 0 | AIME 2024 Step 25 | Δ | AIME 2025 Step 0 | AIME 2025 Step 25 | Δ |
@@ -569,10 +693,11 @@ fixed); it needs the per-problem counts of our validation dumps, which Askhat's 
 
 ![AIME accuracy](repro_guide/figures/fig1_aime.png)
 
-Paired differences on the same problems (TPU v7x and GB200 share the problem set and the Step 0 weights):
+Paired differences on the same problems (TPU v7x and GB200 share the problem set and the Step 0 weights). An interval
+that includes 0 means no difference was detected at this sample size; it does not show that the two are equivalent:
 
 <!-- BEGIN AUTO-GENERATED eval_paired (make_report.py) -->
-| Comparison (same 30 problems per year) | AIME 2024 | AIME 2025 |
+| Comparison on the same 30 problems per year (interval: response sampling only) | AIME 2024 | AIME 2025 |
 | --- | --- | --- |
 | TPU v7x − GB200, Step 0 | +0.11 pp (95% CI -2.97 to +3.20) | -2.44 pp (95% CI -5.36 to +0.47) |
 | TPU v7x − GB200, Step 25 | +0.67 pp (95% CI -2.50 to +3.84) | +0.22 pp (95% CI -2.99 to +3.44) |
@@ -597,8 +722,8 @@ Five-step means of the W&B metrics (`critic/score/mean` is the shaped reward of 
 
 ![training curves](repro_guide/figures/fig2_training.png)
 
-The TPU v7x and GB200 runs draw prompts from the same seeded order, but in async mode a step trains on whichever
-rollout groups finish first, so the batches of a given step differ (from the per-step rollout dumps):
+The TPU v7x and GB200 runs use the same data seed, but in async mode a step trains on whichever rollout groups finish
+first, so the batches of a given step differ (from the per-step rollout dumps):
 
 <!-- BEGIN AUTO-GENERATED prompts (make_report.py) -->
 - Distinct training prompts used in steps 1–25: TPU v7x `1,512`, GB200 `1,512`; used by both runs: `1,444` (`95.5%` of TPU v7x's, `95.5%` of GB200's).
@@ -607,20 +732,22 @@ rollout groups finish first, so the batches of a given step differ (from the per
 
 ### 4.4 Step time
 
-Steps 2–25 (step 1 includes compilation and warm-up). *Wall clock* is the time between consecutive W&B step records
-minus checkpoint saving and validation. *TensorBoard logging* is the time spent writing the previous step's scalars
-to the TensorBoard file on the GCS FUSE mount, measured from the event file with
-[`step_timing_breakdown.py`](step_timing_breakdown.py); Askhat's runs did not log to TensorBoard.
+Steps 2–25 (step 1 includes compilation and warm-up). *Observed wall clock* is the time between consecutive W&B step
+records minus checkpoint saving and validation. *TensorBoard writing* is the time the driver spent writing the
+previous step's scalars to the TensorBoard file on the GCS FUSE mount, measured from the event file with
+[`step_timing_breakdown.py`](step_timing_breakdown.py); Askhat's runs did not log to TensorBoard. *Wall clock minus
+TensorBoard writing* is plain arithmetic on these two numbers, not a measured step time: the rollout keeps generating
+while the driver writes logs, so without the logging the trainer may simply wait longer for the rollout.
 
 <!-- BEGIN AUTO-GENERATED wall (make_report.py) -->
-| Run | Chips/GPUs (trainer + rollout) | Wall clock per step | TensorBoard logging per step | Wall clock without TensorBoard logging | Tokens per step | Wall clock without TensorBoard per 1M tokens |
+| Run | Chips/GPUs (trainer + rollout) | Observed wall clock per step | of which TensorBoard writing (measured) | Wall clock minus TensorBoard writing (arithmetic) | Tokens per step | Observed wall clock per 1M tokens |
 | --- | --- | --- | --- | --- | --- | --- |
-| v5p cp1-pr115 | 16 + 32 | 236.1 | no TensorBoard logger | 236.1 | 2.82 M | 87.2 |
-| v5p cp1-pr115-async | 16 + 32 | 252.9 | no TensorBoard logger | 252.9 | 2.74 M | 93.2 |
-| v5p cp1-opt | 16 + 32 | 611.4 | no TensorBoard logger | 611.4 | 2.84 M | 221.7 |
-| v5p cp2 | 16 + 16 → 32 | 997.5 | no TensorBoard logger | 997.5 | 2.84 M | 354.5 |
-| v7x p3c-retool-25s-02 | 16 + 48 | 337.5 | 46.8 | 290.7 | 2.95 M | 96.1 |
-| GB200 g64-retool-25s-01 | 16 + 48 | 73.3 | 39.9 | 33.3 | 3.03 M | 11.0 |
+| v5p cp1-pr115 | 16 + 32 | 236.1 | no TensorBoard logger | – | 2.82 M | 87.2 |
+| v5p cp1-pr115-async | 16 + 32 | 252.9 | no TensorBoard logger | – | 2.74 M | 93.2 |
+| v5p cp1-opt | 16 + 32 | 611.4 | no TensorBoard logger | – | 2.84 M | 221.7 |
+| v5p cp2 | 16 + 16 → 32 | 997.5 | no TensorBoard logger | – | 2.84 M | 354.5 |
+| v7x p3c-retool-25s-02 | 16 + 48 | 337.5 | 46.8 | 290.7 | 2.95 M | 112.2 |
+| GB200 g64-retool-25s-01 | 16 + 48 | 73.3 | 39.9 | 33.3 | 3.03 M | 24.3 |
 <!-- END AUTO-GENERATED wall -->
 
 Inside `timing_s/step` (the trainer's own step timer):
@@ -643,34 +770,42 @@ Inside `timing_s/step` (the trainer's own step timer):
   after step 1, so its step time is the trainer's own work.
 - On TPU v7x, steps alternate between about 70–110 s (a batch was already waiting) and 380–600 s (waiting for the
   rollout), hence the gap between the mean and the median.
-- The wall clock outside `timing_s/step` is mostly TensorBoard logging in our runs (40 s per step on GB200, 47 s on
-  TPU v7x, on average): every scalar is written to the TensorBoard file on the GCS FUSE mount. Writing TensorBoard to
-  a local disk would remove most of it.
+- In our runs most of the observed wall clock outside `timing_s/step` is TensorBoard writing (40 s per step on
+  GB200, 47 s on TPU v7x, on average): every scalar is written to the TensorBoard file on the GCS FUSE mount. How
+  much a local TensorBoard directory would save is not known yet: probably most of it on GB200, whose trainer never
+  waits for the rollout, and less on TPU v7x, where the rollout keeps generating during the writes. A short A/B run
+  would settle it.
 - Chips differ in generation and count (48 v5p, 64 v7x, 64 GB200) and the rollout layouts differ, so these numbers
   compare configurations, not chips.
 
 ### 4.5 Conclusions
 
-1. **TPU v7x and GB200 reproduce each other.** Same SFT weights, same inputs, same algorithm settings: Step 0
-   accuracy differs by +0.11 pp (AIME 2024) and −2.44 pp (AIME 2025), Step 25 by +0.67 pp and +0.22 pp; every 95%
-   interval includes 0. Both runs improve significantly in 25 steps (+10.3 / +9.8 pp on AIME 2024, +9.4 / +6.8 pp
-   on AIME 2025). Training reward differs more (steps 21–25: +0.516 vs. +0.432), but per-step batches differ (§4.3)
-   and this is one run per platform.
+1. **TPU v7x and GB200: Step 25 results are close, a positive preliminary parity signal.** Same SFT weights, same
+   inputs, same resolved algorithm config. Step 25 accuracy differs by +0.67 pp (AIME 2024) and +0.22 pp
+   (AIME 2025), Step 0 by +0.11 pp and −2.44 pp, and all four intervals include 0, so no difference was detected on
+   this fixed problem set. That does not show the two platforms are equivalent: there is one formal run per
+   platform, and the intervals cover the sampling of responses only, not run-to-run (training seed) variance. Both
+   runs improve in 25 steps by more than that sampling noise (+10.3 / +9.8 pp on AIME 2024, +9.4 / +6.8 pp on
+   AIME 2025). Training reward differs more (steps 21–25: +0.516 vs. +0.432), but per-step batches differ (§4.3).
+   Whether the training distributions match, and how large the variance between runs is, remains to be verified.
 2. **Both follow Askhat's TPU v5p runs.** Reward, response length, turns, gradient norm and clip fraction stay in or
    near the band of the four v5p runs (Figure 2), and steps 21–25 reach about the same reward. Both of our runs
-   start with a higher reward than all four v5p runs (steps 1–5: −0.11 and −0.20 vs. −0.28 to −0.36); TPU v7x and
-   GB200 share the SFT checkpoint but not the hardware, so the checkpoint is the more likely cause. At Step 25, AIME 2025 (42.00% / 41.78%) is inside the v5p
+   start with a higher reward than all four v5p runs (steps 1–5: −0.11 and −0.20 vs. −0.28 to −0.36). One hypothesis
+   is the SFT checkpoint, which TPU v7x and GB200 share; it is not verified, and the unrecorded differences in
+   Askhat's run code (§3.1, §3.2) could also contribute. At Step 25, AIME 2025 (42.00% / 41.78%) is inside the v5p
    range (38.75% to 46.67%); AIME 2024 (54.67% / 54.00%) is 1.6 to 6.0 pp below the v5p runs (56.25% to 60.00%).
-   With different SFT checkpoints, no v5p Step 0 evaluation and 8 samples per problem, this gap is not evidence of
-   a platform difference; a v5p Step 0 evaluation of Askhat's SFT checkpoint (or a v5p run from our checkpoint)
-   would settle it.
-3. **Speed** (§4.4): GB200 33 s per step without TensorBoard logging (73 s with it), TPU v7x 291 s (337 s), TPU v5p
-   236 s for Askhat's fastest configuration. The TPU v7x run is limited by the rollout (189 s of its 287 s step are
-   waiting), GB200 by the trainer.
+   With different SFT checkpoints, no v5p Step 0 evaluation, 8 samples per problem and unknown run code, this gap
+   is not evidence of a platform difference. A v5p Step 0 evaluation of Askhat's SFT checkpoint, or a v5p run from
+   our checkpoint and code, would narrow it down.
+3. **Speed** (§4.4): observed wall clock per step is 73 s on GB200, 337 s on TPU v7x and 236 s for Askhat's fastest
+   v5p configuration. The TPU v7x run is limited by the rollout (189 s of its 287 s step timer is waiting for it),
+   GB200 by the trainer. Our runs also spend 40–47 s per step writing TensorBoard to GCS FUSE; the saving from a
+   local log directory needs a short A/B run.
 
 Not established by these runs: run-to-run variance on any one platform (one run each for TPU v7x and GB200; the four
-v5p runs differ in configuration), behaviour beyond 25 steps on TPU v7x and GB200, and the exact code and image of
-Askhat's runs.
+v5p runs differ in configuration), whether the training distributions match, behaviour beyond 25 steps on TPU v7x
+and GB200, and the exact code and image of Askhat's runs (and with them his runtime rollout-correction behaviour,
+scorer and gradient clipping).
 
 ### 4.6 Regenerating this report, checking a new run
 

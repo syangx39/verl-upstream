@@ -17,6 +17,8 @@
   ``repro_guide/data/``;
 * every relative link of the guide resolves, and none points into ``exp/`` or ``logs/`` (the guide must not depend
   on the archived bring-up files), nor does the guide's own code read from there;
+* the launch commands only set variables that their launcher reads, and no command passes credentials as image
+  build arguments;
 * ``prepare_retool_data.py``: the ReTool-SFT conversion and the row digest used by ``--check``.
 """
 
@@ -79,6 +81,40 @@ def test_guide_code_does_not_read_the_archive():
             if "gs://" in line:  # GCS run directories have their own logs/ prefix
                 continue
             assert not re.search(r"""["'/ ](exp|logs)["'/]""", line), f"{path.name} refers to exp/ or logs/: {line}"
+
+
+LAUNCHERS = {
+    "examples/tpu/gke/run_ray_jobset_v7x_nap.sh": REPO_ROOT / "examples" / "tpu" / "gke" / "run_ray_jobset_v7x_nap.sh",
+    "examples/tpu/retool/gb200/run_ray_jobset_gb200.sh": RETOOL / "gb200" / "run_ray_jobset_gb200.sh",
+}
+
+
+def _bash_commands(md: Path) -> list[str]:
+    """Shell commands of the ```bash blocks, with backslash continuations joined."""
+    commands = []
+    for block in re.findall(r"```bash\n(.*?)```", md.read_text(encoding="utf-8"), flags=re.DOTALL):
+        commands += [c.strip() for c in re.sub(r"\\\n", " ", block).splitlines() if c.strip()]
+    return commands
+
+
+def test_guide_launch_commands_use_launcher_variables():
+    checked = 0
+    for command in _bash_commands(GUIDE):
+        for rel, launcher in LAUNCHERS.items():
+            if f"bash {rel}" not in command:
+                continue
+            prefix = command.split(f"bash {rel}", 1)[0]
+            names = {n for n in re.findall(r"(?:^|\s)([A-Z][A-Z0-9_]*)=", prefix) if not n.startswith("JOBENV_")}
+            source = launcher.read_text(encoding="utf-8")
+            unknown = sorted(n for n in names if not re.search(rf"\b{n}\b", source))
+            assert not unknown, f"{launcher.name} does not read {unknown}: {command[:120]}..."
+            checked += 1
+    assert checked >= 5, f"expected the SFT and RL launch commands, found {checked}"
+
+
+def test_guide_does_not_pass_credentials_to_image_builds():
+    for command in _bash_commands(GUIDE):
+        assert not re.search(r"--build-arg\s+(AUTH_TOKEN|GITHUB_TOKEN|GITHUB_USER)", command), command
 
 
 def test_snapshot_covers_every_run():

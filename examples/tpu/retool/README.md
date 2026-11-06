@@ -2,7 +2,7 @@
 
 Self-contained TPU recipe for **ReTool** ([arXiv:2504.11536](https://arxiv.org/abs/2504.11536)) with `Qwen/Qwen3-30B-A3B` (`30.5B` total parameters, `3.3B` active per token, `128` routed experts, `top_k=8`) using the **TorchTitan** trainer (`SimpleFSDP=8`, Ulysses `CP=4`, `EP=1`, `TPU_EAGER_MODE=DEFER_NEVER`, `SplashAttention`, MegaBlox Pallas `grouped_mm`) and **vLLM** multi-turn async rollout (`TP=32, EP=32`) with **Raiden** direct P2P weight synchronization.
 
-> **TPU v7x / GB200 reproduction:** GB200 runtime files are in [`gb200/`](gb200/). Plans and reports from the TPU v7x and GB200 bring-up are archived in [`exp/`](exp/), and their run evidence in [`logs/`](logs/).
+> **TPU v5p vs. TPU v7x vs. GB200:** see **[`REPRO_GUIDE.md`](REPRO_GUIDE.md)** for the images, data, launch commands and an apples-to-apples comparison of the 16K-response / thinking / shaped-reward variant on the three platforms. GB200 runtime files are in [`gb200/`](gb200/). Plans and reports from the TPU v7x and GB200 bring-up are archived in [`exp/`](exp/), and their run evidence in [`logs/`](logs/).
 
 ## Hardware Topology (`2 x TPU v6e-32` Slices)
 

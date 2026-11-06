@@ -2,7 +2,8 @@
 
 Plans, investigation notes and reports written while bringing up the ReTool recipe on TPU v7x and GB200, plus the
 summary of Askhat's TPU v5p runs. They are kept for history: commands, paths and numbers in them may be superseded.
-The raw run evidence they cite is in [`../logs/`](../logs/).
+The raw run evidence they cite is in [`../logs/`](../logs/). The current guide is [`../REPRO_GUIDE.md`](../REPRO_GUIDE.md); it
+does not depend on anything here.
 
 | Path | Contents |
 | --- | --- |

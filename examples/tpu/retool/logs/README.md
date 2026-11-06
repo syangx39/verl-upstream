@@ -1,7 +1,7 @@
 # ReTool run evidence (archive)
 
 Logs, metrics, samples and verification scripts archived from the ReTool runs. The documents that cite them are in
-[`../exp/`](../exp/). Large raw files (checkpoints, full rollouts, Ray logs) stay in each run's GCS directory; each run
+[`../exp/`](../exp/); the current guide is [`../REPRO_GUIDE.md`](../REPRO_GUIDE.md). Large raw files (checkpoints, full rollouts, Ray logs) stay in each run's GCS directory; each run
 folder's `raw_manifest.json` or `README.md` records where they came from.
 
 | Path | Run | What is here |

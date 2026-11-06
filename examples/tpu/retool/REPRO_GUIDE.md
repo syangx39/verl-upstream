@@ -215,6 +215,10 @@ the same rows in the same order (to check option (a), copy `dataset/` to a local
 warm-up and cosine decay to 1e-6, gradient clipping 1.0, context parallel 4, Hugging Face export only. Our run used
 one `2x2x4` slice (16 chips). To run it again (`GCS_BUCKET` and `INPUTS_ROOT` as in §1.3):
 
+The template uses the checkout's `HEAD` by default. To use the historical SFT run's code, set
+`CODE_REF=cfabaadab52e718b9ea46425ceb7ada6ab066596` on the launcher command; using a different `HEAD` may change the
+code that the pods run.
+
 ```bash
 RUN_ROOT=<runs-prefix>        # e.g. $USER/retool/runs
 SFT_RUN=<new-run-name>        # the launcher refuses a RUN_NAME whose gs://$GCS_BUCKET/$RUN_ROOT/$RUN_NAME/ has objects
@@ -368,6 +372,10 @@ sandbox server on its own pod.
 **Running it again.** Both launchers refuse a `RUN_NAME` whose run directory
 `gs://$GCS_BUCKET/$RUN_ROOT/$RUN_NAME/` already has objects, so every run needs a new name. With `GCS_BUCKET`,
 `INPUTS_ROOT` from §1.3 and `RUN_ROOT`, `SFT_RUN` from §1.4:
+
+The TPU launcher defaults to the checkout's `HEAD`. To use the historical TPU RL run's code, set
+`CODE_REF=348bbff9f4d303da43b27001a79d5734628d8b43` on the TPU launcher command; a different `HEAD` may change the code
+that the pods run. The GB200 command below pins its own runtime commit.
 
 ```bash
 # TPU v7x: 1 trainer + 3 rollout 2x2x4 slices (64 chips).
@@ -555,7 +563,7 @@ In short (resolved config): 64 prompts × 16 responses = 1,024 trajectories per 
 token-mean loss, response cap 16,384 tokens and 16 turns, sampling temperature 1 / top-p 1 (validation top-p 0.6),
 constant LR 2e-6, data seed 42.
 
-**Other differences that do not change the algorithm:**
+**Other configuration differences:**
 
 <!-- BEGIN AUTO-GENERATED diffs (make_report.py) -->
 | Setting | TPU v5p (Askhat) | TPU v7x (ours) | GB200 (ours) |

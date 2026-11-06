@@ -26,16 +26,16 @@ nothing is typed by hand:
   (built by ``build_g64_run_evidence.py`` from the raw sessions archived in ``rollout_audit/``);
 * Step 0 / final-step AIME accuracy, per-question deltas and the paired bootstrap interval:
   ``validation_step{0,N}_samples.jsonl``;
-* Askhat references: ``examples/tpu/retool/results/askhat-wandb-audit/askhat_runs_summary.json``.
+* Askhat references: ``examples/tpu/retool/logs/askhat-wandb-audit/askhat_runs_summary.json``.
 
-The markdown blocks in ``gb200/README.md`` and ``gb200/exp/REPRO_RESULTS_GB200_ZH.md`` between the
+The markdown blocks in ``exp/gb200/GB200_REPRO_GUIDE_V1.md`` and ``exp/gb200/REPRO_RESULTS_GB200_ZH.md`` between the
 ``AUTO-GENERATED <run>/<table>`` markers are the verbatim generator output (``--write-docs``) and are checked by
 ``test_launcher_and_sandbox.py``.
 
 Usage::
 
-    python3 examples/tpu/retool/gb200/logs/gen_g64_report_tables.py --run g64-retool-25s-01 --print-markdown
-    python3 examples/tpu/retool/gb200/logs/gen_g64_report_tables.py --write-docs  # refresh the blocks in place
+    python3 examples/tpu/retool/logs/gb200/gen_g64_report_tables.py --run g64-retool-25s-01 --print-markdown
+    python3 examples/tpu/retool/logs/gb200/gen_g64_report_tables.py --write-docs  # refresh the blocks in place
 """
 
 import argparse
@@ -49,7 +49,8 @@ from pathlib import Path
 
 LOGS_DIR = Path(__file__).resolve().parent
 REPO_ROOT = LOGS_DIR.parents[4]
-ASKHAT_AUDIT = REPO_ROOT / "examples" / "tpu" / "retool" / "results" / "askhat-wandb-audit" / "askhat_runs_summary.json"
+RETOOL_DIR = LOGS_DIR.parents[1]
+ASKHAT_AUDIT = RETOOL_DIR / "logs" / "askhat-wandb-audit" / "askhat_runs_summary.json"
 RUNS = {
     "g64-retool-smoke-04": {"metrics": "g64_smoke_04_metrics.json", "final_step": 5},
     "g64-retool-25s-01": {"metrics": "g64_25s_01_metrics.json", "final_step": 25},
@@ -439,7 +440,10 @@ def build_all(run: str) -> dict:
 TABLES = ("training_table", "timing_table", "rollout_corr_table", "eval_table", "askhat_table")
 
 
-DOCS = (LOGS_DIR.parent / "README.md", LOGS_DIR.parent / "exp" / "REPRO_RESULTS_GB200_ZH.md")
+DOCS = (
+    RETOOL_DIR / "exp" / "gb200" / "GB200_REPRO_GUIDE_V1.md",
+    RETOOL_DIR / "exp" / "gb200" / "REPRO_RESULTS_GB200_ZH.md",
+)
 
 
 def write_docs() -> None:

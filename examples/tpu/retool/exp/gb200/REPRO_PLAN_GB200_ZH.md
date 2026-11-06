@@ -40,7 +40,7 @@
 
 ## 1. 先准备 GPU launcher 与派生镜像，再做预检
 
-这是计划，不声称现有 TPU 脚本能在 GPU 原样运行。本 PR 已随附用于 GB200 派生镜像构建与两级环境校验的 [`gb200/Dockerfile.gb200.torchtitan`](../Dockerfile.gb200.torchtitan) 与 [`gb200/verify_venv_lock.py`](../verify_venv_lock.py)；在此基础上新增并版本化 GPU RL launcher（GPU SFT launcher 仅为可选实验准备）：
+这是计划，不声称现有 TPU 脚本能在 GPU 原样运行。本 PR 已随附用于 GB200 派生镜像构建与两级环境校验的 [`gb200/Dockerfile.gb200.torchtitan`](../../gb200/Dockerfile.gb200.torchtitan) 与 [`gb200/verify_venv_lock.py`](../../gb200/verify_venv_lock.py)；在此基础上新增并版本化 GPU RL launcher（GPU SFT launcher 仅为可选实验准备）：
 
 - 可选 SFT 同时参考 [TPU ReTool TorchTitan SFT 脚本](https://github.com/syangx39/verl-upstream/blob/6fa65e49094c04a9b10cb766ecb1ba7c0976cc5a/examples/tpu/retool/run_qwen3_30b_a3b_sft_torchtitan.sh)（`engine=torchtitan` 字段语义）与 [多轮 SFT 示例](https://github.com/syangx39/verl-upstream/blob/6fa65e49094c04a9b10cb766ecb1ba7c0976cc5a/examples/sft/multiturn/run_qwen2_5_0_5b_fsdp.sh)（统一 `-m verl.trainer.sft_trainer` 入口），将 `trainer.device=cuda` 并对齐 Qwen3-30B-A3B 与 ReTool P2 数据/模板，避免误搬 `engine=fsdp` 专属字段（如 `ulysses_sequence_parallel_size` vs `engine.context_parallel_size`）。
 - RL 参考 [v1 separate-async GPU 测试](https://github.com/syangx39/verl-upstream/blob/6fa65e49094c04a9b10cb766ecb1ba7c0976cc5a/tests/special_e2e/run_v1_separate_async.sh) 的独立资源池、vLLM 和 NCCL 权重同步，结合 [GPU TorchTitan 小模型测试](https://github.com/syangx39/verl-upstream/blob/6fa65e49094c04a9b10cb766ecb1ba7c0976cc5a/tests/special_e2e/run_ppo_trainer_torchtitan.sh) 的 engine 选择，以及 [Qwen3-30B-A3B GPU 示例](https://github.com/syangx39/verl-upstream/blob/6fa65e49094c04a9b10cb766ecb1ba7c0976cc5a/examples/grpo_trainer/run_qwen3_30b_a3b_fsdp.sh) 的模型支持，以及 [TPU ReTool recipe](https://github.com/syangx39/verl-upstream/blob/6fa65e49094c04a9b10cb766ecb1ba7c0976cc5a/examples/tpu/retool/run_qwen3_30b_a3b_dapo_torchtitan.sh) 的数据和语义。这些例子各自只覆盖部分路径；原 separate-async 测试没有 TorchTitan actor 分支，需新写 launcher 并验证组合，不能直接宣称已验证 30B + 多轮工具 + 长上下文。
@@ -62,7 +62,7 @@
 
 ### 镜像与 verl 版本：推荐方案
 
-**结论：不需要从裸 CUDA 重建，但必须换掉旧 `2026-08-17` 基础镜像；基于上游 `2026-10-23` 发布的原生 `linux/arm64` 预缓存基础镜像 `verlai/verl:uv.cu130.dev5` 做轻量派生镜像（见 [`gb200/Dockerfile.gb200.torchtitan`](../Dockerfile.gb200.torchtitan)）。上游依赖环境验证镜像（`VERL_PIN=3fdf2b548882a8aeccf0842c2150d9c9f1790a55`，`uv.lock` SHA256 `df508db0b957fa181c229fb75885cd3863cb651fd5233d0fa5af95e990bda0be`）已在原生 `aarch64` 构建完成并通过 4×GB200 节点 `--require-gb200 --min-gpus 4` 预检（镜像 digest `sha256:ec7c927495a06279b128b47424ecd7f84eb70434848e82e46ba26747b5b805f1`；实测 `uv sync` 热缓存耗时 `12 s` / 冷缓存 `103 s`，完整构建+快照 `202 s`；全部 264 个锁包版本、`flash_attn 2.8.3`、`PPOTrainerSeparateAsync`、TorchTitan `0.3.0` slotted `MoE.Config`、4×GB200 SM `10.0` `184.31 GiB/卡` 及 NCCL `2.29.7` 校验通过）；待 `<GPU_CODE_SHA>` 分支完成 ReTool 代码与 TorchTitan `0.3.0` MoE 修复移植后，再按同一流程固化正式运行镜像。**
+**结论：不需要从裸 CUDA 重建，但必须换掉旧 `2026-08-17` 基础镜像；基于上游 `2026-10-23` 发布的原生 `linux/arm64` 预缓存基础镜像 `verlai/verl:uv.cu130.dev5` 做轻量派生镜像（见 [`gb200/Dockerfile.gb200.torchtitan`](../../gb200/Dockerfile.gb200.torchtitan)）。上游依赖环境验证镜像（`VERL_PIN=3fdf2b548882a8aeccf0842c2150d9c9f1790a55`，`uv.lock` SHA256 `df508db0b957fa181c229fb75885cd3863cb651fd5233d0fa5af95e990bda0be`）已在原生 `aarch64` 构建完成并通过 4×GB200 节点 `--require-gb200 --min-gpus 4` 预检（镜像 digest `sha256:ec7c927495a06279b128b47424ecd7f84eb70434848e82e46ba26747b5b805f1`；实测 `uv sync` 热缓存耗时 `12 s` / 冷缓存 `103 s`，完整构建+快照 `202 s`；全部 264 个锁包版本、`flash_attn 2.8.3`、`PPOTrainerSeparateAsync`、TorchTitan `0.3.0` slotted `MoE.Config`、4×GB200 SM `10.0` `184.31 GiB/卡` 及 NCCL `2.29.7` 校验通过）；待 `<GPU_CODE_SHA>` 分支完成 ReTool 代码与 TorchTitan `0.3.0` MoE 修复移植后，再按同一流程固化正式运行镜像。**
 
 新旧 GPU 基础镜像与 TPU P0.2 环境逐项对照如下：
 
@@ -175,7 +175,7 @@
 ## 6. 交付清单
 
 - 两平台每个 run 的 SHA、launcher、resolved config、环境/硬件/placement、seed、输入/模型文件清单与哈希、启动命令和实际变更。
-- GB200 派生镜像与环境锁校验文件：[`gb200/Dockerfile.gb200.torchtitan`](../Dockerfile.gb200.torchtitan)、[`gb200/verify_venv_lock.py`](../verify_venv_lock.py)。
+- GB200 派生镜像与环境锁校验文件：[`gb200/Dockerfile.gb200.torchtitan`](../../gb200/Dockerfile.gb200.torchtitan)、[`gb200/verify_venv_lock.py`](../../gb200/verify_venv_lock.py)。
 - G0/G1 的可行性与同步/数值对账报告，G2（以及若执行 G3）的 checkpoint、逐步指标、逐条轨迹、AIME 逐题结果、性能原始日志和可复现的汇总脚本。
 - 一张 TPU vs GB200 表：RL 主线及可选 SFT 分行，注明规模、工作量、成功步数、parity 指标、稳态与总 wall time、总 accelerator-hours、重要配置差异及未解决问题。未运行、失败、数据不可比均如实标注。
 

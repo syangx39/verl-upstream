@@ -49,7 +49,7 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-REPO_ROOT = HERE.parents[4]
+REPO_ROOT = HERE.parents[5]
 RETOOL_TPU_PATH = REPO_ROOT / "examples" / "tpu" / "retool" / "retool_tpu.py"
 MATH_DAPO_PATH = REPO_ROOT / "verl" / "utils" / "reward_score" / "math_dapo.py"
 

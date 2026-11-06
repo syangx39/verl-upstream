@@ -792,12 +792,12 @@ class TestDistributedTpuGuards(unittest.TestCase):
 
 
 class TestG64ReportTables(unittest.TestCase):
-    """README / REPRO_RESULTS G64-D tables must be the verbatim output of logs/gen_g64_report_tables.py."""
+    """Archived GB200 reports' G64-D tables must be the verbatim output of logs/gb200/gen_g64_report_tables.py."""
 
-    LOGS_DIR = REPO_ROOT / "examples" / "tpu" / "retool" / "gb200" / "logs"
+    LOGS_DIR = REPO_ROOT / "examples" / "tpu" / "retool" / "logs" / "gb200"
     DOCS = (
-        REPO_ROOT / "examples" / "tpu" / "retool" / "gb200" / "README.md",
-        REPO_ROOT / "examples" / "tpu" / "retool" / "gb200" / "exp" / "REPRO_RESULTS_GB200_ZH.md",
+        REPO_ROOT / "examples" / "tpu" / "retool" / "exp" / "gb200" / "GB200_REPRO_GUIDE_V1.md",
+        REPO_ROOT / "examples" / "tpu" / "retool" / "exp" / "gb200" / "REPRO_RESULTS_GB200_ZH.md",
     )
 
     @classmethod
@@ -1060,7 +1060,7 @@ if nodes:
         self.assertIn("- bad-node-2", res.stdout)
 
     def test_recompute_g64_smoke_metrics_script(self):
-        recompute_script = REPO_ROOT / "examples" / "tpu" / "retool" / "gb200" / "logs" / "recompute_g64_metrics.py"
+        recompute_script = REPO_ROOT / "examples" / "tpu" / "retool" / "logs" / "gb200" / "recompute_g64_metrics.py"
         res = subprocess.run(
             [sys.executable, str(recompute_script), "--run", "g64-retool-smoke-04"], capture_output=True, text=True
         )

@@ -151,8 +151,8 @@ def wall_list() -> str:
             f"（`{pct(t['trajectories_with_tool_response'] / t['num_trajectories'])}`），"
             f"工具返回共 `{t['total_tool_responses']:,}` 次，"
             f"`score <= -1.99` 的轨迹 `{t['clip_neg2_count']}` 条。",
-            f"- 整段掩码审计（[`rollout_mask_audit.py`](rollout_mask_audit.py)，从归档的原始 "
-            f"[`rollout_audit/`](results/{RUN}/rollout_audit/) 重算）：`{t['audit_sessions']}` 个会话违规 "
+            f"- 整段掩码审计（[`rollout_mask_audit.py`](../../rollout_mask_audit.py)，从归档的原始 "
+            f"[`rollout_audit/`](../../logs/tpu7x/{RUN}/rollout_audit/) 重算）：`{t['audit_sessions']}` 个会话违规 "
             f"`{t['audit_mask_violations']}` 个；`{t['audit_tool_response_blocks']}` 个 `<tool_response>` 块共 "
             f"`{t['audit_tool_response_tokens']:,}` 个 token，"
             f"计入 loss 的 `{t['audit_tool_response_tokens_in_loss']}` 个；"

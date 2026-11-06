@@ -1,6 +1,6 @@
 # Stage P3 evidence: `p3-retool-rl-11`
 
-Derived evidence for section 4.0.2 and checks `R6`–`R12` of [`REPRO_RESULTS_TPU7X.md`](../../REPRO_RESULTS_TPU7X.md). The raw run files stay in the run directory on GCS; the JSON files here were produced from them by `verify_p3_results.py`, using the code of the run's commit `aa10dfed`.
+Derived evidence for section 4.0.2 and checks `R6`–`R12` of [`REPRO_RESULTS_TPU7X.md`](../../../exp/tpu7x/REPRO_RESULTS_TPU7X.md). The raw run files stay in the run directory on GCS; the JSON files here were produced from them by `verify_p3_results.py`, using the code of the run's commit `aa10dfed`.
 
 ## Raw files
 
@@ -33,7 +33,7 @@ gcloud storage cp -r "$RUN/validation" "$RUN/rollout_audit" data/
 gcloud storage cp "$IN/Maxwell-Jia/AIME_2024/data/train-00000-of-00001.parquet" data/src/AIME_2024.parquet
 gcloud storage cp "$IN/yentinglin/aime_2025/data/train-00000-of-00001.parquet" data/src/aime_2025.parquet
 # --repo: any checkout that contains commit aa10dfed (the PR #10 branch); needs pyarrow
-python examples/tpu/retool/results/p3-retool-rl-11/verify_p3_results.py --data data --repo . --out /tmp/p3-check
+python examples/tpu/retool/logs/tpu7x/p3-retool-rl-11/verify_p3_results.py --data data --repo . --out /tmp/p3-check
 ```
 
 ## Summary

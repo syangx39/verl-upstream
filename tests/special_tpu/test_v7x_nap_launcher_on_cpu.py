@@ -1031,15 +1031,15 @@ def test_head_without_a_slot_never_starts_ray(tmp_path, monkeypatch):
 
 def test_p3c_retool_25s_02_evidence_and_report_tables():
     repo_root = Path(__file__).resolve().parents[2]
-    ev_dir = repo_root / "examples" / "tpu" / "retool" / "results" / "p3c-retool-25s-02"
-    doc = repo_root / "examples" / "tpu" / "retool" / "RETOOL_REWARD_CLIP_RERUN_PLAN_ZH.md"
+    ev_dir = repo_root / "examples" / "tpu" / "retool" / "logs" / "tpu7x" / "p3c-retool-25s-02"
+    doc = repo_root / "examples" / "tpu" / "retool" / "exp" / "tpu7x" / "RETOOL_REWARD_CLIP_RERUN_PLAN_ZH.md"
     subprocess.run([sys.executable, str(ev_dir / "verify_evidence.py")], check=True)
     subprocess.run([sys.executable, str(ev_dir / "report_tables.py"), "--check", str(doc)], check=True)
 
 
 def test_p3c_retool_25s_02_code_snapshot_check_detects_a_changed_file(tmp_path):
     repo_root = Path(__file__).resolve().parents[2]
-    ev_dir = repo_root / "examples" / "tpu" / "retool" / "results" / "p3c-retool-25s-02"
+    ev_dir = repo_root / "examples" / "tpu" / "retool" / "logs" / "tpu7x" / "p3c-retool-25s-02"
     spec = importlib.util.spec_from_file_location("verify_code_snapshot", ev_dir / "verify_code_snapshot.py")
     assert spec is not None and spec.loader is not None
     snap = importlib.util.module_from_spec(spec)

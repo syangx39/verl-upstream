@@ -72,7 +72,7 @@ def tree_blobs(repo: Path, sha: str) -> dict[str, str]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--tarball", type=Path, required=True)
-    parser.add_argument("--repo", type=Path, default=HERE.parents[4])
+    parser.add_argument("--repo", type=Path, default=HERE.parents[5])
     parser.add_argument("--snapshot-json", type=Path, default=HERE / "env" / "code_snapshot.json")
     args = parser.parse_args()
     snap = json.loads(args.snapshot_json.read_text(encoding="utf-8"))

@@ -282,7 +282,7 @@
 ## 7. 复现
 
 ```bash
-cd examples/tpu/retool/results/askhat-v5p
+cd examples/tpu/retool/exp/askhat-v5p
 # 重新抓取会覆盖当前快照；需要 W&B API key
 WANDB_API_KEY=... python3 fetch_askhat_v5p.py --out askhat_v5p_runs.json
 python3 plot_askhat_v5p.py --figures          # 需要 matplotlib

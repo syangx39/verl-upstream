@@ -56,7 +56,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-RETOOL_DIR = HERE.parents[1]
+RETOOL_DIR = HERE.parents[2]
 
 
 def _load_tool(name: str):

@@ -9,7 +9,7 @@ gates. The changelog is at the end.
 
 This plan reproduces the ReTool recipe added in
 [jialei777/verl-upstream#108](https://github.com/jialei777/verl-upstream/pull/108) (this directory, see
-[`README.md`](README.md)) on TPU 7x (Ironwood). It reuses the recipe scripts and keeps the reference algorithm,
+[`README.md`](../../README.md)) on TPU 7x (Ironwood). It reuses the recipe scripts and keeps the reference algorithm,
 hyperparameters and logical parallelism. Only the topology settings change, plus one documented TPU 7x numerics
 adaptation (D4). The layout follows our earlier Qwen3-4B GRPO reproduction on tpu7x: decisions, checks, phases with
 exit criteria, queue strategy, tracking and risks.
@@ -49,7 +49,7 @@ from [askhat-g/verl-recipe#1](https://github.com/askhat-g/verl-recipe/pull/1). A
 | RL accuracy | AIME 2024 mean@30 22.44% -> 30.00%, AIME 2025 mean@30 14.17% -> 18.33% at step 25 (400-step run) | section 3 |
 
 Every TPU 7x chip exposes its 2 TensorCores as 2 devices with 96 GiB HBM each
-([`platform_tpu.py`](../../../verl/plugin/platform/platform_tpu.py)). So 32 v6e chips map to 32 TPU 7x devices
+([`platform_tpu.py`](../../../../../verl/plugin/platform/platform_tpu.py)). So 32 v6e chips map to 32 TPU 7x devices
 (16 chips), and `N_CHIPS_*=8` counts logical devices per host, not physical chips. Each device has 3x the HBM of a v6e
 chip, so the v6e parallelism fits with headroom. We still keep it unchanged until P3 passes (D3).
 
@@ -116,7 +116,7 @@ Notes on statistics:
 | D5 | **Storage**: inputs (model, datasets) are staged once to a GCS prefix and mounted read-only. The model is copied to `/dev/shm` on every TPU host (`MODEL_PATH`) and verified by hash (P0.3). All outputs (HF exports, DCP checkpoints, TensorBoard, dumps, logs) go to a separate GCS output prefix. Host `/tmp` is never used for checkpoints, because a tpu7x node disk has less free space than one 57 GiB export |
 | D6 | **Run structure and resume**. See the details below the table |
 | D7 | **Recipe behavior as-is**. See the details below the table |
-| D8 | **Pinned inputs**: `Qwen/Qwen3-30B-A3B`; `JoeYing/ReTool-SFT`, preprocessed with verl-recipe's `retool_sft_preprocess.py` using the tool schema of [`sandbox_fusion_tool_config_tpu.yaml`](sandbox_fusion_tool_config_tpu.yaml); `BytedTsinghua-SIA/DAPO-Math-17k`; `Maxwell-Jia/AIME_2024`; `yentinglin/aime_2025`. HF revisions and file sha256 go into the run record. Rev 3: staged from the recipe's default data root (`/data/jialei`, the bucket mounted by `ray-tpu-v7x16-2slice.yaml`), i.e. the exact files the scripts reference. The ReTool-SFT parquet has 2,000 rows with `messages` and `tools`, every row has at least one `code_interpreter` call, and it uses the same tool schema |
+| D8 | **Pinned inputs**: `Qwen/Qwen3-30B-A3B`; `JoeYing/ReTool-SFT`, preprocessed with verl-recipe's `retool_sft_preprocess.py` using the tool schema of [`sandbox_fusion_tool_config_tpu.yaml`](../../sandbox_fusion_tool_config_tpu.yaml); `BytedTsinghua-SIA/DAPO-Math-17k`; `Maxwell-Jia/AIME_2024`; `yentinglin/aime_2025`. HF revisions and file sha256 go into the run record. Rev 3: staged from the recipe's default data root (`/data/jialei`, the bucket mounted by `ray-tpu-v7x16-2slice.yaml`), i.e. the exact files the scripts reference. The ReTool-SFT parquet has 2,000 rows with `messages` and `tools`, every row has at least one `code_interpreter` call, and it uses the same tool schema |
 | D9 | **Explicit SFT checkpoint for RL**: every RL run sets `MODEL_SRC_PATH` explicitly, and the load log and staged digest are checked. When the SFT index file is missing, the DAPO script silently falls back to the base model |
 
 **D6. Run structure and resume.**
@@ -154,8 +154,8 @@ P0 has two kinds of items, so that later validations do not block the start:
 
 | # | Deliverable | Needed by | Why | Done when |
 |---|---|---|---|---|
-| P0.1 | **Launch path** for 2 x `2x2x4` on the shared TPU 7x GKE cluster (`bodaborg-tpu7x-nap`: Kueue + JobSet, node auto-provisioning) | before P1a | The in-repo TPU 7x manifests ([`ray-tpu-v7x16-2slice.yaml`](../gke/ray-tpu-v7x16-2slice.yaml)) are KubeRay `RayCluster`s for a cluster with the KubeRay operator. The shared cluster runs Kueue-managed JobSets, like [`ray-jobset-v5p-nap.yaml`](../gke/ray-jobset-v5p-nap.yaml) | A TPU 7x JobSet launcher renders and passes a server-side dry run; requirements below the table |
-| P0.2 | **Image** | before P1a | Needs torch_tpu, torchtitan, vllm-torchtpu, tpu-sync-torch, TransferQueue, fastapi and uvicorn at versions that match the code SHA | #108's image (`verl-tpu:v20261001-tsync990787257`) or a rebuild from [`Dockerfile.tpu`](../gke/Dockerfile.tpu) is pullable by the cluster's nodes and pinned by digest; package versions recorded, including whether TransferQueue supports checkpoints (version 0.1.9 or later with `save_checkpoint` / `load_checkpoint`) |
+| P0.1 | **Launch path** for 2 x `2x2x4` on the shared TPU 7x GKE cluster (`bodaborg-tpu7x-nap`: Kueue + JobSet, node auto-provisioning) | before P1a | The in-repo TPU 7x manifests ([`ray-tpu-v7x16-2slice.yaml`](../../../gke/ray-tpu-v7x16-2slice.yaml)) are KubeRay `RayCluster`s for a cluster with the KubeRay operator. The shared cluster runs Kueue-managed JobSets, like [`ray-jobset-v5p-nap.yaml`](../../../gke/ray-jobset-v5p-nap.yaml) | A TPU 7x JobSet launcher renders and passes a server-side dry run; requirements below the table |
+| P0.2 | **Image** | before P1a | Needs torch_tpu, torchtitan, vllm-torchtpu, tpu-sync-torch, TransferQueue, fastapi and uvicorn at versions that match the code SHA | #108's image (`verl-tpu:v20261001-tsync990787257`) or a rebuild from [`Dockerfile.tpu`](../../../gke/Dockerfile.tpu) is pullable by the cluster's nodes and pinned by digest; package versions recorded, including whether TransferQueue supports checkpoints (version 0.1.9 or later with `save_checkpoint` / `load_checkpoint`) |
 | P0.3 | **Inputs** (D8) | before P1a | Pods should not depend on HF Hub access. `stage_model_local.py` decides "already staged" by file names and sizes only | Model and datasets staged under the input prefix in the directory layout the scripts expect (`dataset/<org>/<name>`, `assets/hf/Qwen3-30B-A3B`, `dataset/ReTool-SFT/data/train-00000-of-00001.parquet`), with hashes recorded. Each run then verifies shard hashes on every TPU host after staging (part of R5b) |
 | P0.4 | **Output persistence** | before P1a | Pods disappear minutes after completion | `SAVE_PATH`, `CKPTS_DIR` and `TENSORBOARD_DIR` point to the output prefix. The driver log and an **allowlisted, redacted** dump of each worker's effective environment (`LIBTPU_INIT_ARGS`, `XLA_FLAGS`, `TPU_ACCELERATOR_TYPE`, ...) are mirrored to GCS during the run. No tokens or credentials are written |
 | P0.5 | **Host ordering** | validated in P1a (R2) | verl orders a slice's hosts by IP string; torch_tpu ranks them by physical position. In our Qwen3-4B port, IP order caused a SparseCore halt in the first FSDP collective | Before P1a: the launcher computes each TPU host's topological rank before Ray starts and exposes it as a Ray node label, and verl orders hosts by that label when every host carries it. In P1a: the logged trainer rank-to-host order matches the topological order |
@@ -197,7 +197,7 @@ P0.10 dumps:
 | Phase | What | Config (on top of section 11) | Exit criteria | Wall time after admission (estimate) |
 |---|---|---|---|---|
 | **P0** | Section 5, preparation items | - | Preparation items ready: the launcher renders and passes a server-side dry run, the image is pullable and matches the code SHA, inputs are staged with hashes, output paths and the env dump are ready, and the instrumentation (P0.9, P0.10) is merged. P0.5 and P0.7 are validated later (P1a, P4a) | 1-2 days |
-| **P1a** | Platform smoke with the in-repo TPU 7x MoE recipe. It separates TPU / Ray / MoE platform problems from problems in ReTool's multi-turn tool path | [`../grpo/run_qwen3_30b_a3b_torchtitan.sh`](../grpo/run_qwen3_30b_a3b_torchtitan.sh), 3 steps, 2 x `2x2x4` | R1 (trainer and rollout), R2: actual placement, host ordering (P0.5), trainer and rollout devices, Raiden weight sync | ~45 min |
+| **P1a** | Platform smoke with the in-repo TPU 7x MoE recipe. It separates TPU / Ray / MoE platform problems from problems in ReTool's multi-turn tool path | [`../../../grpo/run_qwen3_30b_a3b_torchtitan.sh`](../../../grpo/run_qwen3_30b_a3b_torchtitan.sh), 3 steps, 2 x `2x2x4` | R1 (trainer and rollout), R2: actual placement, host ordering (P0.5), trainer and rollout devices, Raiden weight sync | ~45 min |
 | **P1b** | ReTool SFT smoke | `TOTAL_TRAINING_STEPS=3 SAVE_FREQ=3 TEST_FREQ=3`, one `2x2x4` slice, its own `SAVE_PATH` | R1 (trainer), R5a (3-step export); R3 recorded | ~45 min |
 | **P1c** | ReTool RL smoke from the P1b export (tests the SFT -> RL hand-off) | `TOTAL_TRAINING_STEPS=2 TRAIN_BATCH_SIZE=8 PPO_MINI_BATCH_SIZE=8 N_RESP_PER_PROMPT=4 VAL_BEFORE_TRAIN=False`, dumps on | R1 (trainer and rollout), R2, R5b, R11, R12. Sandbox exercised **from the pod hosting the ExecutionWorker**: arithmetic, Python error and stderr, timeout and process cleanup, concurrent requests | ~60 min |
 | **P2** | Stage 1 SFT, full | 372 steps, script defaults | R1 (trainer), R5a; R4 and R9 recorded | ~1.5-2.5 h (v6e: 1.9 h of steps) |
